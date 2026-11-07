@@ -53,6 +53,26 @@ foreach ($ev in $events.Keys) {
 }
 [IO.File]::WriteAllText($Settings, ($cfg | ConvertTo-Json -Depth 50), $Utf8)
 
+if ($env:CLAUDE_DESK_NO_MUSIC -ne '1') {
+  try {
+    $NpPath = Join-Path $Dir 'nowplaying.ps1'
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*nowplaying.ps1*' } |
+      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Invoke-WebRequest -UseBasicParsing -Uri "$Hub/client/nowplaying.ps1" -OutFile $NpPath
+    $Conhost = Join-Path $env:WINDIR 'System32\conhost.exe'
+    $NpArgs = '--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $NpPath + '"'
+    $Lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Startup')) 'claude-desk-nowplaying.lnk'))
+    $Lnk.TargetPath = $Conhost
+    $Lnk.Arguments = $NpArgs
+    $Lnk.WindowStyle = 7
+    $Lnk.Save()
+    Start-Process -FilePath $Conhost -ArgumentList $NpArgs -WindowStyle Hidden
+    Say 'Now playing is on: what plays on this PC (Spotify, browsers, other media apps) shows on your desk.'
+  } catch {
+    Say "Couldn't set up now playing ($($_.Exception.Message)). The hook still works."
+  }
+}
+
 Say "Testing connection to $Hub"
 try {
   Invoke-RestMethod -Uri "$Hub/api/hook" -Method Post -ContentType 'application/json' `

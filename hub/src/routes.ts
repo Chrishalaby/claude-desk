@@ -249,6 +249,17 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     return { ok: true };
   });
 
+  const playingUser = new RateLimiter(60, 60_000, nowMs);
+  app.post("/api/nowplaying", { bodyLimit: 2048 }, async (req, reply) => {
+    if (!hookIp.take(req.ip)) return reply.code(429).send({ error: "rate_limited" });
+    const h = req.headers.authorization ?? "";
+    const u = svc.userByHookToken(h.startsWith("Bearer ") ? h.slice(7).trim() : "");
+    if (!u) return reply.code(401).send({ error: "token" });
+    if (!playingUser.take(String(u.id))) return reply.code(429).send({ error: "rate_limited" });
+    const b = req.body;
+    return apps.reportComputer(u.id, b && typeof b === "object" && !Array.isArray(b) ? b as Record<string, unknown> : {});
+  });
+
   const notifyIp = new RateLimiter(120, 60_000, nowMs);
   const appsUser = new RateLimiter(30, 60_000, nowMs);
   const feedUser = new RateLimiter(10, 600_000, nowMs);
@@ -500,6 +511,8 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   app.get("/install.ps1", serveClient("install.ps1", true));
   app.get("/client/hook.py", serveClient("hook.py", false));
   app.get("/client/hook.ps1", serveClient("hook.ps1", false));
+  app.get("/client/nowplaying.py", serveClient("nowplaying.py", false));
+  app.get("/client/nowplaying.ps1", serveClient("nowplaying.ps1", false));
 
   // ---------------------------------------------------------------- web app
   const types: Record<string, string> = {

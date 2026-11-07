@@ -83,14 +83,20 @@ What the installer does (safe to re-run):
 - puts the hook in `~/.claude-desk/` (`hook.py` or `hook.ps1`) and its config in `~/.claude-desk/config.json`;
 - adds hooks for `UserPromptSubmit`, `PermissionRequest`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd` to
   `~/.claude/settings.json` (backing it up first, keeping your other hooks, replacing older claude-desk entries);
-- sends a test event — the desk shows **DONE · claude-desk** for a few seconds.
+- sends a test event — the desk shows **DONE · claude-desk** for a few seconds;
+- starts a small background helper that shows the song you're playing on the desk (title and artist only): on a Mac
+  from the Spotify and Apple Music apps (macOS asks once to let Python control them: click Allow), on Windows from any
+  app or browser, on Linux through `playerctl`. Turn it off under **Apps → Now playing**, or install with
+  `CLAUDE_DESK_NO_MUSIC=1` to skip it.
 
 Then **restart open Claude Code sessions**. The hooks run asynchronously with a 2-second timeout and never print, so they
 can't slow Claude down. Only the event name, session id, project folder name, tool name and a short detail (command /
 file name, ≤60 chars) leave your machine.
 
 To remove: delete the claude-desk entries from `~/.claude/settings.json` (or restore the `.bak-claude-desk-*` backup) and
-the `~/.claude-desk` folder.
+the `~/.claude-desk` folder. Stop the helper first: macOS `launchctl bootout gui/$(id -u)
+~/Library/LaunchAgents/com.claude-desk.nowplaying.plist` and delete that file; Linux `systemctl --user disable --now
+claude-desk-nowplaying`; Windows delete `claude-desk-nowplaying` from the Startup folder (`shell:startup`) and sign out.
 
 
 ## 6. More apps (optional)
@@ -98,7 +104,8 @@ the `~/.claude-desk` folder.
 The same **Apps** tab can put more on the desk, all fetched by the hub (the desk itself needs nothing extra):
 - **Canvas**: draw on your desk from your phone. From a friend's chat, ✏️ draws on both desks at once, and they can
   join in and draw with you.
-- **Now playing**: the song under the clock (Spotify, or YouTube Music, Apple Music and others through Last.fm).
+- **Now playing**: the song under the clock. It comes from your computer automatically (section 5); for music on your
+  phone or a speaker, link your app to Last.fm.
 - **Timer**: a countdown under the clock and a card when it ends.
 - **Reminders**: "drink water every hour, 9 to 6 on weekdays", or once a day at a set time.
 - **Rain alerts**: a card about 30 minutes before rain starts where your desk is.

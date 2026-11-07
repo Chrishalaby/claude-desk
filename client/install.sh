@@ -72,6 +72,66 @@ for p in "$HOME"/Library/LaunchAgents/com.*.claude-desk.plist; do
   rm -f "$p"
 done
 
+music_mac() {
+  local plist="$HOME/Library/LaunchAgents/com.claude-desk.nowplaying.plist" py
+  py="$(command -v python3)"
+  mkdir -p "$HOME/Library/LaunchAgents"
+  cat > "$plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.claude-desk.nowplaying</string>
+  <key>ProgramArguments</key><array><string>$py</string><string>$DIR/nowplaying.py</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>/dev/null</string>
+  <key>StandardErrorPath</key><string>/dev/null</string>
+</dict>
+</plist>
+PLIST
+  launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load -w "$plist" 2>/dev/null || return 1
+  say "Now playing is on: what plays in Spotify or Apple Music shows on your desk."
+  say "The first time a song plays, macOS asks to let Python control the app. Click Allow."
+}
+
+music_linux() {
+  command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1 || return 1
+  local unit="$HOME/.config/systemd/user/claude-desk-nowplaying.service"
+  mkdir -p "$(dirname "$unit")"
+  cat > "$unit" <<UNIT
+[Unit]
+Description=claude-desk now playing
+
+[Service]
+ExecStart=$(command -v python3) $DIR/nowplaying.py
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+UNIT
+  systemctl --user daemon-reload && systemctl --user enable --now claude-desk-nowplaying.service >/dev/null 2>&1 || return 1
+  systemctl --user restart claude-desk-nowplaying.service >/dev/null 2>&1 || true
+  say "Now playing is on: what plays on this computer shows on your desk."
+  command -v playerctl >/dev/null 2>&1 || say "It needs playerctl to read the player (e.g. sudo apt install playerctl)."
+}
+
+if [ "${CLAUDE_DESK_NO_MUSIC:-}" != "1" ]; then
+  if [ -n "$SRC" ] && [ -f "$SRC/nowplaying.py" ]; then cp "$SRC/nowplaying.py" "$DIR/nowplaying.py"
+  else curl -fsSL "$HUB/client/nowplaying.py" -o "$DIR/nowplaying.py" || true; fi
+  if [ -f "$DIR/nowplaying.py" ]; then
+    chmod 755 "$DIR/nowplaying.py"
+    case "$(uname -s)" in
+      Darwin) music_mac || say "Couldn't start now playing (launchctl refused). The hook still works." ;;
+      Linux) music_linux || say "Now playing needs a systemd user session; skipped. The hook still works." ;;
+    esac
+  fi
+fi
+
 say "Testing connection to $HUB"
 code=$(curl -s -o /dev/null -w '%{http_code}' -m 10 -X POST "$HUB/api/hook" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \

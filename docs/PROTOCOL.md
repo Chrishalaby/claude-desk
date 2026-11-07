@@ -241,6 +241,9 @@ Hub publishes the view to `desk/<chip>/claude` for **every device owned by that 
 * Both write `~/.claude-desk/config.json` `{ "hub": "https://<hub>", "token": "<token>" }`, install the hook script into
   `~/.claude-desk/`, merge hooks into `~/.claude/settings.json` (backup first, idempotent, remove older claude-desk
   entries), and send a test event.
+* Unless `CLAUDE_DESK_NO_MUSIC=1`, they also start the now-playing helper (section 11, Music): `nowplaying.py` as a
+  LaunchAgent `com.claude-desk.nowplaying` (macOS) or the systemd user service `claude-desk-nowplaying` (Linux), or
+  `nowplaying.ps1` from a `claude-desk-nowplaying` shortcut in the Startup folder (Windows, via `conhost --headless`).
 
 ---
 
@@ -338,7 +341,15 @@ per integration. Web app: the **Apps** tab (`#/apps`). All endpoints are per sig
   (unofficial, delayed). A `Markets` card when the price crosses `above` upwards or `below` downwards (the first reading
   only records the side), and once per day when the day's move is at least `move` percent.
 * **Music** — what's playing becomes the next-up line (3.6, `k: "music"`) and, optionally, a short `Now playing` card
-  per song. Spotify: `GET /api/apps/spotify/connect` (signed in; redirects to Spotify's OAuth with PKCE, scopes
+  per song. From the computer (no account; installed with the hook, section 7): the helper checks every 5–10 s (macOS:
+  the Spotify and Music apps through AppleScript, only while they run, which needs the user to allow Python once under
+  Automation; Windows: every media session Windows knows about, browsers included; Linux: `playerctl`) and sends
+  `POST /api/nowplaying` with the hook token, `{os: "mac"|"windows"|"linux", playing, title?, artist?, app?, error?}`
+  (`error`: `not_allowed`, `no_playerctl`, `unsupported`, `script`), on every change, every 60 s while playing and every
+  10 min otherwise → `{ok, off}` (`off: true`: the user turned it off; the helper backs off for 5 min). The hub drops a
+  computer's song after 150 s without a report. `PATCH /api/apps/music/computer {on?, clock?, cards?}`. When several
+  sources play, a Spotify account beats the computer, which beats Last.fm, as long as the stronger one reported in the
+  last 90 s. Spotify account: `GET /api/apps/spotify/connect` (signed in; redirects to Spotify's OAuth with PKCE, scopes
   `user-read-currently-playing user-read-playback-state`), Spotify returns to `GET /api/apps/spotify/callback`, which
   redirects to `/#/apps?ok=spotify` or `?err=<code>`; the hub polls `currently-playing` every 15 s while something plays,
   30 s otherwise, and refreshes the token itself. A Spotify app in development mode only lets accounts listed on its

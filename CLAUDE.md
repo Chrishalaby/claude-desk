@@ -27,7 +27,10 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
   - `src/doodles.ts` = live drawings: binary `draw` topic to desks (§3.8), SSE to browsers (§12). `src/net.ts` = `safeFetch` (public https
     only) for user-supplied URLs. New integrations go here, never on the desk.
 - `client/` hook (`hook.py` macOS/Linux, `hook.ps1` Windows) + installers; the hub serves them with `__HUB_URL__` replaced
-  (first occurrence only — keep the placeholder's first occurrence as the value).
+  (first occurrence only — keep the placeholder's first occurrence as the value). The installers also start the
+  now-playing helper (`nowplaying.py` LaunchAgent / systemd user service, `nowplaying.ps1` from the Startup folder)
+  → `POST /api/nowplaying`. Owner's direction: one install on the computer should feed the desk; prefer reading things
+  from the computer over per-service accounts and keys (Spotify/Last.fm/Slack keys are optional extras he won't set).
 
 ## Hardware facts
 - Pins: MOSI 13, SCLK 14, DC 0, RST 2, CS none; backlight GPIO5 PWM **active-low**; `invertDisplay(true)`.

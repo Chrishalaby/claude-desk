@@ -1037,36 +1037,47 @@ function appMusic(a) {
   const el = h("div", { class: "card" });
   const lfUser = h("input", { placeholder: "Last.fm username", autocapitalize: "none", autocomplete: "off", spellcheck: "false" });
   const opt = (kind, k) => async (v, cb) => { try { a.music = await api("PATCH", `/api/apps/music/${kind}`, { [k]: v }); } catch (e) { fail(e); cb.checked = !v; } };
+  const pcOn = async (v, cb) => { try { a.music = await api("PATCH", "/api/apps/music/computer", { on: v }); paint(); } catch (e) { fail(e); cb.checked = !v; } };
+  const OS_NAME = { mac: "Mac", windows: "PC", linux: "computer" };
   function paint() {
-    const m = a.music, sp = m.spotify, lf = m.lastfm;
+    const m = a.music, pc = m.computer, sp = m.spotify, lf = m.lastfm;
     const opts = (kind, x) => [toggle("Show what's playing under the clock", x.clock, opt(kind, "clock")), toggle("Show a card when the song changes", x.cards, opt(kind, "cards"))];
     const off = (kind) => h("button", { class: "btn small ghost danger", style: "margin-top:10px", onclick: guarded(async () => {
       if (!confirm("Disconnect?")) return;
       try { await api("DELETE", `/api/apps/${kind}`); a = { ...a, music: (await api("GET", "/api/apps")).music }; paint(); } catch (e) { fail(e); }
     }) }, "Disconnect");
+    const sep = () => h("div", { style: "border-top:1px solid var(--line);margin:14px 0 10px" });
+    const where = `your ${OS_NAME[pc.os] || "computer"}`;
+    const warn = (t) => h("p", { class: "hint warn", style: "margin:8px 0 0" }, t);
+    const computer = !pc.on ? toggle("Show music from my computer", false, pcOn)
+      : pc.seen ? [
+        h("p", { class: "hint", style: "margin:4px 0 0" }, m.playing?.src === "computer" && pc.app ? `Playing in ${pc.app} on ${where}` : `Connected to ${where} · checked in ${ago(pc.seen)}`),
+        pc.error === "not_allowed" ? warn("macOS is blocking it: open System Settings → Privacy & Security → Automation, find Python and turn on Spotify and Music.") : null,
+        pc.error === "no_playerctl" ? warn("Install playerctl so it can read your player (e.g. sudo apt install playerctl).") : null,
+        opts("computer", pc), toggle("Show music from my computer", true, pcOn)]
+      : [h("p", { class: "hint", style: "margin:4px 0 8px" }, "No account needed: it comes with the one-line install under Claude Code. On a Mac it reads Spotify and Apple Music; on Windows any app or browser. Installed it before today? Run it again."),
+        h("button", { class: "btn block", onclick: () => document.getElementById("app-claude")?.scrollIntoView({ behavior: "smooth" }) }, "Show the install command")];
+    const phone = lf.connected ? [h("p", { class: "hint", style: "margin:4px 0 0" }, `Following last.fm/user/${lf.user}`), statusLine(lf), opts("lastfm", lf), off("lastfm")]
+      : [
+        h("p", { class: "hint", style: "margin:4px 0 8px" }, "Through Last.fm, a free service that keeps a list of what you play on any device. Link your music app to it once:"),
+        h("ul", { class: "hint steps" },
+          h("li", {}, h("b", {}, "Spotify: "), h("a", { href: "https://www.last.fm/settings/applications", target: "_blank", rel: "noopener" }, "last.fm → Settings → Applications"), " → Spotify → Connect"),
+          h("li", {}, h("b", {}, "YouTube Music: "), "Pano Scrobbler on Android, or the Web Scrobbler browser extension"),
+          h("li", {}, h("b", {}, "Deezer, Tidal: "), "turn on Last.fm in the app's settings"),
+          h("li", {}, h("b", {}, "Apple Music: "), "a scrobbler app")),
+        lf.signin ? h("a", { class: "btn block", href: "/api/apps/lastfm/connect" }, "Sign in with Last.fm") : null,
+        h("details", { class: "more", open: !lf.signin }, h("summary", {}, lf.signin ? "Or type your Last.fm username" : "Your Last.fm username"),
+          h("form", { class: "inline", style: "margin-top:8px", onsubmit: guarded(async () => {
+            if (!lfUser.value.trim()) return;
+            try { a.music = await api("PUT", "/api/apps/lastfm", { user: lfUser.value.trim() }); lfUser.value = ""; toast("Last.fm connected"); paint(); } catch (e) { fail(e); }
+          }) }, lfUser, h("button", { class: "btn", type: "submit" }, "Connect")))];
     fill(el,
-      m.playing ? h("div", { class: "title", style: "margin-bottom:10px" }, "♫ ", m.playing.title, h("span", { class: "sub" }, " · " + m.playing.artist)) : null,
-      h("b", {}, "Spotify"),
-      sp.connected ? [h("p", { class: "hint", style: "margin:4px 0 0" }, `Connected as ${sp.name}`), statusLine(sp), opts("spotify", sp), off("spotify")]
-        : sp.configured ? h("a", { class: "btn block", href: "/api/apps/spotify/connect" }, "Connect Spotify")
-        : h("p", { class: "hint" }, "Not set up on this hub yet."),
-      h("div", { style: "border-top:1px solid var(--line);margin:14px 0 10px" }),
-      h("b", {}, "Any music app, through Last.fm"),
-      lf.connected ? [h("p", { class: "hint", style: "margin:4px 0 0" }, `Following last.fm/user/${lf.user}`), statusLine(lf), opts("lastfm", lf), off("lastfm")]
-        : lf.configured ? [
-          h("p", { class: "hint", style: "margin:4px 0 8px" }, "Last.fm is a free service that keeps a list of what you play, from any app and any device. Link your music app to it once:"),
-          h("ul", { class: "hint steps" },
-            h("li", {}, h("b", {}, "Spotify: "), h("a", { href: "https://www.last.fm/settings/applications", target: "_blank", rel: "noopener" }, "last.fm → Settings → Applications"), " → Spotify → Connect"),
-            h("li", {}, h("b", {}, "YouTube Music: "), "the free Web Scrobbler browser extension, or Pano Scrobbler on Android"),
-            h("li", {}, h("b", {}, "Deezer, Tidal: "), "turn on Last.fm in the app's settings"),
-            h("li", {}, h("b", {}, "Apple Music: "), "a scrobbler app on your Mac or iPhone")),
-          lf.signin ? h("a", { class: "btn primary block", href: "/api/apps/lastfm/connect" }, "Sign in with Last.fm") : null,
-          h("details", { class: "more", open: !lf.signin }, h("summary", {}, lf.signin ? "Or type your Last.fm username" : "Your Last.fm username"),
-            h("form", { class: "inline", style: "margin-top:8px", onsubmit: guarded(async () => {
-              if (!lfUser.value.trim()) return;
-              try { a.music = await api("PUT", "/api/apps/lastfm", { user: lfUser.value.trim() }); lfUser.value = ""; toast("Last.fm connected"); paint(); } catch (e) { fail(e); }
-            }) }, lfUser, h("button", { class: lf.signin ? "btn" : "btn primary", type: "submit" }, "Connect")))]
-        : h("p", { class: "hint" }, "Not set up on this hub yet."));
+      m.playing ? h("div", { class: "title", style: "margin-bottom:10px" }, "♫ ", m.playing.title, m.playing.artist ? h("span", { class: "sub" }, " · " + m.playing.artist) : null) : null,
+      h("b", {}, "From your computer"), computer,
+      lf.configured || lf.connected ? [sep(), h("b", {}, "On your phone or a speaker"), phone] : null,
+      sp.connected ? [sep(), h("b", {}, "Spotify account"), h("p", { class: "hint", style: "margin:4px 0 0" }, `Connected as ${sp.name}`), statusLine(sp), opts("spotify", sp), off("spotify")]
+        : sp.configured ? [sep(), h("b", {}, "Spotify account"), h("p", { class: "hint", style: "margin:4px 0 8px" }, "Only for accounts this hub's owner has added."),
+          h("a", { class: "btn block", href: "/api/apps/spotify/connect" }, "Connect Spotify")] : null);
   }
   paint();
   return el;
@@ -1207,7 +1218,7 @@ async function viewApps() {
         h("div", { class: "sub" }, [v.p, v.d].filter(Boolean).join(" — ") || "Across all your Claude Code sessions"))),
     h("h2", {}, "Install the hook"),
     h("div", { class: "card" },
-      h("p", { class: "hint", style: "margin-top:0" }, "Run this once on each computer where you use Claude Code. It adds a tiny hook that reports status to your desk (never your code or tool output)."),
+      h("p", { class: "hint", style: "margin-top:0" }, "Run this once on each computer where you use Claude Code. It adds a tiny hook that reports status to your desk (never your code or tool output), plus the song you're playing, title and artist only (turn that off under Now playing)."),
       cmd("macOS / Linux (Terminal)", unix),
       cmd("Windows (PowerShell)", win)),
     h("h2", {}, "Hook token"),

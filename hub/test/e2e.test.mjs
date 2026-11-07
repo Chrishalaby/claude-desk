@@ -773,6 +773,12 @@ test("installers and static files", async () => {
     baked(ps.text, "install.ps1");
     assert.equal((await anon.call("GET", "/client/hook.py")).status, 200);
     assert.equal((await anon.call("GET", "/client/hook.ps1")).status, 200);
+    for (const f of ["/client/nowplaying.py", "/client/nowplaying.ps1"]) {
+      const c = await anon.call("GET", f);
+      assert.equal(c.status, 200, f);
+      assert.ok(c.text.includes("/api/nowplaying"), f);
+    }
+    assert.ok(sh.text.includes("nowplaying.py") && ps.text.includes("nowplaying.ps1"), "installers set up now playing");
   } else {
     assert.equal(sh.status, 404);
   }
@@ -1184,6 +1190,47 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
   assert.equal(n.json.text, "Ocean Eyes · Billie Eilish");
   await erin.call("DELETE", "/api/apps/lastfm");
   await de.waitFor((x) => x.topic === "desk/esp-e0e001/next" && x.raw === "", "cleared after disconnect");
+
+  const hookToken = (await erin.call("GET", "/api/token")).body.token;
+  const np = (b, token = hookToken) => fetch(`${base}/api/nowplaying`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(b) })
+    .then(async (x) => ({ status: x.status, body: await x.json() }));
+  const nextMusic = (text) => de.waitFor((x) => x.topic === "desk/esp-e0e001/next" && x.json?.text === text && x.json?.k === "music", text);
+  assert.equal((await np({ playing: true, title: "x" }, "nope")).status, 401);
+  r = await erin.call("GET", "/api/apps");
+  assert.deepEqual([r.body.music.computer.on, r.body.music.computer.seen], [true, null], "nothing reported yet");
+  r = await np({ os: "mac", playing: true, title: "Midnight City", artist: "M83", app: "Spotify", error: null });
+  assert.deepEqual([r.status, r.body], [200, { ok: true, off: false }]);
+  await nextMusic("Midnight City · M83");
+  r = await erin.call("GET", "/api/apps");
+  assert.deepEqual(r.body.music.computer, { on: true, seen: clock, app: "Spotify", os: "mac", error: null, clock: true, cards: false });
+  assert.deepEqual(r.body.music.playing, { title: "Midnight City", artist: "M83", src: "computer" });
+  await erin.call("PUT", "/api/apps/lastfm", { user: "erin_listens" });
+  clock += 31;
+  await hub.apps.tick();
+  assert.equal((await erin.call("GET", "/api/apps")).body.music.playing.src, "computer", "the computer beats Last.fm's slower report");
+  await erin.call("DELETE", "/api/apps/lastfm");
+  await np({ os: "mac", playing: true, title: "Wait", artist: "M83", app: "Apple Music" });
+  await nextMusic("Wait · M83");
+  clock += 151;
+  await hub.apps.tick();
+  assert.equal((await erin.call("GET", "/api/apps")).body.music.playing, null, "a computer that stopped reporting (asleep, offline) is dropped");
+  await np({ os: "mac", playing: true, title: "Outro", artist: "M83", app: "Spotify" });
+  await nextMusic("Outro · M83");
+  await np({ os: "mac", playing: false, error: "not_allowed" });
+  r = await erin.call("GET", "/api/apps");
+  assert.deepEqual([r.body.music.playing, r.body.music.computer.error], [null, "not_allowed"]);
+  await np({ os: "mac", playing: false, error: "<script>" });
+  assert.equal((await erin.call("GET", "/api/apps")).body.music.computer.error, null, "unknown error codes are dropped");
+  r = await erin.call("PATCH", "/api/apps/music/computer", { on: false });
+  assert.equal(r.body.computer.on, false);
+  assert.deepEqual((await np({ os: "mac", playing: true, title: "Ignored", artist: "M83" })).body, { ok: true, off: true });
+  assert.equal((await erin.call("GET", "/api/apps")).body.music.playing, null, "turned off: reports are ignored");
+  await erin.call("PATCH", "/api/apps/music/computer", { on: true, cards: true });
+  await np({ os: "windows", playing: true, title: "Back", artist: "M83", app: "Chrome" });
+  m = await de.waitFor((x) => x.topic === "desk/esp-e0e001/card" && x.json?.title === "Back", "song card from the computer");
+  assert.equal(m.json.src, "NOW PLAYING");
+  await np({ os: "windows", playing: false });
+  await erin.call("PATCH", "/api/apps/music/computer", { cards: false });
 
   const nowMin = Math.floor((clock % 86400) / 60);
   const nextMin = (nowMin + 1) % 1440;

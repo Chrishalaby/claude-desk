@@ -32,6 +32,10 @@ interface Quote { price: number; prev: number; currency: string; at: number }
 interface MusicConfig { clock: boolean; cards: boolean }
 interface SpotifyConfig extends MusicConfig { refresh: string; access: string; exp: number; name: string }
 interface LastfmConfig extends MusicConfig { user: string }
+interface ComputerConfig extends MusicConfig { off: boolean }
+interface ComputerState { at: number; app: string; os: string; error: string | null }
+const MUSIC_RANK: Record<string, number> = { spotify: 3, computer: 2, lastfm: 1 };
+export const COMPUTER_STALE_SECS = 150;
 interface Status { ok: boolean; error: string | null; at: number }
 interface Playing { title: string; artist: string; src: string; at: number }
 interface RainState extends Status { alertedUntil: number }
@@ -205,9 +209,12 @@ export class Apps {
     const sl = this.get<SlackConfig, SlackState>(userId, "slack");
     const st = (x: { state: Status } | null) => (x ? { ok: x.state.ok ?? null, error: x.state.error ?? null, at: x.state.at ?? null } : {});
     const p = this.playing.get(userId);
+    const pc = this.get<ComputerConfig, ComputerState>(userId, "computer");
     return {
       music: {
         playing: p ? { title: p.title, artist: p.artist, src: p.src } : null,
+        computer: { on: !pc?.config.off, seen: pc?.state.at || null, app: pc?.state.app ?? "", os: pc?.state.os ?? "", error: pc?.state.error ?? null,
+          clock: pc?.config.clock ?? true, cards: pc?.config.cards ?? false },
         spotify: { configured: !!this.cfg.spotifyClientId, connected: !!sp, name: sp?.config.name ?? null, clock: sp?.config.clock ?? true, cards: sp?.config.cards ?? false, ...st(sp) },
         lastfm: { configured: !!this.cfg.lastfmKey, signin: !!(this.cfg.lastfmKey && this.cfg.lastfmSecret), connected: !!lf, user: lf?.config.user ?? null, clock: lf?.config.clock ?? true, cards: lf?.config.cards ?? false, ...st(lf) },
       },
@@ -298,20 +305,35 @@ export class Apps {
     this.due.set(`lastfm:${userId}`, this.now());
   }
 
-  setMusicOptions(userId: number, kind: unknown, b: { clock?: unknown; cards?: unknown }) {
-    if (kind !== "spotify" && kind !== "lastfm") throw new HttpError(404, "not_found");
-    const cur = this.get<MusicConfig, Status>(userId, kind);
+  setMusicOptions(userId: number, kind: unknown, b: { clock?: unknown; cards?: unknown; on?: unknown }) {
+    if (kind !== "spotify" && kind !== "lastfm" && kind !== "computer") throw new HttpError(404, "not_found");
+    const cur = this.get<MusicConfig & { off?: boolean }, unknown>(userId, kind)
+      ?? (kind === "computer" ? { config: { clock: true, cards: false, off: false }, state: { at: 0, app: "", os: "", error: null } } : null);
     if (!cur) throw new HttpError(404, "not_found");
     if (b.clock !== undefined) cur.config.clock = !!b.clock;
     if (b.cards !== undefined) cur.config.cards = !!b.cards;
+    if (kind === "computer" && b.on !== undefined) cur.config.off = !b.on;
     this.put(userId, kind, cur.config, cur.state);
+    if (cur.config.off) this.setPlaying(userId, "computer", null);
     this.updateNext(userId);
+  }
+
+  reportComputer(userId: number, b: Record<string, unknown>) {
+    const cur = this.get<ComputerConfig, ComputerState>(userId, "computer");
+    if (cur?.config.off) return { ok: true, off: true };
+    const text = (v: unknown, n: number) => trunc(oneLine(typeof v === "string" ? v : ""), n);
+    const os = ["mac", "windows", "linux"].includes(String(b.os)) ? String(b.os) : "";
+    const error = typeof b.error === "string" && /^[a-z_]{1,30}$/.test(b.error) ? b.error : null;
+    this.put(userId, "computer", cur?.config ?? { clock: true, cards: false, off: false }, { at: this.now(), app: text(b.app, 30), os, error });
+    const title = text(b.title, 200), artist = text(b.artist, 200);
+    this.setPlaying(userId, "computer", b.playing === true && title ? { title, artist } : null);
+    return { ok: true, off: false };
   }
 
   private setPlaying(userId: number, src: string, p: { title: string; artist: string } | null) {
     const cur = this.playing.get(userId);
     if (!p) { if (cur?.src === src) { this.playing.delete(userId); this.updateNext(userId); } return; }
-    if (cur && cur.src === "spotify" && src !== "spotify" && this.now() - cur.at < 90) return;
+    if (cur && cur.src !== src && (MUSIC_RANK[cur.src] ?? 0) > (MUSIC_RANK[src] ?? 0) && this.now() - cur.at < 90) return;
     const changed = !cur || cur.title !== p.title || cur.artist !== p.artist;
     this.playing.set(userId, { title: trunc(oneLine(p.title), 60), artist: trunc(oneLine(p.artist), 60), src, at: this.now() });
     if (changed) {
@@ -886,6 +908,7 @@ export class Apps {
       }
     }
     await Promise.all(jobs);
+    for (const [u, p] of [...this.playing]) if (p.src === "computer" && now - p.at > COMPUTER_STALE_SECS) this.setPlaying(u, "computer", null);
     const users = new Set<number>([...this.nextUsers, ...rows.map((r) => r.user_id),
       ...(this.db.prepare("SELECT DISTINCT user_id FROM timers").all() as { user_id: number }[]).map((r) => r.user_id)]);
     for (const r of rows) if (r.kind === "calendar") this.remindCalendar(r.user_id, this.now());
