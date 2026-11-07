@@ -169,6 +169,10 @@ password; `wifi_add` is relayed and forgotten) for `GET /api/devices/<chip>/wifi
 
 Switching networks (firmware ≥ 1.4.5): after 8 s without Wi-Fi the desk scans (async), joins the strongest saved
 network that is actually visible and gives it 15 s, rescanning every 20 s; the screen and web pages keep working.
+Firmware ≥ 1.4.7 also leaves a network that is up but has no internet: with 2+ saved networks, after 3 min without a
+sign of internet (MQTT connected or a weather fetch) it tries a TCP connect to 1.1.1.1:443 / 8.8.8.8:53; if that fails
+it scans while still connected and, only if another saved network is in range, disconnects and avoids the bad one for
+10 min (it still falls back to it when nothing else is visible).
 1.4.4 and older used ESP8266WiFiMulti with a 3 s join limit, which failed on routers slower than a phone hotspot.
 
 ### 3.8 `desk/<chip>/draw` — binary, not retained, hub → device (firmware ≥ 1.4.6)

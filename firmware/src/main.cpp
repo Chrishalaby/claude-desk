@@ -46,6 +46,7 @@ ESP8266WiFiMulti wifiMulti;
 enum Mode { M_NORMAL, M_SAFE, M_SETUP };
 Mode mode = M_NORMAL;
 uint32_t restartAt = 0;
+uint32_t netOkAt = 0;
 
 // ------------------------------------------------------- crash-loop guard ---
 struct RtcBoot { uint32_t magic, count; };
@@ -230,12 +231,56 @@ bool inScan(const char *ssid) {
 #define ROAM_GRACE_MS 8000
 #define ROAM_JOIN_MS 15000
 #define ROAM_SCAN_EVERY_MS 20000
+#define NONET_MS 180000UL
+#define BADNET_MS 600000UL
+
+bool internetProbe() {
+  WiFiClient c;
+  c.setTimeout(3000);
+  bool ok = c.connect(IPAddress(1, 1, 1, 1), 443) || c.connect(IPAddress(8, 8, 8, 8), 53);
+  c.stop();
+  return ok;
+}
 
 void wifiRoam() {
-  static uint32_t lostAt = 0, joinUntil = 0, nextScan = 0;
+  static uint32_t lostAt = 0, joinUntil = 0, nextScan = 0, badUntil = 0;
+  static int8_t badNet = -1;
   static bool scanning = false;
   uint32_t now = millis();
-  if (WiFi.status() == WL_CONNECTED) { lostAt = joinUntil = 0; scanning = false; return; }
+  if (WiFi.status() == WL_CONNECTED) {
+    if (lostAt || !netOkAt) { netOkAt = now | 1; scanning = false; }
+    lostAt = joinUntil = 0;
+#ifndef LOADER
+    if (scanning) {
+      int n = WiFi.scanComplete();
+      if (n == WIFI_SCAN_RUNNING) return;
+      scanning = false;
+      String cur = WiFi.SSID();
+      int curK = -1;
+      bool other = false;
+      for (int k = 0; k < NET_MAX; k++) {
+        if (!NS.n[k].ssid[0]) continue;
+        if (cur == NS.n[k].ssid) { curK = k; continue; }
+        for (int i = 0; i < n; i++) if (WiFi.SSID(i) == NS.n[k].ssid) other = true;
+      }
+      WiFi.scanDelete();
+      if (!other) return;
+      badNet = curK;
+      badUntil = now + BADNET_MS;
+      WiFi.disconnect();
+      return;
+    }
+    if (netCount() < 2 || now - netOkAt < NONET_MS) return;
+    netOkAt = now | 1;
+    if (internetProbe()) return;
+    WiFi.scanDelete();
+    WiFi.scanNetworks(true);
+    scanning = true;
+#else
+    scanning = false;
+#endif
+    return;
+  }
   if (!lostAt) { lostAt = now | 1; return; }
   if (now - lostAt < ROAM_GRACE_MS) return;
   if (joinUntil && (int32_t)(now - joinUntil) < 0) return;
@@ -252,9 +297,11 @@ void wifiRoam() {
   if (n == WIFI_SCAN_RUNNING) return;
   scanning = false;
   int bestK = -1, bestI = -1, bestR = -1000;
-  for (int i = 0; i < n; i++)
-    for (int k = 0; k < NET_MAX; k++)
-      if (NS.n[k].ssid[0] && WiFi.SSID(i) == NS.n[k].ssid && WiFi.RSSI(i) > bestR) { bestR = WiFi.RSSI(i); bestK = k; bestI = i; }
+  bool avoid = badNet >= 0 && (int32_t)(badUntil - now) > 0;
+  for (int pass = 0; pass < 2 && bestK < 0; pass++, avoid = false)
+    for (int i = 0; i < n; i++)
+      for (int k = 0; k < NET_MAX; k++)
+        if (NS.n[k].ssid[0] && !(avoid && k == badNet) && WiFi.SSID(i) == NS.n[k].ssid && WiFi.RSSI(i) > bestR) { bestR = WiFi.RSSI(i); bestK = k; bestI = i; }
   if (bestK >= 0) {
     WiFi.begin(NS.n[bestK].ssid, NS.n[bestK].pass, WiFi.channel(bestI), WiFi.BSSID(bestI));
     joinUntil = now + ROAM_JOIN_MS;
@@ -1088,6 +1135,7 @@ void hubLoop() {
     return;
   }
   if (mqtt.connected()) {
+    netOkAt = millis() | 1;
     mqtt.loop();
     if ((int32_t)(millis() - nextStatus) >= 0) { hubStatus(); nextStatus = millis() + 10UL * 60 * 1000; }
     if (settingsDirty) { hubSettings(); settingsDirty = false; }
@@ -1259,6 +1307,7 @@ void loopNormal() {
 
   if (WiFi.status() == WL_CONNECTED && (int32_t)(millis() - nextWeather) >= 0) {
     bool ok = fetchWeather();
+    if (ok) netOkAt = millis() | 1;
     nextWeather = millis() + (ok ? 15UL * 60 * 1000 : 60UL * 1000);
     if (ok && view == V_CLOCK && timeValid && !dirty) {
       if (scene == SC_NONE) uiWeather(W);
