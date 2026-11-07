@@ -228,6 +228,9 @@ Emoji sets other than the built-in pixel art are **packs** the hub serves; a des
 * `GET /firmware/latest.json` → `{ "version": "1.4.0", "url": "https://<hub>/firmware/claude-desk.bin", "md5": "<hex>",
   "size": 748640 }` — built from `firmware/dist/claude-desk.bin` and `firmware/dist/version.txt` in the repo.
 * `GET /firmware/claude-desk.bin` sends `x-MD5: <hex md5>` (ESP8266httpUpdate checks it), `ETag`, `Cache-Control: no-cache`.
+* `GET /firmware/claude-desk.bin.gz` and `/firmware/claude-desk-loader.bin` (first install from a browser, see the web
+  app's `#/install` guide): same headers. All three are sent as `application/octet-stream` with
+  `Content-Disposition: attachment` and no `Content-Encoding`, so phones save them as files unchanged.
   `latest.json` is `404 {"error":"no_firmware"}` until both `claude-desk.bin` and `version.txt` exist.
   `GET /packs/<id>.bin` also sends `x-MD5`; `/packs/<id>.png` is the web app's preview strip.
 * Web app shows each desk's fw (from `up/status`) and an **Update** button when `latest.version` differs.

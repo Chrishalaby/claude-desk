@@ -206,13 +206,17 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     if (!fw) return reply.code(404).send({ error: "no_firmware" });
     return fw;
   });
-  app.get("/firmware/claude-desk.bin", async (req, reply) => {
-    const fw = firmwareInfo(cfg.firmwareDir);
-    if (!fw) return reply.code(404).send({ error: "no_firmware" });
-    const etag = `"${fw.md5}"`;
-    reply.header("cache-control", "no-cache").header("etag", etag).header("x-MD5", fw.md5);
+  const FIRMWARE_FILES = new Set(["claude-desk.bin", "claude-desk.bin.gz", "claude-desk-loader.bin"]);
+  app.get("/firmware/:file", async (req, reply) => {
+    const file = (req.params as { file: string }).file;
+    if (!FIRMWARE_FILES.has(file)) return reply.code(404).send({ error: "not_found" });
+    const blob = file === "claude-desk.bin" ? firmwareInfo(cfg.firmwareDir)?.blob : readBlob(path.join(cfg.firmwareDir, file));
+    if (!blob) return reply.code(404).send({ error: "no_firmware" });
+    const etag = `"${blob.md5}"`;
+    reply.header("cache-control", "no-cache").header("etag", etag).header("x-MD5", blob.md5)
+      .header("content-disposition", `attachment; filename="${file}"`);
     if (req.headers["if-none-match"] === etag) return reply.code(304).send();
-    return reply.type("application/octet-stream").send(fw.blob.body);
+    return reply.type("application/octet-stream").send(blob.body);
   });
   app.get("/packs/index.json", async (_req, reply) => {
     reply.header("cache-control", "no-cache");

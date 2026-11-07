@@ -96,6 +96,23 @@ input:focus, select:focus { border-color: var(--accent); }
 .auth .logo p { margin: 0; color: var(--muted); font-size: 14px; }
 .err { color: var(--danger); font-size: 14px; margin: 10px 2px 0; min-height: 20px; }
 
+/* install guide */
+.auth.guide { padding: calc(24px + env(safe-area-inset-top)) 16px 40px; }
+.auth.guide .logo { margin-bottom: 12px; }
+.step-head { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 16.5px; }
+.num { width: 26px; height: 26px; border-radius: 50%; background: var(--accent-dim); color: var(--accent); display: grid; place-items: center; font-size: 14px; font-weight: 700; flex: none; }
+.step p { margin: 10px 2px 0; font-size: 15px; }
+.step p.hint { margin: 10px 2px 0; }
+.step input { margin-top: 10px; }
+.step ol { margin: 8px 0 0; padding-left: 22px; font-size: 15px; }
+.step li + li { margin-top: 6px; }
+.step details { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; font-size: 15px; }
+.step summary { cursor: pointer; color: var(--muted); }
+a.btn { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; color: var(--text); text-align: center; white-space: normal; }
+a.btn.primary { color: #141413; }
+a.btn.block { display: flex; }
+a.btn.off { opacity: 0.4; pointer-events: none; }
+
 /* conversation */
 .msgs { flex: 1; display: flex; flex-direction: column-reverse; gap: 6px; padding: 4px 2px 12px; overflow-y: auto; }
 .bubble { max-width: 78%; padding: 8px 12px; border-radius: 16px; background: var(--panel-2); align-self: flex-start; word-wrap: break-word; overflow-wrap: anywhere; }

@@ -1,5 +1,9 @@
 # Installing claude-desk
 
+**On a phone?** Every hub has the same steps as a tap-through guide at `https://<hub>/#/install` (linked from the
+sign-in page and from Devices). It needs no computer: download the file on the phone, upload it on the desk's update
+page, then one tap connects the desk to the hub.
+
 This guide is written so a person **or an AI coding assistant** can follow it top to bottom.
 If you're an AI assistant helping someone: do the steps on their computer where you can, and ask them to do the
 physical/browser steps (marked **👤 you**). Never ask for or store their Wi-Fi password or hub password yourself —

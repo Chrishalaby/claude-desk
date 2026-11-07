@@ -51,7 +51,7 @@ async function api(method, url, body) {
     throw Object.assign(new Error(ERRORS.network), { code: "network" });
   }
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401 && url !== "/api/login") { state.me = null; if (!location.hash.startsWith("#/login")) go("#/login"); }
+  if (res.status === 401 && url !== "/api/login") { state.me = null; if (!/^#\/(login|install)/.test(location.hash)) go("#/login"); }
   if (!res.ok) throw Object.assign(new Error(ERRORS[data.error] || "Something went wrong."), { code: data.error, status: res.status });
   return data;
 }
@@ -155,7 +155,82 @@ function viewLogin() {
   $app.replaceChildren(h("div", { class: "auth" },
     h("div", { class: "logo" }, h("img", { src: "/favicon.svg", alt: "" }),
       h("div", {}, h("h1", {}, "claude-desk"), h("p", {}, "Your desk, your friends, your Claude."))),
-    form));
+    form,
+    h("p", { class: "hint", style: "text-align:center;margin-top:22px" }, "New desk? ", h("a", { href: "#/install" }, "Install guide"))));
+}
+
+// ------------------------------------------------------------------ first install guide
+const DESK_ADDR_RE = /^(\d{1,3}\.){3}\d{1,3}$|^[a-z0-9-]{1,63}\.local$/i;
+const deskHostFor = (u) => (u.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "user") + "-desk";
+function lsGet(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { return; } }
+
+async function viewInstall() {
+  const hubHost = location.host;
+  const fw = await fetch("/firmware/latest.json").then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  const addr = h("input", { inputmode: "url", autocapitalize: "none", autocomplete: "off", spellcheck: "false", placeholder: "192.168.1.107", value: lsGet("cd_desk_addr") });
+  const addrHint = h("p", { class: "hint" });
+  const updateLink = h("a", { class: "btn primary block", target: "_blank", rel: "noopener" }, "Open the desk's update page");
+  const hubLink = h("a", { class: "btn primary block", target: "_blank", rel: "noopener" }, "Connect the desk to " + hubHost);
+  const deskAddr = () => addr.value.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+  function sync() {
+    const a = deskAddr(), ok = DESK_ADDR_RE.test(a);
+    if (ok || !a) lsSet("cd_desk_addr", a);
+    for (const [el, url] of [[updateLink, `http://${a}/update`], [hubLink, `http://${a}/set?hub=${encodeURIComponent(hubHost)}`]]) {
+      if (ok) { el.href = url; el.classList.remove("off"); el.removeAttribute("aria-disabled"); }
+      else { el.removeAttribute("href"); el.classList.add("off"); el.setAttribute("aria-disabled", "true"); }
+    }
+    addrHint.textContent = ok ? "Got it. The buttons in steps 3 and 4 open this desk."
+      : a ? "Type the numbers exactly as the screen shows them, like 192.168.1.107."
+      : "The buttons in steps 3 and 4 need it.";
+  }
+  addr.addEventListener("input", sync);
+  sync();
+  const dl = (file, label, cls) => h("a", { class: cls, href: "/firmware/" + file, download: file }, label);
+  const step = (n, title, ...body) => h("div", { class: "card step" }, h("div", { class: "step-head" }, h("span", { class: "num" }, n), title), body);
+  const body = [
+    h("p", { class: "hint" }, "For a GeekMagic SmallTV Ultra (not the Pro). Everything works from your phone and you only do it once: after that, settings and updates come from this site."),
+    step(1, "Put the desk on your Wi-Fi",
+      h("p", {}, "Plug it in. Its screen names a Wi-Fi network to join (on a new GeekMagic usually ", h("b", {}, "GIFTV"), " or ", h("b", {}, "SmallTV"), ")."),
+      h("p", {}, "Join that network on your phone. If no page opens by itself, go to ", h("b", {}, "192.168.4.1"), ". Pick your home Wi-Fi and enter its password."),
+      h("p", {}, "Switch your phone back to the same home Wi-Fi. The desk's screen now shows its address. Type it here:"),
+      addr, addrHint),
+    step(2, "Download claude-desk",
+      h("p", {}, "Save this file on your phone. On an iPhone it goes to Files › Downloads."),
+      dl("claude-desk.bin.gz", "Download claude-desk" + (fw && fw.version ? " " + fw.version : ""), "btn block"),
+      h("p", { class: "hint" }, "Desk already runs claude-desk? Skip to step 4.")),
+    step(3, "Install it",
+      h("p", {}, "Open the desk's update page, choose the file you just downloaded and tap ", h("b", {}, "Update"), "."),
+      updateLink,
+      h("p", {}, "After about 30 seconds the desk restarts, shows CONNECTING…, then CLAUDE DESK with its address."),
+      h("details", {}, h("summary", {}, "The update page refused the file"),
+        h("p", {}, "Install it in two steps instead, on the same update page:"),
+        h("ol", {},
+          h("li", {}, "Upload the ", dl("claude-desk-loader.bin", "loader"), ". The desk restarts showing LOADER."),
+          h("li", {}, "Upload the ", dl("claude-desk.bin", "full firmware"), ". The desk restarts into claude-desk."))),
+      h("details", {}, h("summary", {}, "The desk shows SETUP"),
+        h("p", {}, "Join the ", h("b", {}, "claude-desk-setup"), " Wi-Fi, open 192.168.4.1 and pick your home Wi-Fi again. Then switch your phone back to it."))),
+    step(4, "Connect it to this site",
+      h("p", {}, "One tap tells the desk where your account lives."),
+      hubLink,
+      h("p", {}, "The desk restarts and shows ", h("b", {}, "PAIR THIS DESK"), " with a 6-digit code."),
+      h("p", { class: "hint" }, "If the address on the screen changed, update it in step 1.")),
+    step(5, "Pair it with your account",
+      state.me
+        ? [h("p", {}, "Enter the code on the Devices page."),
+          h("a", { class: "btn primary block", href: "#/devices" }, "Pair on Devices"),
+          h("p", { class: "hint" }, `Afterwards it's on your Wi-Fi as ${deskHostFor(state.me.username)}.local.`)]
+        : [h("p", {}, "Create your account (or sign in), open ", h("b", {}, "Devices"), " and enter the code."),
+          h("a", { class: "btn primary block", href: "#/login" }, "Create account or sign in")]),
+    step(6, "Set it up from here",
+      h("p", {}, "Location, brightness, night hours, colours and emoji style are on the desk's page under Devices, and so is the update button. To show Claude Code on the desk, open ",
+        h("a", { href: "#/claude" }, "Claude"), ".")),
+  ];
+  if (state.me) shell("Install a desk", body, { back: "#/devices" });
+  else $app.replaceChildren(h("div", { class: "auth guide" },
+    h("div", { class: "logo" }, h("img", { src: "/favicon.svg", alt: "" }),
+      h("div", {}, h("h1", {}, "Install claude-desk"), h("p", {}, "Set up a new desk from your phone"))),
+    body));
 }
 
 // ------------------------------------------------------------------ home + chat
@@ -330,7 +405,8 @@ async function viewDevices() {
         h("span", { class: "chev" }, "›"))))
     : h("div", { class: "card empty" }, "No devices yet.");
   const pairBlock = [h("h2", {}, "Pair a desk"), pair,
-    h("p", { class: "hint" }, "Power on your GeekMagic with the claude-desk firmware. It shows a 6-digit code until it's paired.")];
+    h("p", { class: "hint" }, "Power on your GeekMagic with the claude-desk firmware. It shows a 6-digit code until it's paired. New desk? ",
+      h("a", { href: "#/install" }, "Install guide"), ".")];
   fill(main, state.devices.length ? [h("h2", {}, "Your desks"), list, pairBlock] : [pairBlock, h("h2", {}, "Your desks"), list]);
 }
 
@@ -568,6 +644,10 @@ async function render() {
   state.route = hash.slice(1);
   try {
     if (!state.config) state.config = await api("GET", "/api/config").catch(() => ({}));
+    if (hash === "#/install") {
+      if (!state.me) await loadMe().catch(() => null);
+      return await viewInstall();
+    }
     if (!state.me && hash !== "#/login") {
       try { await loadMe(); } catch { return go("#/login"); }
     }

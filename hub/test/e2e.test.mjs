@@ -20,6 +20,10 @@ const md5 = (b) => crypto.createHash("md5").update(b).digest("hex");
 const FW_BIN = crypto.randomBytes(50_000);
 fs.writeFileSync(path.join(fwDir, "claude-desk.bin"), FW_BIN);
 fs.writeFileSync(path.join(fwDir, "version.txt"), "1.4.0\n");
+const FW_GZ = Buffer.concat([Buffer.from("1f8b08", "hex"), crypto.randomBytes(30_000)]);
+const FW_LOADER = crypto.randomBytes(20_000);
+fs.writeFileSync(path.join(fwDir, "claude-desk.bin.gz"), FW_GZ);
+fs.writeFileSync(path.join(fwDir, "claude-desk-loader.bin"), FW_LOADER);
 const PACK_BIN = Buffer.concat([Buffer.from("CDPK\x01\x00\x00\x00", "latin1"), crypto.randomBytes(1000)]);
 const PACK_PNG = Buffer.from("89504e470d0a1a0a", "hex");
 fs.writeFileSync(path.join(packsDir, "testpack.bin"), PACK_BIN);
@@ -549,6 +553,16 @@ test("firmware + packs served; ota/reboot cmd only to the owner's device", async
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("x-md5"), md5(FW_BIN));
   assert.equal(md5(Buffer.from(await res.arrayBuffer())), md5(FW_BIN));
+  for (const [file, body] of [["claude-desk.bin.gz", FW_GZ], ["claude-desk-loader.bin", FW_LOADER]]) {
+    res = await fetch(base + "/firmware/" + file);
+    assert.equal(res.status, 200, file);
+    assert.equal(res.headers.get("content-type"), "application/octet-stream");
+    assert.equal(res.headers.get("content-disposition"), `attachment; filename="${file}"`);
+    assert.equal(res.headers.get("content-encoding"), null, "served as a plain file, never re-encoded");
+    assert.equal(md5(Buffer.from(await res.arrayBuffer())), md5(body));
+  }
+  assert.equal((await fetch(base + "/firmware/version.txt")).status, 404);
+  assert.equal((await fetch(base + "/firmware/..%2Fhub.db")).status, 404);
 
   r = await anon.call("GET", "/packs/index.json");
   assert.deepEqual(r.body, { packs: [{ id: "testpack", name: "Test Pack", license: "MIT", size: PACK_BIN.length, md5: md5(PACK_BIN) }] });

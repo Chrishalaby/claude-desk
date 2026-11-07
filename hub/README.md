@@ -8,6 +8,8 @@ One Node/TypeScript process that does everything server-side for claude-desk (se
 * **Installers**: `/install.sh`, `/install.ps1` (hub URL baked in), `/client/hook.py`, `/client/hook.ps1`, read from `../client`.
 * **Remote desk settings** (retained `desk/<chip>/set`), **emoji packs** (`/packs/index.json`, `/packs/<id>.bin|png` from `hub/packs/`)
   and **firmware updates** (`/firmware/latest.json`, `/firmware/claude-desk.bin` from `../firmware/dist/`, `cmd` topic).
+* **First-install guide** `/#/install` (public, phone-first): downloads `/firmware/claude-desk.bin.gz` (or the loader +
+  full image), links to the desk's `http://<ip>/update`, and one tap on `http://<ip>/set?hub=<this hub>` connects it.
 
 Storage is one SQLite file in `$DATA_DIR`, next to the session secret and the broker's TLS cert. Runs as a single instance.
 
