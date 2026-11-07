@@ -140,7 +140,7 @@ a.btn.off { opacity: 0.4; pointer-events: none; }
 .dot.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; color: var(--muted); margin-top: 6px; }
 .kv b { font-weight: 500; color: var(--text); }
-.kv b.warn { color: #d9c39a; }
+.kv b.warn, p.hint.warn { color: #d9c39a; }
 .tag { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--panel-2); color: var(--muted); margin-left: 6px; vertical-align: 1px; }
 .tag.partner { background: var(--accent-dim); color: var(--accent); }
 

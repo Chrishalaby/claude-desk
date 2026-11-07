@@ -242,6 +242,9 @@ Emoji sets other than the built-in pixel art are **packs** the hub serves; a des
 * Web app shows each desk's fw (from `up/status`) and an **Update** button when `latest.version` differs.
   `POST /api/devices/<chip>/ota` / `POST /api/devices/<chip>/reboot` (owner only; `409 {"error":"offline"}` when
   the desk isn't connected, since `cmd` is not retained).
+  An update counts as running from the `ota` request until the desk reports a different `fw` (hub then records
+  `"ota": "ok: <old> → <new>"`), reports any `ota` result, or 5 minutes pass. While it runs, `ota`, `reboot` and
+  `DELETE /api/devices/<chip>` answer `409 {"error":"busy"}`, and the device view has `"otaPending": true`.
 * Button → `desk/<chip>/cmd` (not retained): `{ "cmd": "ota", "url": "...", "md5": "...", "version": "1.4.0" }`.
   Also `{ "cmd": "reboot" }`. The device disconnects MQTT, stores the download in RTC memory and restarts; right
   after Wi-Fi is up (before hello/MQTT, ~32 KB free) it downloads and flashes (ESP8266httpUpdate, md5 checked) and

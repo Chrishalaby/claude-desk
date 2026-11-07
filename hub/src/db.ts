@@ -14,6 +14,7 @@ export interface DeviceRow {
   last_seen: number | null; last_msg_id: number | null; created: number;
   settings: string | null; place: string | null; reported: string | null; reported_at: number | null;
   ota: string | null; ota_at: number | null; host: string | null; maxblk: number | null; reset: string | null;
+  ota_req_at: number | null; ota_from: string | null;
 }
 export interface FriendRow {
   a: number; b: number; rel: "friend" | "partner" | null;
@@ -83,7 +84,8 @@ export function openDb(dataDir: string): DB {
   // additive migrations
   const cols = new Set((db.prepare("PRAGMA table_info(devices)").all() as { name: string }[]).map((c) => c.name));
   for (const [col, type] of [["settings", "TEXT"], ["place", "TEXT"], ["reported", "TEXT"], ["reported_at", "INTEGER"],
-    ["ota", "TEXT"], ["ota_at", "INTEGER"], ["host", "TEXT"], ["maxblk", "INTEGER"], ["reset", "TEXT"]]) {
+    ["ota", "TEXT"], ["ota_at", "INTEGER"], ["host", "TEXT"], ["maxblk", "INTEGER"], ["reset", "TEXT"],
+    ["ota_req_at", "INTEGER"], ["ota_from", "TEXT"]]) {
     if (!cols.has(col)) db.exec(`ALTER TABLE devices ADD COLUMN ${col} ${type}`);
   }
   return db;

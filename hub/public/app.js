@@ -13,6 +13,7 @@ const ERRORS = {
   code: "The pair code has 6 digits.", not_friends: "You're not friends yet.", partner_only: "That reaction is for partners.",
   too_long: "Messages are up to 100 characters.", empty: "Type something first.", auth: "Please sign in again.",
   tz: "Unknown timezone.", network: "Can't reach the hub.",
+  busy: "An update is running. Give it a couple of minutes.", offline: "The desk is offline.",
 };
 
 const state = { me: null, config: null, friends: [], devices: [], route: "", poll: null };
@@ -63,6 +64,19 @@ function toast(msg, bad) {
   clearTimeout(toastT); toastT = setTimeout(() => (t.className = ""), 2400);
 }
 const fail = (e) => toast(e.message || String(e), true);
+
+function guarded(fn) {
+  let running = false;
+  return async (e) => {
+    e?.preventDefault?.();
+    if (running) return;
+    running = true;
+    const el = e?.currentTarget;
+    const btns = !el ? [] : el.tagName === "FORM" ? [...el.querySelectorAll("button[type=submit]")] : [el];
+    btns.forEach((b) => { b.disabled = true; });
+    try { await fn(e); } finally { running = false; btns.forEach((b) => { b.disabled = false; }); }
+  };
+}
 
 async function copy(text) {
   try { await navigator.clipboard.writeText(text); toast("Copied"); }
@@ -316,8 +330,7 @@ async function viewFriends() {
   const username = h("input", { placeholder: "username", autocapitalize: "none", spellcheck: "false", maxlength: 20 });
   const rel = h("select", {}, h("option", { value: "friend" }, "Friend"), h("option", { value: "partner" }, "Partner"));
   const add = h("form", {
-    class: "card", onsubmit: async (e) => {
-      e.preventDefault();
+    class: "card", onsubmit: guarded(async () => {
       const u = username.value.trim().toLowerCase().replace(/^@/, "");
       if (!u) return;
       try {
@@ -325,7 +338,7 @@ async function viewFriends() {
         toast(r.rel === rel.value && !r.pendingRel ? "You're connected" : "Request sent");
         viewFriends();
       } catch (ex) { fail(ex); }
-    },
+    }),
   }, h("div", { class: "inline" }, username, rel, h("button", { class: "btn primary", type: "submit" }, "Add")),
     h("p", { class: "hint", style: "margin-bottom:0" }, "Partners can also send each other ❤️ 🤗 😘 🌙 🥺."));
 
@@ -399,15 +412,14 @@ async function viewDevices() {
 function viewAddDevice() {
   const first = !state.devices.length;
   const code = h("input", { inputmode: "numeric", pattern: "[0-9 ]*", maxlength: 7, placeholder: "482913", autocomplete: "one-time-code" });
-  const name = h("input", { maxlength: 20, placeholder: "Desk", value: first ? "Desk" : "" });
+  const name = h("input", { maxlength: 20, placeholder: "Desk", value: first ? ((state.me && state.me.displayName) || "Desk").slice(0, 20) : "" });
   const pair = h("form", {
-    class: "card", onsubmit: async (e) => {
-      e.preventDefault();
+    class: "card", onsubmit: guarded(async () => {
       try {
         await api("POST", "/api/devices/pair", { code: code.value.replace(/\s/g, ""), name: name.value.trim() || "Desk" });
         toast("Paired! Your desk will switch over in a moment."); go("#/devices");
       } catch (ex) { fail(ex); }
-    },
+    }),
   }, h("label", { class: "f", style: "margin-top:0" }, "Pair code shown on the device"), code,
     h("label", { class: "f" }, "Name"), name, h("button", { class: "btn primary block", type: "submit" }, "Pair device"));
   shell(first ? "Pair your desk" : "Add a desk", [pair,
@@ -417,6 +429,7 @@ function viewAddDevice() {
 
 // ------------------------------------------------------------------ one desk: status + remote settings
 const DEFAULT_SETTINGS = { layout: 1, soft: 0, casper: 1, pack: "pixel", bday: 25, bnight: 10, nstart: 22, nend: 7 };
+const SAVE_KEYS = ["layout", "soft", "casper", "pack", "bday", "bnight", "nstart", "nend"];
 const LOW_HEAP = 8 * 1024;
 const CRASH_RE = /exception|watchdog|wdt/i;
 const hourLabel = (n) => String(n).padStart(2, "0") + ":00";
@@ -431,8 +444,9 @@ async function viewDevice(chip) {
   catch (e) { if (e.status === 404) { toast("That desk isn't yours (or was forgotten).", true); return go("#/devices"); } throw e; }
 
   const v = { ...DEFAULT_SETTINGS, ...(data.reported || {}), ...(data.settings || {}) };
-  let place = data.place || null, locChanged = false;
-  const main = shell(data.device.name || "Desk", [], nav);
+  let place = data.place || null, locChanged = false, inFlight = null;
+  const nm = () => data.device.name || "Desk";
+  const main = shell(nm(), [], nav);
 
   // ---- status card (refreshed by polling, form below is left alone)
   const status = h("div", { class: "card" });
@@ -440,10 +454,12 @@ async function viewDevice(chip) {
     const d = data.device, fw = data.firmware;
     const rep = data.reported, want = data.settings;
     const sync = !want ? null
-      : rep && rep.rev >= want.rev ? h("span", { class: "ok" }, "✓ Desk is using your latest settings")
-      : h("span", { class: "warn" }, d.online ? "Sending settings to the desk…" : "Settings will apply when the desk comes online");
+      : rep && rep.rev >= want.rev ? h("span", { class: "ok" }, `✓ ${nm()} is using your latest settings`)
+      : h("span", { class: "warn" }, d.online ? `Sending settings to ${nm()}…` : `Settings will apply when ${nm()} comes online`);
+    const updating = d.otaPending || inFlight === "ota";
+    const locked = !!inFlight || updating;
     const canUpdate = fw && d.fw && fw.version !== d.fw;
-    const otaLine = d.ota ? `Last update: ${d.ota}${d.otaAt ? " (" + ago(d.otaAt) + ")" : ""}` : null;
+    const otaLine = updating ? null : d.ota ? `Last update: ${d.ota}${d.otaAt ? " (" + ago(d.otaAt) + ")" : ""}` : null;
     fill(status,
       h("div", { class: "title" }, h("span", { class: "dot" + (d.online ? " on" : "") }), d.online ? "Online" : "Offline · last seen " + ago(d.lastSeen)),
       h("div", { class: "kv" },
@@ -457,27 +473,41 @@ async function viewDevice(chip) {
         "chip", h("b", {}, d.chip),
         rep && rep.packs ? ["packs", h("b", {}, rep.packs.join(", "))] : null),
       sync ? h("p", { class: "hint", style: "margin:10px 0 0" }, sync) : null,
+      updating ? h("p", { class: "hint warn", style: "margin:10px 0 0" },
+        `Updating${fw ? " to " + fw.version : ""}… ${nm()} restarts twice while it installs (1–3 minutes). Keep it plugged in.`) : null,
       otaLine ? h("p", { class: "hint", style: "margin:6px 0 0" }, otaLine) : null,
       h("div", { class: "actions", style: "margin-top:12px" },
-        canUpdate ? h("button", { class: "btn small primary", onclick: () => command("ota", `Update to ${fw.version}? The desk restarts when it's done (about a minute).`) }, "Update firmware") : null,
-        h("button", { class: "btn small", onclick: () => command("reboot", "Restart the desk?") }, "Restart desk"),
-        h("button", { class: "btn small", onclick: rename }, "Rename"),
-        h("button", { class: "btn small ghost danger", onclick: forget }, "Forget")));
+        updating ? h("button", { class: "btn small primary", disabled: true }, "Updating…")
+          : canUpdate ? h("button", { class: "btn small primary", disabled: locked, onclick: () => command("ota", `Update ${nm()} to ${fw.version}? It restarts twice while it installs (1–3 minutes).`) }, "Update firmware") : null,
+        h("button", { class: "btn small", disabled: locked || !d.online, onclick: () => command("reboot", `Restart ${nm()}?`) }, "Restart"),
+        h("button", { class: "btn small", disabled: !!inFlight, onclick: rename }, "Rename"),
+        h("button", { class: "btn small ghost danger", disabled: locked, onclick: forget }, "Forget")));
   }
-  async function command(cmd, question) {
-    if (!confirm(question)) return;
-    try { await api("POST", `/api/devices/${enc}/${cmd}`); toast(cmd === "ota" ? "Update sent. Keep the desk powered." : "Restarting…"); await refresh(); }
-    catch (e) { fail(e.code === "offline" ? new Error("The desk is offline.") : e); }
+  async function act(kind, fn) {
+    if (inFlight) return;
+    inFlight = kind; paintStatus();
+    try { await fn(); } catch (e) { fail(e); } finally { inFlight = null; await refresh().catch(() => paintStatus()); }
   }
-  async function rename() {
-    const n = prompt("Desk name", data.device.name || "Desk");
-    if (n == null) return;
-    try { await api("PATCH", `/api/devices/${enc}`, { name: n.trim() || "Desk" }); await refresh(); document.querySelector("header h1").textContent = data.device.name; }
-    catch (e) { fail(e); }
+  function command(cmd, question) {
+    if (inFlight || !confirm(question)) return;
+    return act(cmd, async () => {
+      await api("POST", `/api/devices/${enc}/${cmd}`);
+      toast(cmd === "ota" ? `Update sent to ${nm()}.` : `Restarting ${nm()}…`);
+    });
   }
-  async function forget() {
-    if (!confirm(`Forget "${data.device.name || chip}"? It will show a new pair code and needs to be paired again.`)) return;
-    try { await api("DELETE", `/api/devices/${enc}`); toast("Forgotten"); go("#/devices"); } catch (e) { fail(e); }
+  function rename() {
+    if (inFlight) return;
+    const n = prompt("Desk name", nm());
+    if (n == null || n.trim() === nm()) return;
+    return act("rename", async () => {
+      await api("PATCH", `/api/devices/${enc}`, { name: n.trim() || "Desk" });
+      data = await api("GET", `/api/devices/${enc}/settings`);
+      document.querySelector("header h1").textContent = nm(); syncSave();
+    });
+  }
+  function forget() {
+    if (inFlight || !confirm(`Forget "${nm()}"? It will show a new pair code and needs to be paired again.`)) return;
+    return act("forget", async () => { await api("DELETE", `/api/devices/${enc}`); toast("Forgotten"); go("#/devices"); });
   }
   async function refresh() { data = await api("GET", `/api/devices/${enc}/settings`); paintStatus(); }
   paintStatus();
@@ -486,19 +516,19 @@ async function viewDevice(chip) {
   const seg = (key, options) => {
     const el = h("div", { class: "seg seg-" + options.length });
     const paint = () => fill(el, options.map(([val, label]) =>
-      h("button", { type: "button", class: v[key] === val ? "on" : "", onclick: () => { v[key] = val; paint(); } }, label)));
+      h("button", { type: "button", class: v[key] === val ? "on" : "", onclick: () => { v[key] = val; paint(); syncSave(); } }, label)));
     paint();
     return el;
   };
   const slider = (key) => {
     const out = h("span", { class: "val" }, v[key] + "%");
     const input = h("input", { type: "range", min: 0, max: 100, step: 1, value: v[key] });
-    input.addEventListener("input", () => { v[key] = Number(input.value); out.textContent = input.value + "%"; });
+    input.addEventListener("input", () => { v[key] = Number(input.value); out.textContent = input.value + "%"; syncSave(); });
     return h("div", { class: "slider" }, input, out);
   };
   const hours = (key) => {
     const sel = h("select", {}, Array.from({ length: 24 }, (_, i) => h("option", { value: i, selected: v[key] === i }, hourLabel(i))));
-    sel.addEventListener("change", () => { v[key] = Number(sel.value); });
+    sel.addEventListener("change", () => { v[key] = Number(sel.value); syncSave(); });
     return sel;
   };
 
@@ -506,7 +536,7 @@ async function viewDevice(chip) {
   const packList = [{ id: "pixel", name: "Pixel", license: "Built in", preview: "/packs/pixel.png" }, ...data.packs];
   const packsEl = h("div", { class: "packs" });
   const paintPacks = () => fill(packsEl, packList.map((p) => h("button", {
-    type: "button", class: "pack" + (v.pack === p.id ? " on" : ""), onclick: () => { v.pack = p.id; paintPacks(); },
+    type: "button", class: "pack" + (v.pack === p.id ? " on" : ""), onclick: () => { v.pack = p.id; paintPacks(); syncSave(); },
   },
     h("div", { class: "pack-head" }, h("span", { class: "pack-name" }, p.name),
       installed.includes(p.id) ? h("span", { class: "tag" }, "on desk") : p.size ? h("span", { class: "tag" }, Math.round(p.size / 1024) + " KB") : null),
@@ -534,7 +564,7 @@ async function viewDevice(chip) {
         const label = [c.name, c.admin1, c.country].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(", ");
         return h("div", { class: "row tap", onclick: () => {
           v.lat = Math.round(c.latitude * 1e4) / 1e4; v.lon = Math.round(c.longitude * 1e4) / 1e4; place = label; locChanged = true;
-          results.style.display = "none"; q.value = ""; paintPlace();
+          results.style.display = "none"; q.value = ""; paintPlace(); syncSave();
         } }, h("div", { class: "grow" }, h("div", { class: "title" }, label),
           h("div", { class: "sub" }, `${c.latitude.toFixed(2)}, ${c.longitude.toFixed(2)}`)));
       }) : h("div", { class: "empty" }, "No places found."));
@@ -542,16 +572,29 @@ async function viewDevice(chip) {
   }
   q.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); search(); } });
 
-  const save = h("button", { class: "btn primary block", type: "submit" }, "Save to desk");
+  const save = h("button", { class: "btn primary block", type: "submit" });
+  let saving = false;
+  const formState = () => JSON.stringify(SAVE_KEYS.map((k) => v[k]));
+  let savedState = formState();
+  const changed = () => locChanged || formState() !== savedState;
+  function syncSave() {
+    save.disabled = saving || !changed();
+    save.textContent = saving ? "Saving…" : changed() ? `Save to ${nm()}` : "No changes to save";
+  }
+  syncSave();
   const form = h("form", {
     onsubmit: async (e) => {
       e.preventDefault();
-      const body = { layout: v.layout, soft: v.soft, casper: v.casper, pack: v.pack, bday: v.bday, bnight: v.bnight, nstart: v.nstart, nend: v.nend };
+      if (saving || !changed()) return;
+      const body = Object.fromEntries(SAVE_KEYS.map((k) => [k, v[k]]));
       if (locChanged) Object.assign(body, { lat: v.lat, lon: v.lon, place });
-      save.disabled = true;
-      try { data = await api("PUT", `/api/devices/${enc}/settings`, body); locChanged = false; paintStatus(); toast("Saved — your desk updates in a few seconds"); }
-      catch (ex) { fail(ex); }
-      finally { save.disabled = false; }
+      saving = true; syncSave();
+      try {
+        data = await api("PUT", `/api/devices/${enc}/settings`, body);
+        locChanged = false; savedState = formState(); paintStatus();
+        toast(`Saved — ${nm()} updates in a few seconds`);
+      } catch (ex) { fail(ex); }
+      finally { saving = false; syncSave(); }
     },
   },
     h("h2", {}, "Look"),
@@ -614,10 +657,10 @@ async function viewClaude() {
         h("button", { class: "btn small", onclick: (e) => { shown = !shown; tokenEl.textContent = shown ? token : "•".repeat(24); e.target.textContent = shown ? "Hide" : "Show"; } }, "Show"),
         h("button", { class: "btn small", onclick: () => copy(token) }, "Copy")),
       h("button", {
-        class: "btn block danger", onclick: async () => {
+        class: "btn block danger", onclick: guarded(async () => {
           if (!confirm("Regenerate the token? Computers using the old one stop updating until you re-run the install command.")) return;
           try { await api("POST", "/api/token/regenerate"); toast("New token created"); viewClaude(); } catch (e) { fail(e); }
-        },
+        }),
       }, "Regenerate token")));
 }
 
@@ -634,11 +677,10 @@ async function viewSettings() {
   fill(main, 
     h("h2", {}, "Profile"),
     h("form", {
-      class: "card", onsubmit: async (e) => {
-        e.preventDefault();
+      class: "card", onsubmit: guarded(async () => {
         try { state.me = { ...state.me, ...(await api("PATCH", "/api/me", { displayName: name.value.trim(), tz: tz.value })) }; toast("Saved"); }
         catch (ex) { fail(ex); }
-      },
+      }),
     },
       h("label", { class: "f", style: "margin-top:0" }, "Username"), h("div", { class: "code", style: "user-select:text;color:var(--text)" }, "@" + state.me.username),
       h("label", { class: "f" }, "Display name (shown on friends' desks)"), name,

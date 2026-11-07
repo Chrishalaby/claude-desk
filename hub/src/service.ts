@@ -13,6 +13,7 @@ export const PAIR_GRACE_SECS = 60;
 export const FRIEND_REACTIONS = ["wave", "thumbs", "laugh", "coffee", "fire"] as const;
 export const PARTNER_REACTIONS = ["heart", "hug", "kiss", "goodnight", "missyou"] as const;
 export const MSG_MAX = 100;
+export const OTA_WINDOW_SECS = 5 * 60;
 export type Rel = "friend" | "partner";
 
 /** Remote settings (PROTOCOL.md section 8): key -> validator returning the normalized value or undefined. */
@@ -207,7 +208,7 @@ export class Service {
 
   /** Forget: the device record is deleted; its next hello creates it again (new secret, new pair code). */
   forget(userId: number, chip: string) {
-    this.ownedDevice(userId, chip);
+    if (this.otaPending(this.ownedDevice(userId, chip))) throw new HttpError(409, "busy");
     this.db.prepare("DELETE FROM devices WHERE chip = ?").run(chip);
     if (this.broker) {
       this.broker.publish(`desk/${chip}/claude`, null);
@@ -228,7 +229,12 @@ export class Service {
       reset = COALESCE(?, reset), last_seen = ? WHERE chip = ?`)
       .run(s(j.fw, 16), s(j.ip, 45), int(j.rssi), int(j.heap), int(j.maxblk), int(j.up), s(j.reset, 40), this.now(), chip);
     const ota = s(j.ota, 80);
-    if (ota) this.db.prepare("UPDATE devices SET ota = ?, ota_at = ? WHERE chip = ?").run(ota, this.now(), chip);
+    if (ota) this.db.prepare("UPDATE devices SET ota = ?, ota_at = ?, ota_req_at = NULL WHERE chip = ?").run(ota, this.now(), chip);
+    const d = this.device(chip);
+    if (!ota && d?.ota_req_at && d.fw && d.fw !== d.ota_from) {
+      this.db.prepare("UPDATE devices SET ota = ?, ota_at = ?, ota_req_at = NULL WHERE chip = ?")
+        .run(trunc(`ok: ${d.ota_from ?? "?"} → ${d.fw}`, 80), this.now(), chip);
+    }
   }
 
   // ------------------------------------------------------------------ remote settings, packs, firmware
@@ -341,21 +347,28 @@ export class Service {
   deviceView(d: DeviceRow) {
     return {
       chip: d.chip, name: d.name, host: this.hostOf(d), fw: d.fw, ip: d.ip, rssi: d.rssi, heap: d.heap, maxblk: d.maxblk,
-      reset: d.reset, up: d.up,
+      reset: d.reset, up: d.up, otaPending: this.otaPending(d),
       lastSeen: d.last_seen, online: this.broker?.isOnline(d.chip) ?? false, ota: d.ota, otaAt: d.ota_at,
     };
   }
 
   /** desk/<chip>/cmd (not retained): ota | reboot. Only to the owner's own, connected device. */
+  otaPending(d: DeviceRow): boolean {
+    return !!d.ota_req_at && this.now() - d.ota_req_at < OTA_WINDOW_SECS;
+  }
+
   command(userId: number, chip: string, cmd: "ota" | "reboot", baseUrl?: string) {
-    this.ownedDevice(userId, chip);
+    const d = this.ownedDevice(userId, chip);
+    if (this.otaPending(d)) throw new HttpError(409, "busy");
     if (!this.broker?.isOnline(chip)) throw new HttpError(409, "offline");
     let payload: Record<string, unknown> = { cmd };
     if (cmd === "ota") {
       const fw = this.firmware(baseUrl);
       if (!fw) throw new HttpError(409, "no_firmware");
       payload = { cmd, url: fw.url, md5: fw.md5, version: fw.version };
-      this.db.prepare("UPDATE devices SET ota = ?, ota_at = ? WHERE chip = ?").run(`requested ${fw.version}`, this.now(), chip);
+      const now = this.now();
+      this.db.prepare("UPDATE devices SET ota = ?, ota_at = ?, ota_req_at = ?, ota_from = ? WHERE chip = ?")
+        .run(`requested ${fw.version}`, now, now, d.fw, chip);
     }
     this.broker.publish(`desk/${chip}/cmd`, payload, false);
     return payload;
