@@ -196,7 +196,7 @@ async function viewInstall() {
       h("p", {}, "Switch your phone back to the same home Wi-Fi. The desk's screen now shows its address. Type it here:"),
       addr, addrHint),
     step(2, "Download claude-desk",
-      h("p", {}, "Save this file on your phone. On an iPhone it goes to Files › Downloads."),
+      h("p", {}, "Save this file on your phone. On an iPhone it goes to Files › Downloads. Don't open it: you pick it in the next step."),
       dl("claude-desk.bin.gz", "Download claude-desk" + (fw && fw.version ? " " + fw.version : ""), "btn block"),
       h("p", { class: "hint" }, "Desk already runs claude-desk? Skip to step 4.")),
     step(3, "Install it",
