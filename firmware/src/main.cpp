@@ -754,6 +754,7 @@ void hubLoop() {
     if (!hubHello()) { nextHello = millis() + 60000; hubState = HUB_HELLO; return; }
     if (!mqttNet) {
       mqttNet = new BearSSL::WiFiClientSecure();
+      mqttNet->setBufferSizes(2048, 512);
       if (pubkeyPem.length()) { brokerKey = new BearSSL::PublicKey(pubkeyPem.c_str()); mqttNet->setKnownKey(brokerKey); }
       else mqttNet->setInsecure();
       mqtt.setClient(*mqttNet);

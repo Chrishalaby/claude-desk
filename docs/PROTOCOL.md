@@ -73,6 +73,9 @@ Rules:
   TLS 1.2 suites in server-preference order: `ECDHE-RSA-AES128-GCM-SHA256`, `ECDHE-RSA-CHACHA20-POLY1305`,
   `ECDHE-RSA-AES256-GCM-SHA384`, `ECDHE-RSA-AES128-SHA256`, `ECDHE-RSA-AES128-SHA` (ECDHE curves X25519 / P-256).
   No max-fragment-length extension (Node doesn't support it). Handshake records are ≤ ~1 KB each (Certificate ≈ 800 B).
+  After the handshake the broker caps every record at **2048 bytes** of plaintext (`setMaxSendFragment`), so a device
+  can use a 2 KB TLS receive buffer instead of 16 KB (the firmware uses BearSSL `setBufferSizes(2048, 512)`, ~14 KB
+  less heap). A custom `MQTT_TLS_CERT` must keep each handshake record under 2 KB: one RSA-2048 cert, no chain.
 * Device connects with: clientId = `chip`, username = `chip`, password = `secret`, keepalive 60 s, clean session.
 * ACL: a device may subscribe only to `desk/<own chip>/#` and publish only to `desk/<own chip>/up/#`.
 * Max payload the device accepts: **768 bytes**. Hub truncates fields so messages fit (cut strings end in `...`).

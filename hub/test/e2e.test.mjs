@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import tls from "node:tls";
+import net from "node:net";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import mqtt from "mqtt";
@@ -707,4 +708,41 @@ test("desk hostnames: <username>-desk, then -2, lowest free name reused", async 
   assert.equal(await pairNew("esp-c0ffe3"), "carol-desk");
   assert.deepEqual((await carol.call("GET", "/api/devices")).body.map((d) => d.host).sort(), ["carol-desk", "carol-desk-2"]);
   for (const c of ["esp-c0ffe2", "esp-c0ffe3"]) assert.equal((await carol.call("DELETE", `/api/devices/${c}`)).status, 200);
+});
+
+test("broker sends TLS records of at most 2 KB, so devices can use a small receive buffer", async () => {
+  const h = await anon.call("POST", "/api/device/hello", { chip: "esp-0dd5e1", fw: "1.4.2", secret: "" });
+  assert.equal(h.status, 200, h.text);
+  const records = [];
+  const proxy = net.createServer((down) => {
+    const up = net.connect(hub.mqttPort, "127.0.0.1");
+    down.pipe(up);
+    let buf = Buffer.alloc(0);
+    up.on("data", (d) => {
+      down.write(d);
+      buf = Buffer.concat([buf, d]);
+      while (buf.length >= 5 && buf.length >= 5 + buf.readUInt16BE(3)) {
+        records.push({ type: buf[0], len: buf.readUInt16BE(3) });
+        buf = buf.subarray(5 + buf.readUInt16BE(3));
+      }
+    });
+    for (const [a, b] of [[down, up], [up, down]]) { a.on("error", () => b.destroy()); a.on("close", () => b.destroy()); }
+  });
+  await new Promise((r) => proxy.listen(0, "127.0.0.1", r));
+  const c = await mqtt.connectAsync(`mqtts://127.0.0.1:${proxy.address().port}`, {
+    clientId: "esp-0dd5e1", username: "esp-0dd5e1", password: h.body.secret, clean: true,
+    rejectUnauthorized: false, reconnectPeriod: 0, connectTimeout: 5000, maxVersion: "TLSv1.2",
+  });
+  try {
+    await c.subscribeAsync("desk/esp-0dd5e1/#", { qos: 1 });
+    const got = new Promise((res) => c.on("message", (topic, payload) => { if (topic.endsWith("/probe")) res(payload); }));
+    hub.broker.publish("desk/esp-0dd5e1/probe", { big: "x".repeat(6000) }, false);
+    assert.equal(JSON.parse((await got).toString()).big.length, 6000);
+    const data = records.filter((r) => r.type === 23);
+    assert.ok(records.every((r) => r.len <= 2048 + 64), `record sizes ${records.map((r) => r.len)}`);
+    assert.ok(data.filter((r) => r.len > 1500).length >= 3, `6 KB publish split into 2 KB records: ${data.map((r) => r.len)}`);
+  } finally {
+    c.end(true);
+    proxy.close();
+  }
 });

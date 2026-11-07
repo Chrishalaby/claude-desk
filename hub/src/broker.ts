@@ -5,6 +5,7 @@ import { TLS12_CIPHERS, type TlsMaterial } from "./tls.js";
 
 export const CHIP_RE = /^esp-[0-9a-f]{1,8}$/;
 export const MAX_DEVICE_PAYLOAD = 768;
+export const MAX_TLS_RECORD = 2048;
 const MAX_UP_PAYLOAD = 1024;
 
 export interface BrokerHooks {
@@ -101,6 +102,7 @@ export async function startBroker(port: number, host: string, mat: TlsMaterial, 
     },
     (socket) => {
       socket.setNoDelay(true);
+      socket.setMaxSendFragment(MAX_TLS_RECORD);
       socket.on("error", () => {});
       aedes.handle(socket);
     },

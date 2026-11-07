@@ -29,9 +29,10 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 - Panel looks best with gamma preset 2 (`gtab=2`), sharp text on, vivid colours, ~25% day brightness; cards must be
   pure black (dark greys tint green in RGB565).
 - RAM is the constraint (~80 KB total; ~41 KB static). One BearSSL TLS session ≈ 25 KB → the firmware never holds two:
-  hello (HTTPS) runs before MQTT; pack downloads/OTA stop MQTT first. **TLS heap on the real device is still unmeasured**
-  — check `heap` in `up/status` / `/info` after the first hub connection. Plan B if too tight: plain MQTT (would need a
-  hub listener + doc change).
+  hello (HTTPS) runs before MQTT; pack downloads/OTA stop MQTT first. Measured on the real desk (1.4.1, default 16 KB
+  BearSSL RX buffer): ~32 KB free before the hub link, **~2.7 KB free while MQTT/TLS is up** — weather fetches failed.
+  1.4.2 uses a 2 KB RX buffer for MQTT (hub caps TLS records at 2 KB, PROTOCOL.md §3). Check `heap` in `/info` or
+  `up/status` after changes. Plan B if still too tight: plain MQTT (would need a hub listener + doc change).
 - Factory firmware's update page only accepts ≈528 KB → first install uses `claude-desk.bin.gz` or the loader route.
 
 ## Owner's setup / current state (Nov 2026)
