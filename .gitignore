@@ -1,0 +1,8 @@
+node_modules/
+hub/dist/
+hub/data/
+.env
+firmware/.pio/
+*.ppm
+__pycache__/
+.DS_Store

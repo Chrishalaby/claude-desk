@@ -1,0 +1,105 @@
+# claude-desk hub
+
+One Node/TypeScript process that does everything server-side for claude-desk (see `../docs/PROTOCOL.md`):
+
+* **Web app + REST API** on `$PORT`: accounts, friends/partners, messages, device pairing, hook tokens.
+* **Hook endpoint** `POST /api/hook`: runs the per-user Claude Code state machine and publishes the status to every desk the user owns.
+* **MQTT broker over TLS** on `$MQTT_PORT` (aedes): devices connect here; per-chip ACL; retained `claude`, `msg`, `cfg` topics.
+* **Installers**: `/install.sh`, `/install.ps1` (hub URL baked in), `/client/hook.py`, `/client/hook.ps1`, read from `../client`.
+
+Storage is one SQLite file in `$DATA_DIR`, next to the session secret and the broker's TLS cert. Runs as a single instance.
+
+## Run locally
+
+```bash
+cd hub
+npm install
+npm test                      # build + end-to-end test (HTTP, MQTT/TLS, state machine, ACL)
+HUB_INVITE_CODE=dev npm run dev   # http://localhost:3000, MQTT/TLS on :8883, data in ./data
+```
+
+Try it without a device:
+
+```bash
+curl -s localhost:3000/api/device/hello -H 'content-type: application/json' \
+  -d '{"chip":"esp-1a2b3c","fw":"dev","secret":""}'
+# -> secret + pairCode; enter the code on the Devices page, then e.g.:
+npx mqtt sub -h localhost -p 8883 -l mqtts --insecure -i esp-1a2b3c -u esp-1a2b3c -P <secret> -t 'desk/esp-1a2b3c/#' -v
+```
+
+## Deploy on Railway
+
+The hub serves the client installers from `../client`, so it is built from the **repository root** with `hub/Dockerfile`
+(a service whose Root Directory is `hub` can't see `../client`).
+
+1. **New service → GitHub repo** (this repo). Leave *Root Directory* empty.
+2. *Settings → Config-as-code → Railway config file*: `/hub/railway.json`
+   (Dockerfile builder with `hub/Dockerfile`, one replica, health check `/healthz`, redeploys on `hub/**` or `client/**` changes).
+3. **Add a volume** mounted at `/data`.
+4. **Variables**:
+   * `DATA_DIR=/data` (the Dockerfile sets it too)
+   * `HUB_INVITE_CODE=<something friends will type once>`
+   * optional `PUBLIC_URL=https://<your domain>` if you use a custom domain (default: `https://$RAILWAY_PUBLIC_DOMAIN`)
+5. *Settings → Networking*:
+   * **Generate Domain** (HTTP). Railway routes it to `$PORT`.
+   * **TCP Proxy** → target port **8883**. Railway then sets `RAILWAY_TCP_PROXY_DOMAIN` / `RAILWAY_TCP_PROXY_PORT`, which the hub hands to devices
+     (override with `MQTT_PUBLIC_HOST` / `MQTT_PUBLIC_PORT`). Redeploy once after enabling it so the variables are picked up.
+6. Deploy. The log shows the URL, the MQTT host:port and the cert fingerprints. Open the domain, create your account with the invite code.
+
+Keep it at **one replica** (SQLite + in-process broker). The volume keeps the DB, the session secret and the MQTT cert; if you lose it,
+devices pinned to the old key must re-run hello (they do on every boot) and everyone re-pairs.
+
+Alternative without Docker: Root Directory `hub` works with Railway's Node builder (`npm run build` / `npm start`, Node ≥ 22), but then
+`/install.sh` & co. return 404 unless you copy `client/` into `hub/client/` (the hub also looks there) or set `CLIENT_DIR`.
+
+## Environment
+
+| variable | default | |
+|---|---|---|
+| `PORT` | `3000` | HTTP (set by Railway) |
+| `MQTT_PORT` | `8883` | MQTT/TLS listen port (TCP Proxy target) |
+| `DATA_DIR` | `./data` | SQLite DB, `mqtt-cert.pem`, `mqtt-key.pem` |
+| `HUB_INVITE_CODE` | – | required to register; unset = open registration (a warning is logged) |
+| `PUBLIC_URL` | `https://$RAILWAY_PUBLIC_DOMAIN`, else the request's host | baked into installers and `cfg.hub` |
+| `MQTT_PUBLIC_HOST` / `MQTT_PUBLIC_PORT` | `RAILWAY_TCP_PROXY_DOMAIN` / `_PORT`, else request host / `MQTT_PORT` | sent to devices in hello |
+| `SESSION_SECRET` | generated, stored in the DB | cookie signing |
+| `MQTT_TLS_CERT` / `MQTT_TLS_KEY` | self-signed RSA-2048 in `DATA_DIR` | PEM, `\n` escapes allowed. Use RSA-2048 (ESP8266). |
+| `CLIENT_DIR` | `../client` | installer + hook sources |
+| `HOST` | `0.0.0.0` | bind address |
+| `HUB_QUIET` | – | `1` silences the startup log |
+
+## API (web app)
+
+Session cookie (`cd_sid`, httpOnly, SameSite=Lax, signed). JSON in/out, errors as `{"error":"code"}`.
+
+| | |
+|---|---|
+| `GET /api/config` | `{inviteRequired, hub}` |
+| `POST /api/register` | `{username, password, displayName?, invite?, tz?}` |
+| `POST /api/login` / `POST /api/logout` | `{username, password, tz?}` (tz updates the user's timezone until they set one by hand) |
+| `GET /api/me` / `PATCH /api/me` | `{displayName?, tz?}`; `GET` also returns the current Claude view |
+| `GET /api/token` / `POST /api/token/regenerate` | hook token |
+| `GET /api/devices`, `POST /api/devices/pair {code, name}`, `PATCH /api/devices/:chip {name}`, `DELETE /api/devices/:chip` | |
+| `GET /api/friends`, `POST /api/friends {username, rel}`, `POST /api/friends/:u/accept`, `POST /api/friends/:u/decline`, `DELETE /api/friends/:u` | decline also cancels your own outgoing request |
+| `POST /api/messages {to, kind, text?, reaction?}`, `GET /api/messages?with=<u>` | |
+| `POST /api/device/hello`, `POST /api/hook` | device / hook client, see PROTOCOL.md |
+
+Limits: login 20/min per IP and 10/min per username, register 10/h per IP, hello 30/min per IP, pairing 10 tries per 10 min per user,
+messages 10/min per sender, hook 600/min per user. Bodies ≤ 16 KB (hook 8 KB).
+
+## Layout
+
+```
+src/main.ts      entry (env → startHub, graceful shutdown)
+src/hub.ts       wires DB, TLS, broker, HTTP, timers
+src/config.ts    env parsing
+src/db.ts        SQLite schema
+src/state.ts     Claude Code state machine (port of cdesk.py State/view)
+src/service.ts   devices/pairing, status publishing, friends, messages
+src/routes.ts    HTTP routes, sessions, rate limits, installers, static files
+src/broker.ts    aedes on a Node TLS server, auth + ACL
+src/tls.ts       cert load/generate, fingerprints, cipher list
+src/util.ts      scrypt, tokens, rate limiter, truncation, time formatting
+public/          web app (vanilla JS/CSS, no build)
+test/            end-to-end test (node:test + mqtt.js)
+```
