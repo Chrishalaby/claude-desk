@@ -7,6 +7,8 @@
 #define pgm_read_byte(p) (*(const uint8_t *)(p))
 #define memcpy_P memcpy
 #define pgm_read_ptr(p) (*(const void *const *)(p))
+#define strcmp_P strcmp
+#define strlen_P strlen
 #endif
 
 struct AAGlyph {

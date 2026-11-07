@@ -5,6 +5,7 @@
 #include "casper.h"
 #include "reactions.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // palette
@@ -26,6 +27,7 @@ uint16_t COL_GREY   = c565(130, 136, 148);
 
 int uiLayout = 0;
 char uiUnread[24] = "";
+char uiNext[40] = "";
 bool uiLocationSet = true;
 bool (*uiPackEntry)(int idx, bool small, EmojiHdr &h) = nullptr;
 void (*uiPackRead)(uint32_t off, uint8_t *buf, int n) = nullptr;
@@ -218,6 +220,21 @@ void uiClockDate(int wday, int mday, int mon, const Weather &w) {
     gLine(16, 38, 23, 44, 1, BG); gLine(23, 44, 30, 38, 1, BG);
     char m[40]; snprintf(m, sizeof m, "from %s", uiUnread);
     tBox(F_S, m, 36, 138, 48, AL_LEFT, COL_ORANGE, BG);
+    return;
+  }
+  if (uiNext[0]) {
+    char nx[40];
+    strcpy(nx, uiNext);
+    if (uiLayout) {
+      tBox(F_M, s, 14, 160, 28, AL_LEFT, COL_GREY, BG);
+      gFill(14, 34, 160, 18, BG);
+      tFit(F_S, nx, sizeof nx, 160);
+      tBox(F_S, nx, 14, 160, 48, AL_LEFT, COL_TEAL, BG);
+    } else {
+      tBox(F_M, s, 14, 130, 32, AL_LEFT, COL_GREY, BG);
+      tFit(F_S, nx, sizeof nx, 82);
+      tBox(F_S, nx, 144, 82, 30, AL_RIGHT, COL_TEAL, BG);
+    }
     return;
   }
   if (uiLayout) {
@@ -493,6 +510,47 @@ void uiReactionCard(const char *from, bool partner, int idx, const char *when) {
   tBox(F_M, REACT_CAPTION[idx], 0, SCR_W, 180, AL_CENTER, WHITE, CARD_BG);
   tBox(F_S, when, 0, SCR_W, 226, AL_CENTER, DIM, CARD_BG);
   blitReact(idx, 80, 32, 0);
+}
+
+static const char COLOR_NAMES[] PROGMEM = "orange\0green\0red\0blue\0purple\0pink\0yellow\0white\0";
+static const uint8_t COLOR_RGB[] PROGMEM = {255, 140, 66, 110, 200, 120, 240, 90, 80, 100, 160, 255,
+                                            180, 130, 255, 255, 150, 172, 255, 208, 62, 255, 255, 255};
+
+uint16_t uiColor(const char *s) {
+  if (!s || !s[0]) return COL_TEAL;
+  if (s[0] == '#' && strlen(s) == 7) {
+    long v = strtol(s + 1, nullptr, 16);
+    return c565((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
+  }
+  const char *p = COLOR_NAMES;
+  for (int i = 0; pgm_read_byte(p); i++) {
+    if (!strcmp_P(s, p)) return c565(pgm_read_byte(COLOR_RGB + i * 3), pgm_read_byte(COLOR_RGB + i * 3 + 1), pgm_read_byte(COLOR_RGB + i * 3 + 2));
+    p += strlen_P(p) + 1;
+  }
+  return COL_TEAL;
+}
+
+void uiNotice(const char *src, const char *title, const char *text, int icon, uint16_t color) {
+  gFill(0, 0, SCR_W, SCR_H, CARD_BG);
+  char t[48], s[24], lines[3][64];
+  strncpy(t, title, sizeof t - 1); t[sizeof t - 1] = 0;
+  strncpy(s, src, sizeof s - 1); s[sizeof s - 1] = 0;
+  const AAFont &tf = tWidth(F_L, t) <= 224 ? F_L : F_M;
+  tFit(tf, t, sizeof t, 224);
+  tFit(F_S, s, sizeof s, 224);
+  if (icon >= 0 && icon < REACT_COUNT) {
+    blitReact(icon, 80, 32, 0);
+    tBox(tf, t, 0, SCR_W, 150, AL_CENTER, color, CARD_BG);
+    int n = wrap(F_M, text, lines, 1, 224);
+    if (n) tBox(F_M, lines[0], 0, SCR_W, 180, AL_CENTER, WHITE, CARD_BG);
+    tBox(F_S, s, 0, SCR_W, 226, AL_CENTER, DIM, CARD_BG);
+    return;
+  }
+  tBox(F_S, s, 0, SCR_W, 40, AL_CENTER, color, CARD_BG);
+  gFill(100, 50, 40, 3, color);
+  tBox(tf, t, 0, SCR_W, 98, AL_CENTER, color, CARD_BG);
+  int n = wrap(F_M, text, lines, 3, 224);
+  for (int i = 0; i < n; i++) tBox(F_M, lines[i], 0, SCR_W, 140 + i * 28, AL_CENTER, WHITE, CARD_BG);
 }
 
 // small floating hearts / stars around partner reactions

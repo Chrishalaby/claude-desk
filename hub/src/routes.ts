@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Config } from "./config.js";
 import type { DB, UserRow } from "./db.js";
 import { CHIP_RE } from "./broker.js";
+import type { Apps } from "./apps.js";
 import { HttpError, type Service } from "./service.js";
 import { firmwareInfo, PACK_ID_RE, readBlob } from "./files.js";
 import { charLen, hashPassword, isValidTz, oneLine, randomHex, RateLimiter, safeEqual, sha256, trunc, verifyPassword } from "./util.js";
@@ -18,7 +19,7 @@ declare module "fastify" {
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 
-export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: Config) {
+export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: Config, apps: Apps) {
   const nowMs = () => cfg.now() * 1000;
   const loginIp = new RateLimiter(20, 60_000, nowMs);
   const loginUser = new RateLimiter(10, 60_000, nowMs);
@@ -244,6 +245,98 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     if (!svc.hookAllowed(u.id)) return reply.code(429).send({ error: "rate_limited" });
     const b = req.body;
     if (b && typeof b === "object" && !Array.isArray(b)) svc.hookEvent(u, b as Record<string, unknown>);
+    return { ok: true };
+  });
+
+  const notifyIp = new RateLimiter(120, 60_000, nowMs);
+  const appsUser = new RateLimiter(30, 60_000, nowMs);
+  const feedUser = new RateLimiter(10, 600_000, nowMs);
+  const notify = async (req: FastifyRequest, reply: FastifyReply, token: string) => {
+    if (!notifyIp.take(req.ip)) return reply.code(429).send({ error: "rate_limited" });
+    const u = svc.userByHookToken(token);
+    if (!u) return reply.code(401).send({ error: "token" });
+    const b = req.body;
+    const card = typeof b === "string" ? { text: b } : b && typeof b === "object" && !Array.isArray(b) ? (b as Record<string, unknown>) : {};
+    const q = req.query as Record<string, unknown>;
+    for (const k of ["title", "text", "icon", "color", "secs"]) if (card[k] === undefined && typeof q[k] === "string") card[k] = q[k];
+    if (!str(card.title).trim() && !str(card.text).trim() && typeof card.text !== "number") return reply.code(400).send({ error: "empty" });
+    const r = svc.sendCard(u.id, { src: card.src ?? "Webhook", ...card });
+    if (r.limited) return reply.code(429).send({ error: "rate_limited" });
+    return { ok: true, devices: r.devices };
+  };
+  app.post("/api/notify", { bodyLimit: 4096 }, async (req, reply) => {
+    const h = req.headers.authorization ?? "";
+    return notify(req, reply, h.startsWith("Bearer ") ? h.slice(7).trim() : "");
+  });
+  app.post("/api/notify/:token", { bodyLimit: 4096 }, async (req, reply) => notify(req, reply, (req.params as { token: string }).token));
+
+  const appsLimit = async (req: FastifyRequest) => {
+    await auth(req);
+    if (req.method !== "GET" && !appsUser.take(String(req.user!.id))) throw new HttpError(429, "rate_limited");
+  };
+  app.get("/api/apps", { preHandler: appsLimit }, async (req) => apps.view(req.user!.id, hubUrl(req)));
+  app.post("/api/apps/test", { preHandler: appsLimit }, async (req) => {
+    const r = svc.sendCard(req.user!.id, { src: "claude-desk", title: "It works!", text: "This is how notifications look on your desk.", icon: "wave", color: "teal" });
+    if (r.limited) throw new HttpError(429, "rate_limited");
+    return { ok: true, devices: r.devices };
+  });
+  app.get("/api/timers", { preHandler: appsLimit }, async (req) => apps.listTimers(req.user!.id));
+  app.post("/api/timers", { preHandler: appsLimit }, async (req) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    return apps.addTimer(req.user!.id, b.minutes, b.label);
+  });
+  app.delete("/api/timers/:id", { preHandler: appsLimit }, async (req) => {
+    apps.cancelTimer(req.user!.id, Number((req.params as { id: string }).id));
+    return { ok: true };
+  });
+  app.post("/api/apps/calendar/feeds", { preHandler: appsLimit }, async (req) => {
+    if (!feedUser.take(String(req.user!.id))) throw new HttpError(429, "rate_limited");
+    await apps.addFeed(req.user!.id, ((req.body ?? {}) as Record<string, unknown>).url);
+    return apps.view(req.user!.id, hubUrl(req)).calendar;
+  });
+  app.delete("/api/apps/calendar/feeds/:i", { preHandler: appsLimit }, async (req) => {
+    apps.removeFeed(req.user!.id, Number((req.params as { i: string }).i));
+    return apps.view(req.user!.id, hubUrl(req)).calendar;
+  });
+  app.patch("/api/apps/calendar", { preHandler: appsLimit }, async (req) => {
+    apps.setCalendarOptions(req.user!.id, (req.body ?? {}) as Record<string, unknown>);
+    return apps.view(req.user!.id, hubUrl(req)).calendar;
+  });
+  app.put("/api/apps/github", { preHandler: appsLimit }, async (req) => {
+    await apps.connectGithub(req.user!.id, ((req.body ?? {}) as Record<string, unknown>).token);
+    return apps.view(req.user!.id, hubUrl(req)).github;
+  });
+  app.patch("/api/apps/github", { preHandler: appsLimit }, async (req) => {
+    apps.setGithubReasons(req.user!.id, ((req.body ?? {}) as Record<string, unknown>).reasons);
+    return apps.view(req.user!.id, hubUrl(req)).github;
+  });
+  app.delete("/api/apps/github", { preHandler: appsLimit }, async (req) => {
+    apps.disconnectGithub(req.user!.id);
+    return { ok: true };
+  });
+  app.put("/api/apps/stocks", { preHandler: appsLimit }, async (req) => {
+    apps.setStocks(req.user!.id, ((req.body ?? {}) as Record<string, unknown>).items);
+    return apps.view(req.user!.id, hubUrl(req)).stocks;
+  });
+
+  const wifiChip = (req: FastifyRequest) => {
+    const chip = (req.params as { chip: string }).chip;
+    if (!CHIP_RE.test(chip)) throw new HttpError(404, "not_found");
+    return chip;
+  };
+  app.get("/api/devices/:chip/wifi", { preHandler: auth }, async (req) =>
+    svc.wifiView(svc.ownedDevice(req.user!.id, wifiChip(req))) ?? { saved: [], current: "", rssi: null, visible: [], scannedAt: null, at: null });
+  app.post("/api/devices/:chip/wifi/scan", { preHandler: appsLimit }, async (req) => {
+    svc.wifiCommand(req.user!.id, wifiChip(req), "wifi_scan");
+    return { ok: true };
+  });
+  app.post("/api/devices/:chip/wifi", { preHandler: appsLimit }, async (req) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    svc.wifiCommand(req.user!.id, wifiChip(req), "wifi_add", str(b.ssid), str(b.pass));
+    return { ok: true };
+  });
+  app.post("/api/devices/:chip/wifi/remove", { preHandler: appsLimit }, async (req) => {
+    svc.wifiCommand(req.user!.id, wifiChip(req), "wifi_del", str(((req.body ?? {}) as Record<string, unknown>).ssid));
     return { ok: true };
   });
 

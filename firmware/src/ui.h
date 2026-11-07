@@ -28,6 +28,9 @@ void uiCardCasper(uint32_t frame);
 void uiCasperZ(int casperX, uint32_t t);   // rising z's above sleeping Casper   // little hop on the DONE card
 // hub features
 extern char uiUnread[24];             // non-empty: show an envelope + sender on the clock
+extern char uiNext[40];
+void uiNotice(const char *src, const char *title, const char *text, int icon, uint16_t color);
+uint16_t uiColor(const char *s);
 extern bool uiLocationSet;
 // reaction images: a downloaded pack when set (main.cpp), else the built-in pixel set
 struct EmojiHdr { uint8_t w, h; uint16_t pal[16]; uint32_t off; };

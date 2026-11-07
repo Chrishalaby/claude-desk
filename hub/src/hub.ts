@@ -7,6 +7,7 @@ import { startBroker, type Broker } from "./broker.js";
 import type { Config } from "./config.js";
 import { kvGet, kvSet, openDb } from "./db.js";
 import { registerRoutes } from "./routes.js";
+import { Apps } from "./apps.js";
 import { Service } from "./service.js";
 import { loadTls, type TlsMaterial } from "./tls.js";
 import { randomHex } from "./util.js";
@@ -18,6 +19,7 @@ export interface Hub {
   service: Service;
   broker: Broker;
   tick(): void;
+  apps: Apps;
   close(): Promise<void>;
 }
 
@@ -43,20 +45,23 @@ export async function startHub(cfg: Config): Promise<Hub> {
     onUp: (chip, sub, payload) => {
       if (sub === "status") svc.deviceStatus(chip, payload);
       else if (sub === "settings") svc.deviceSettingsReport(chip, payload);
+      else if (sub === "wifi") svc.deviceWifi(chip, payload);
     },
     log,
   });
   svc.broker = broker;
   svc.republishAll();
+  const apps = new Apps(db, svc, cfg, log);
 
   const app = Fastify({ logger: false, trustProxy: true, bodyLimit: 16 * 1024 });
   await app.register(cookie, { secret: sessionSecret });
-  registerRoutes(app, svc, db, cfg);
+  registerRoutes(app, svc, db, cfg, apps);
   await app.listen({ port: cfg.httpPort, host: cfg.httpHost });
   const httpPort = (app.server.address() as AddressInfo).port;
 
   const timers = [
     setInterval(() => { try { svc.tick(); } catch (e) { log("tick failed", (e as Error).message); } }, 1000),
+    setInterval(() => { apps.tick().catch((e) => log("apps tick failed", (e as Error).message)); }, 5000),
     setInterval(() => { try { svc.housekeeping(); } catch (e) { log("housekeeping failed", (e as Error).message); } }, 3600_000),
   ];
   for (const t of timers) t.unref();
@@ -78,6 +83,7 @@ export async function startHub(cfg: Config): Promise<Hub> {
     service: svc,
     broker,
     tick: () => svc.tick(),
+    apps,
     async close() {
       for (const t of timers) clearInterval(t);
       await app.close();

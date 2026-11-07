@@ -96,7 +96,6 @@ input:focus, select:focus { border-color: var(--accent); }
 .auth .logo p { margin: 0; color: var(--muted); font-size: 14px; }
 .err { color: var(--danger); font-size: 14px; margin: 10px 2px 0; min-height: 20px; }
 
-/* install guide */
 .auth.guide { padding: calc(24px + env(safe-area-inset-top)) 16px 40px; }
 .auth.guide .logo { margin-bottom: 12px; }
 .step-head { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 16.5px; }
@@ -163,3 +162,21 @@ a.btn.off { opacity: 0.4; pointer-events: none; }
 .pack-lic { font-size: 11px; color: var(--muted); }
 .place { display: flex; gap: 8px; align-items: center; font-weight: 550; }
 .results { margin-top: 10px; }
+
+.chips { display: flex; gap: 6px; overflow-x: auto; padding: 2px 2px 6px; scrollbar-width: none; }
+.chips::-webkit-scrollbar { display: none; }
+.chip { flex: none; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 99px; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+label.check { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 15px; cursor: pointer; }
+.help { margin: 8px 0 0; padding-left: 20px; color: var(--muted); font-size: 14px; }
+.help li + li { margin-top: 4px; }
+details.more { margin-top: 10px; font-size: 14px; }
+details.more summary { cursor: pointer; color: var(--muted); }
+details.more input { margin-top: 8px; }
+.mkt { margin-top: 12px; }
+.mkt + .mkt { border-top: 1px solid var(--line); padding-top: 12px; }
+.mkt-row { display: flex; gap: 8px; align-items: center; }
+.mkt-row + .mkt-row { margin-top: 8px; }
+.mkt-row input { flex: 1; min-width: 0; }
+.mkt .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
+.row.picked { background: var(--accent-dim); }
+form > input[type=password] { margin-top: 8px; }

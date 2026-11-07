@@ -12,6 +12,9 @@ import mqtt from "mqtt";
 import { startHub } from "../dist/hub.js";
 import { configFromEnv } from "../dist/config.js";
 import { deskHostBase } from "../dist/service.js";
+import { eventsFromIcs } from "../dist/apps.js";
+import { isPrivateAddress } from "../dist/net.js";
+import http from "node:http";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cdesk-hub-"));
@@ -34,6 +37,42 @@ fs.writeFileSync(path.join(packsDir, "index.json"), JSON.stringify({ packs: [
   { id: "ghost", name: "No file", license: "", size: 1, md5: "x" },
 ] }));
 let clock = Math.floor(Date.now() / 1000);
+
+const GH_TOKEN = "ghp_" + "a".repeat(36);
+const GH_LAST_MODIFIED = "Sat, 07 Nov 2026 10:00:00 GMT";
+let fxPrice = 240, fxGhUpdated = 0;
+const icsTime = (t) => new Date(t * 1000).toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
+const icsFor = (now) => ["BEGIN:VCALENDAR", "VERSION:2.0",
+  "BEGIN:VEVENT", "UID:standup", `DTSTART:${icsTime(now + 300)}`, `DTEND:${icsTime(now + 1200)}`, "SUMMARY:Standup", "LOCATION:Room 4", "END:VEVENT",
+  "BEGIN:VEVENT", "UID:later", `DTSTART:${icsTime(now + 3 * 3600)}`, `DTEND:${icsTime(now + 4 * 3600)}`, "SUMMARY:Later thing", "END:VEVENT",
+  "BEGIN:VEVENT", "UID:allday", "DTSTART;VALUE=DATE:20261107", "SUMMARY:Holiday", "END:VEVENT",
+  "END:VCALENDAR"].join("\r\n");
+const fixtures = http.createServer((req, res) => {
+  const u = new URL(req.url, "http://fixtures");
+  const json = (code, body) => { res.statusCode = code; res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); };
+  if (u.pathname === "/cal.ics") { res.setHeader("content-type", "text/calendar"); return res.end(icsFor(clock)); }
+  if (u.pathname === "/not-ics") return res.end("hello");
+  if (u.pathname === "/gh/user") return req.headers.authorization === `Bearer ${GH_TOKEN}` ? json(200, { login: "dora-gh" }) : json(401, {});
+  if (u.pathname === "/gh/notifications") {
+    if (req.headers["if-modified-since"] === GH_LAST_MODIFIED) { res.statusCode = 304; return res.end(); }
+    res.setHeader("last-modified", GH_LAST_MODIFIED);
+    res.setHeader("x-poll-interval", "60");
+    const at = new Date(fxGhUpdated * 1000).toISOString();
+    return json(200, [
+      { id: "1", reason: "review_requested", updated_at: at, subject: { title: "Add calendar" }, repository: { full_name: "dora/desk" } },
+      { id: "2", reason: "subscribed", updated_at: at, subject: { title: "Noise" }, repository: { full_name: "dora/desk" } },
+    ]);
+  }
+  if (u.pathname.startsWith("/q/v8/finance/chart/")) {
+    const sym = decodeURIComponent(u.pathname.split("/").pop());
+    if (sym !== "AAPL") return json(404, {});
+    return json(200, { chart: { result: [{ meta: { regularMarketPrice: fxPrice, chartPreviousClose: 240, currency: "USD" } }] } });
+  }
+  res.statusCode = 404;
+  res.end();
+});
+await new Promise((r) => fixtures.listen(0, "127.0.0.1", r));
+const fx = `http://127.0.0.1:${fixtures.address().port}`;
 const TZ = "Asia/Beirut";
 const hhmm = (t) => new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(t * 1000));
 
@@ -45,6 +84,7 @@ function makeConfig() {
     inviteCode: "letmein", sessionSecret: null, tlsCert: null, tlsKey: null,
     clientDir: path.join(here, "..", "..", "client"),
     firmwareDir: fwDir, packsDir,
+    githubApi: fx + "/gh", quotesApi: fx + "/q", allowPrivateFetch: true,
     now: () => clock, log: false,
   };
 }
@@ -124,6 +164,7 @@ before(startIt);
 after(async () => {
   for (const c of clients) c.end(true);
   await hub?.close();
+  fixtures.close();
   for (const d of [dataDir, fwDir, packsDir]) fs.rmSync(d, { recursive: true, force: true });
 });
 
@@ -179,11 +220,9 @@ test("friends: request, accept, mutual request connects, decline, one friend typ
   assert.equal(r.status, 200);
   assert.equal(r.body.rel, "friend");
 
-  // carol -> alice, then alice -> carol: the second request accepts the first
   await carol.call("POST", "/api/friends", { username: "alice", rel: "partner" });
   r = await alice.call("POST", "/api/friends", { username: "carol" });
   assert.deepEqual([r.body.rel, r.body.pendingRel], ["friend", null]);
-  // asking again once connected changes nothing
   r = await carol.call("POST", "/api/friends", { username: "alice" });
   assert.deepEqual([r.body.rel, r.body.pendingRel], ["friend", null]);
   r = await alice.call("GET", "/api/friends");
@@ -465,7 +504,6 @@ test("messages: text + reactions, retained delivery, every reaction for friends,
   assert.equal(m.json.reaction, "heart");
   devB.client = b2;
 
-  // any friend can send any reaction; unknown ones are refused
   r = await carol.call("POST", "/api/messages", { to: "alice", kind: "reaction", reaction: "heart" });
   assert.equal(r.status, 200, r.text);
   m = await devA.client.waitFor((x) => x.topic === `desk/${devA.chip}/msg` && x.json.reaction === "heart", "heart to alice");
@@ -770,4 +808,156 @@ test("broker sends TLS records of at most 2 KB, so devices can use a small recei
     c.end(true);
     proxy.close();
   }
+});
+
+test("calendar parsing: time zones, daylight saving, repeats, exceptions, all-day", () => {
+  const ics = ["BEGIN:VCALENDAR", "VERSION:2.0",
+    "BEGIN:VTIMEZONE", "TZID:Europe/Athens",
+    "BEGIN:STANDARD", "DTSTART:19701025T040000", "TZOFFSETFROM:+0300", "TZOFFSETTO:+0200", "RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU", "END:STANDARD",
+    "BEGIN:DAYLIGHT", "DTSTART:19700329T030000", "TZOFFSETFROM:+0200", "TZOFFSETTO:+0300", "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU", "END:DAYLIGHT",
+    "END:VTIMEZONE",
+    "BEGIN:VEVENT", "UID:daily", "DTSTART;TZID=Europe/Athens:20261020T100000", "DTEND;TZID=Europe/Athens:20261020T103000",
+    "RRULE:FREQ=DAILY", "EXDATE;TZID=Europe/Athens:20261026T100000", "SUMMARY:Standup", "END:VEVENT",
+    "BEGIN:VEVENT", "UID:once", "DTSTART:20261024T150000Z", "DTEND:20261024T160000Z", "SUMMARY:Dentist", "END:VEVENT",
+    "BEGIN:VEVENT", "UID:allday", "DTSTART;VALUE=DATE:20261024", "SUMMARY:Holiday", "END:VEVENT",
+    "END:VCALENDAR"].join("\r\n");
+  const at = (s) => Math.floor(Date.parse(s) / 1000);
+  const evs = eventsFromIcs(ics, at("2026-10-24T00:00:00Z"), at("2026-10-27T23:59:00Z"));
+  assert.deepEqual(evs.map((e) => [e.title, new Date(e.start * 1000).toISOString()]), [
+    ["Standup", "2026-10-24T07:00:00.000Z"],
+    ["Dentist", "2026-10-24T15:00:00.000Z"],
+    ["Standup", "2026-10-25T08:00:00.000Z"],
+    ["Standup", "2026-10-27T08:00:00.000Z"],
+  ], "10:00 Athens is 07:00Z before the DST change and 08:00Z after; the 26th is excluded; all-day events are skipped");
+  assert.equal(evs[0].end - evs[0].start, 1800);
+});
+
+test("private network addresses are refused for user-supplied URLs", () => {
+  for (const ip of ["127.0.0.1", "10.1.2.3", "172.20.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1"]) {
+    assert.equal(isPrivateAddress(ip), true, ip);
+  }
+  for (const ip of ["8.8.8.8", "140.82.112.3", "2606:4700::1111"]) assert.equal(isPrivateAddress(ip), false, ip);
+});
+
+test("apps: webhook, timer, calendar, GitHub and markets reach the desk; Wi-Fi is managed through the hub", async () => {
+  const dora = user();
+  let r = await dora.call("POST", "/api/register", { username: "dora", displayName: "Dora", password: "password-d", invite: "letmein" });
+  assert.equal(r.status, 200, r.text);
+  const hello = await anon.call("POST", "/api/device/hello", { chip: "esp-d0a001", fw: "1.4.5", secret: "" });
+  r = await dora.call("POST", "/api/devices/pair", { code: hello.body.pairCode, name: "Dora" });
+  assert.equal(r.status, 200, r.text);
+  const d = await device("esp-d0a001", hello.body.secret);
+  await d.subscribeAsync("desk/esp-d0a001/#", { qos: 1 });
+  const card = (pred, what) => d.waitFor((m) => m.topic === "desk/esp-d0a001/card" && m.json && pred(m.json), what);
+  const next = (pred, what) => d.waitFor((m) => m.topic === "desk/esp-d0a001/next" && pred(m), what);
+  const cards = (pred) => d.got.filter((m) => m.topic === "desk/esp-d0a001/card" && m.json && pred(m.json)).length;
+
+  const token = (await dora.call("GET", "/api/token")).body.token;
+  r = await anon.call("POST", `/api/notify/${token}`, { title: "Build passed", text: "deploy done", icon: "fire", color: "green", secs: 20 });
+  assert.deepEqual([r.status, r.body.devices], [200, 1]);
+  let m = await card((j) => j.title === "Build passed", "webhook card");
+  assert.deepEqual({ ...m.json, id: 0 }, { id: 0, src: "WEBHOOK", title: "Build passed", text: "deploy done", icon: "fire", color: "green", secs: 20 });
+  assert.equal(m.retain, false);
+  r = await anon.call("POST", "/api/notify", { text: "hello" }, { authorization: `Bearer ${token}` });
+  assert.equal(r.status, 200);
+  await card((j) => j.text === "hello", "bearer webhook");
+  const plain = await fetch(`${base}/api/notify/${token}`, { method: "POST", headers: { "content-type": "text/plain" }, body: "plain text works" });
+  assert.equal(plain.status, 200);
+  await card((j) => j.text === "plain text works", "text/plain webhook");
+  r = await anon.call("POST", `/api/notify/${token}`, { text: "weird", icon: "eggplant", color: "chartreuse", secs: 9999 });
+  m = await card((j) => j.text === "weird", "sanitized card");
+  assert.deepEqual([m.json.icon, m.json.color, m.json.secs], ["", "teal", 300]);
+  assert.equal((await anon.call("POST", "/api/notify/not-a-token", { text: "x" })).status, 401);
+  assert.equal((await anon.call("POST", `/api/notify/${token}`, {})).status, 400);
+
+  r = await dora.call("POST", "/api/timers", { minutes: 1, label: "Focus" });
+  assert.equal(r.status, 200, r.text);
+  let n = await next((x) => x.json?.text === "Focus", "timer next-up");
+  assert.deepEqual(n.json, { text: "Focus", at: clock + 60, left: true });
+  assert.equal((await dora.call("POST", "/api/timers", { minutes: 0 })).status, 400);
+  clock += 61;
+  await hub.apps.tick();
+  await card((j) => j.src === "TIMER" && j.title === "Focus", "timer done");
+  await next((x) => x.raw === "", "next-up cleared");
+  assert.deepEqual((await dora.call("GET", "/api/timers")).body, []);
+
+  assert.equal((await dora.call("POST", "/api/apps/calendar/feeds", { url: `${fx}/not-ics` })).body.error, "calendar_not_a_calendar");
+  assert.equal((await dora.call("POST", "/api/apps/calendar/feeds", { url: "ftp://example.com/x.ics" })).body.error, "calendar_https_only");
+  r = await dora.call("POST", "/api/apps/calendar/feeds", { url: `${fx}/cal.ics` });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.feeds[0].ok, true, JSON.stringify(r.body));
+  assert.equal(r.body.feeds[0].count, 2, "all-day events are not counted");
+  await hub.apps.tick();
+  m = await card((j) => j.src === "CALENDAR" && j.title === "Standup", "calendar reminder");
+  assert.match(m.json.text, /^in 5 min · \d\d:\d\d · Room 4$/);
+  n = await next((x) => x.json?.text === "Standup", "calendar next-up");
+  assert.deepEqual(n.json, { text: "Standup", at: clock + 300, left: false });
+  await hub.apps.tick();
+  await d.quiet(150);
+  assert.equal(cards((j) => j.title === "Standup"), 1, "one reminder per event");
+  r = await dora.call("PATCH", "/api/apps/calendar", { showNext: false });
+  assert.equal(r.body.showNext, false);
+  await next((x) => x.raw === "", "next-up off");
+
+  assert.equal((await dora.call("PUT", "/api/apps/github", { token: "ghp_" + "b".repeat(36) })).body.error, "github_token");
+  r = await dora.call("PUT", "/api/apps/github", { token: GH_TOKEN });
+  assert.deepEqual([r.status, r.body.login, r.body.connected], [200, "dora-gh", true]);
+  fxGhUpdated = clock + 30;
+  clock += 60;
+  await hub.apps.tick();
+  m = await card((j) => j.src === "GITHUB", "github card");
+  assert.deepEqual([m.json.title, m.json.text, m.json.color], ["Review requested", "dora/desk: Add calendar", "purple"]);
+  clock += 61;
+  await hub.apps.tick();
+  await d.quiet(150);
+  assert.equal(cards((j) => j.src === "GITHUB"), 1, "no repeats, other reasons filtered");
+  r = await dora.call("GET", "/api/apps");
+  assert.ok(!r.text.includes(GH_TOKEN), "the token never leaves the hub");
+  assert.equal(r.body.github.login, "dora-gh");
+  assert.ok(r.body.webhook.url.endsWith(`/api/notify/${token}`));
+
+  assert.equal((await dora.call("PUT", "/api/apps/stocks", { items: [{ symbol: "bad sym!" }] })).body.error, "symbol");
+  r = await dora.call("PUT", "/api/apps/stocks", { items: [{ symbol: "aapl", above: 250, move: 5 }] });
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.items[0].symbol, "AAPL");
+  fxPrice = 240;
+  await hub.apps.tick();
+  await d.quiet(100);
+  assert.equal(cards((j) => j.src === "MARKETS"), 0, "first look only records the side");
+  fxPrice = 260;
+  clock += 301;
+  await hub.apps.tick();
+  await card((j) => j.src === "MARKETS" && j.text.includes("above 250.00"), "price crossed");
+  m = await card((j) => j.src === "MARKETS" && j.text.includes("big move"), "big move");
+  assert.equal(m.json.title, "AAPL 260.00");
+  assert.match(m.json.text, /^\+8\.33% today/);
+  r = await dora.call("GET", "/api/apps");
+  assert.deepEqual([r.body.stocks.quotes.AAPL.price, r.body.stocks.quotes.AAPL.pct], [260, 8.33]);
+
+  await d.publishAsync("desk/esp-d0a001/up/wifi", JSON.stringify({ saved: ["Home", "Hotspot"], current: "Hotspot", rssi: -50 }), { qos: 1 });
+  await sleep(100);
+  r = await dora.call("GET", "/api/devices/esp-d0a001/wifi");
+  assert.deepEqual([r.body.saved, r.body.current, r.body.visible], [["Home", "Hotspot"], "Hotspot", []]);
+  assert.equal((await dora.call("POST", "/api/devices/esp-d0a001/wifi/scan")).status, 200);
+  assert.deepEqual((await d.waitFor((x) => x.topic === "desk/esp-d0a001/cmd" && x.json.cmd === "wifi_scan", "scan cmd")).json, { cmd: "wifi_scan" });
+  await d.publishAsync("desk/esp-d0a001/up/wifi", JSON.stringify({ saved: ["Home", "Hotspot"], current: "Hotspot", rssi: -50,
+    visible: [{ s: "HomeNet", r: -60, o: 0 }, { s: "Cafe", r: -80, o: 1 }] }), { qos: 1 });
+  await sleep(100);
+  r = await dora.call("GET", "/api/devices/esp-d0a001/wifi");
+  assert.deepEqual(r.body.visible, [{ ssid: "HomeNet", rssi: -60, open: false }, { ssid: "Cafe", rssi: -80, open: true }]);
+  assert.equal((await dora.call("POST", "/api/devices/esp-d0a001/wifi", { ssid: "HomeNet", pass: "short" })).body.error, "wifi_pass");
+  r = await dora.call("POST", "/api/devices/esp-d0a001/wifi", { ssid: "HomeNet", pass: "correct horse" });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual((await d.waitFor((x) => x.topic === "desk/esp-d0a001/cmd" && x.json.cmd === "wifi_add", "add cmd")).json,
+    { cmd: "wifi_add", ssid: "HomeNet", pass: "correct horse" });
+  assert.ok(!(await dora.call("GET", "/api/devices/esp-d0a001/wifi")).text.includes("correct horse"), "passwords are not stored");
+  r = await dora.call("POST", "/api/devices/esp-d0a001/wifi/remove", { ssid: "Home" });
+  assert.deepEqual((await d.waitFor((x) => x.topic === "desk/esp-d0a001/cmd" && x.json.cmd === "wifi_del", "remove cmd")).json, { cmd: "wifi_del", ssid: "Home" });
+  assert.equal((await bob.call("GET", "/api/devices/esp-d0a001/wifi")).status, 404);
+  assert.equal((await bob.call("POST", "/api/devices/esp-d0a001/wifi/scan")).status, 404);
+
+  await d.publishAsync("desk/esp-d0a001/up/status", JSON.stringify({ fw: "1.4.5", ip: "192.168.1.9" }), { qos: 1 });
+  await sleep(100);
+  r = await dora.call("POST", "/api/devices/esp-d0a001/ota");
+  assert.deepEqual([r.status, r.body.error], [409, "downgrade"], "the hub has 1.4.0, the desk runs 1.4.5");
 });

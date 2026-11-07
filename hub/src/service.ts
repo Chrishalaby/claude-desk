@@ -43,6 +43,28 @@ export function fitPayload<T extends Record<string, unknown>>(obj: T, fields: (k
   return out;
 }
 
+export interface CardInput { src?: unknown; title?: unknown; text?: unknown; icon?: unknown; color?: unknown; secs?: unknown }
+export interface NextUp { text: string; at: number; left?: boolean }
+export const CARD_COLORS = ["teal", "orange", "green", "red", "blue", "purple", "pink", "yellow", "white"] as const;
+
+export function normalizeCard(c: CardInput, id: number) {
+  const s = (v: unknown, n: number) => (typeof v === "string" || typeof v === "number" ? trunc(oneLine(String(v)), n) : "");
+  const icon = typeof c.icon === "string" && (REACTIONS as readonly string[]).includes(c.icon) ? c.icon : "";
+  const color = typeof c.color === "string" && ((CARD_COLORS as readonly string[]).includes(c.color) || /^#[0-9a-f]{6}$/i.test(c.color))
+    ? c.color.toLowerCase() : "teal";
+  const secsNum = Number(c.secs);
+  const secs = Number.isFinite(secsNum) ? Math.min(300, Math.max(3, Math.round(secsNum))) : 15;
+  return fitPayload({
+    id, src: s(c.src, 20).toUpperCase(), title: s(c.title, 40), text: s(c.text, 120), icon, color, secs,
+  }, ["text", "title"]);
+}
+
+export function versionNewer(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  return false;
+}
+
 export function deskHostBase(username: string): string {
   return (username.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "user") + "-desk";
 }
@@ -53,12 +75,17 @@ export class Service {
   private claude = new Map<number, ClaudeEntry>();
   private msgLimiter: RateLimiter;
   private hookLimiter: RateLimiter;
+  private cardLimiter: RateLimiter;
+  private cardSeq = 0;
+  private nextByUser = new Map<number, Record<string, unknown>>();
+  private nextKey = new Map<number, string>();
   private baseUrl: string | null;
 
   constructor(private db: DB, private cfg: Config, private tlsMat: TlsMaterial, public broker: Broker | null = null) {
     const nowMs = () => cfg.now() * 1000;
     this.msgLimiter = new RateLimiter(10, 60_000, nowMs);
     this.hookLimiter = new RateLimiter(600, 60_000, nowMs);
+    this.cardLimiter = new RateLimiter(30, 60_000, nowMs);
     this.baseUrl = cfg.publicUrl ?? kvGet(db, "base_url");
     for (const r of db.prepare("SELECT user_id, sessions, view FROM claude_state").all() as any[]) {
       try {
@@ -334,6 +361,7 @@ export class Service {
     try { reported = d.reported ? JSON.parse(d.reported) : null; } catch { /* ignore */ }
     return {
       device: this.deviceView(d),
+      wifi: this.wifiView(d),
       settings: this.desiredSettings(d),
       place: d.place,
       reported,
@@ -364,6 +392,7 @@ export class Service {
     if (cmd === "ota") {
       const fw = this.firmware(baseUrl);
       if (!fw) throw new HttpError(409, "no_firmware");
+      if (d.fw && versionNewer(d.fw, fw.version)) throw new HttpError(409, "downgrade");
       payload = { cmd, url: fw.url, md5: fw.md5, version: fw.version };
       const now = this.now();
       this.db.prepare("UPDATE devices SET ota = ?, ota_at = ?, ota_req_at = ?, ota_from = ? WHERE chip = ?")
@@ -400,11 +429,72 @@ export class Service {
         ? (this.db.prepare("SELECT * FROM messages WHERE id = ?").get(d.last_msg_id) as MessageRow | undefined) : undefined;
       this.broker.publish(`desk/${chip}/msg`, m ? this.msgPayload(m) : null);
       this.broker.publish(`desk/${chip}/set`, this.setPayload(this.desiredSettings(d)));
+      this.broker.publish(`desk/${chip}/next`, this.nextByUser.get(d.owner_id) ?? null);
     } else {
       this.broker.publish(`desk/${chip}/claude`, null);
       this.broker.publish(`desk/${chip}/msg`, null);
       this.broker.publish(`desk/${chip}/set`, null);
+      this.broker.publish(`desk/${chip}/next`, null);
     }
+  }
+
+  sendCard(userId: number, input: CardInput): { devices: number; limited: boolean } {
+    if (!this.cardLimiter.take(String(userId))) return { devices: 0, limited: true };
+    const card = normalizeCard(input, ++this.cardSeq);
+    let devices = 0;
+    for (const d of this.devicesOf(userId)) {
+      this.broker?.publish(`desk/${d.chip}/card`, card, false);
+      devices++;
+    }
+    return { devices, limited: false };
+  }
+
+  setNext(userId: number, next: NextUp | null) {
+    const payload = next ? { text: trunc(oneLine(next.text), 24), at: Math.floor(next.at), left: !!next.left } : null;
+    const key = JSON.stringify(payload);
+    if ((this.nextKey.get(userId) ?? "null") === key) return;
+    this.nextKey.set(userId, key);
+    if (payload) this.nextByUser.set(userId, payload); else this.nextByUser.delete(userId);
+    for (const d of this.devicesOf(userId)) this.broker?.publish(`desk/${d.chip}/next`, payload);
+  }
+
+  deviceWifi(chip: string, payload: Buffer) {
+    let j: any;
+    try { j = JSON.parse(payload.toString("utf8")); } catch { return; }
+    if (!j || typeof j !== "object") return;
+    const ssid = (v: unknown) => (typeof v === "string" ? v.slice(0, 32) : "");
+    const prev = this.wifiView(this.device(chip));
+    const out = {
+      saved: Array.isArray(j.saved) ? j.saved.map(ssid).filter(Boolean).slice(0, 8) : [],
+      current: ssid(j.current),
+      rssi: typeof j.rssi === "number" ? Math.round(j.rssi) : null,
+      visible: Array.isArray(j.visible)
+        ? j.visible.filter((v: any) => v && typeof v === "object").map((v: any) => ({ ssid: ssid(v.s), rssi: Number(v.r) || 0, open: v.o === 1 }))
+          .filter((v: any) => v.ssid).slice(0, 30)
+        : prev?.visible ?? [],
+      scannedAt: Array.isArray(j.visible) ? this.now() : prev?.scannedAt ?? null,
+    };
+    this.db.prepare("UPDATE devices SET wifi = ?, wifi_at = ? WHERE chip = ?").run(JSON.stringify(out), this.now(), chip);
+  }
+
+  wifiView(d: DeviceRow | undefined) {
+    if (!d?.wifi) return null;
+    try { return { ...JSON.parse(d.wifi), at: d.wifi_at } as { saved: string[]; current: string; rssi: number | null;
+      visible: { ssid: string; rssi: number; open: boolean }[]; scannedAt: number | null; at: number | null }; } catch { return null; }
+  }
+
+  wifiCommand(userId: number, chip: string, cmd: "wifi_scan" | "wifi_add" | "wifi_del", ssid = "", pass = "") {
+    const d = this.ownedDevice(userId, chip);
+    if (this.otaPending(d)) throw new HttpError(409, "busy");
+    if (!this.broker?.isOnline(chip)) throw new HttpError(409, "offline");
+    if (cmd !== "wifi_scan") {
+      if (!ssid || Buffer.byteLength(ssid) > 32) throw new HttpError(400, "ssid");
+      if (cmd === "wifi_add" && pass && (pass.length < 8 || pass.length > 63)) throw new HttpError(400, "wifi_pass");
+    }
+    const payload: Record<string, string> = { cmd };
+    if (cmd !== "wifi_scan") payload.ssid = ssid;
+    if (cmd === "wifi_add") payload.pass = pass;
+    this.broker.publish(`desk/${chip}/cmd`, payload, false);
   }
 
   republishAll() {

@@ -131,6 +131,40 @@ block (what a new TLS session or JSON document actually needs), `reset` = `ESP.g
 The web app flags `heap` < 8 KB and resets that mention Exception/Watchdog. The device's own `/info` has the same
 fields. Firmware ≥ 1.4.4 restarts itself if `maxblk` stays under 3 KB for 2 minutes (at most once per 30 min uptime).
 
+### 3.5 `desk/<chip>/card` — not retained, hub → device (firmware ≥ 1.4.5)
+```json
+{ "id": 7, "src": "CALENDAR", "title": "Standup", "text": "in 10 min · 10:00 · Room 4", "icon": "", "color": "blue", "secs": 60 }
+```
+A notification card from an app (section 11). `src` ≤ 20 chars (shown upper-case), `title` ≤ 40, `text` ≤ 120 (wraps to
+3 lines, 1 line when there is an icon), `icon` = a reaction name (drawn like a reaction card) or `""`, `color` = one of
+`teal orange green red blue purple pink yellow white` or `#rrggbb`, `secs` 3–300 (default 15). The desk shows it over
+the clock or a DONE card, never over NEEDS YOU, a friend's message or the pairing screen; it is dropped if the desk is
+offline. The hub limits cards to 30 per minute per user.
+
+### 3.6 `desk/<chip>/next` — retained, hub → device (firmware ≥ 1.4.5)
+```json
+{ "text": "Standup", "at": 1762412345, "left": false }
+```
+One line under the clock's date (layout A: in the top-right corner). `left: false` → "Standup 10:00" (desk-local time of
+`at`); `left: true` → a countdown, "Focus · 12 min" / "Focus · 1h 05m". The desk hides it once `at` has passed. Empty
+payload clears it. A friend's unread message takes the same spot and wins while it's there. The hub sends the most
+urgent of: the user's next running timer, else (if enabled) the next calendar event within 12 hours.
+
+### 3.7 Wi-Fi, managed through the hub (firmware ≥ 1.4.5)
+`desk/<chip>/cmd` (not retained) carries `{ "cmd": "wifi_scan" }`, `{ "cmd": "wifi_add", "ssid": "...", "pass": "..." }`
+and `{ "cmd": "wifi_del", "ssid": "..." }`. The desk answers on `desk/<chip>/up/wifi` (also sent on every MQTT connect):
+```json
+{ "saved": ["Home", "Hotspot"], "current": "Hotspot", "rssi": -52, "visible": [{ "s": "Home", "r": -60, "o": 0 }] }
+```
+`visible` (strongest entry per name, `o` = open network) only after a `wifi_scan`. The hub stores this (never a
+password; `wifi_add` is relayed and forgotten) for `GET /api/devices/<chip>/wifi`; `POST .../wifi/scan`,
+`POST .../wifi {ssid, pass}` (pass empty or 8–63 chars) and `POST .../wifi/remove {ssid}` send the commands (owner only,
+409 `offline`/`busy`). The desk keeps up to 4 networks; adding a 5th drops the oldest.
+
+Switching networks (firmware ≥ 1.4.5): after 8 s without Wi-Fi the desk scans (async), joins the strongest saved
+network that is actually visible and gives it 15 s, rescanning every 20 s; the screen and web pages keep working.
+1.4.4 and older used ESP8266WiFiMulti with a 3 s join limit, which failed on routers slower than a phone hotspot.
+
 ## 4. Claude Code hooks
 
 ### 4.1 Client → hub: `POST https://<hub>/api/hook`
@@ -240,7 +274,8 @@ Emoji sets other than the built-in pixel art are **packs** the hub serves; a des
   `Content-Disposition: attachment` and no `Content-Encoding`, so phones save them as files unchanged.
   `latest.json` is `404 {"error":"no_firmware"}` until both `claude-desk.bin` and `version.txt` exist.
   `GET /packs/<id>.bin` also sends `x-MD5`; `/packs/<id>.png` is the web app's preview strip.
-* Web app shows each desk's fw (from `up/status`) and an **Update** button when `latest.version` differs.
+* Web app shows each desk's fw (from `up/status`) and an **Update** button when `latest.version` is newer. The hub
+  refuses a downgrade (`409 {"error":"downgrade"}`) when the desk already runs a newer version than it serves.
   `POST /api/devices/<chip>/ota` / `POST /api/devices/<chip>/reboot` (owner only; `409 {"error":"offline"}` when
   the desk isn't connected, since `cmd` is not retained).
   An update counts as running from the `ota` request until the desk reports a different `fw` (hub then records
@@ -252,3 +287,37 @@ Emoji sets other than the built-in pixel art are **packs** the hub serves; a des
   reboots. Pack downloads (`set` with a `packUrl`) take the same restart-then-download path. Measured on 1.4.1: doing
   the download in place after only disconnecting MQTT left too little heap for the HTTPS download (`connection
   failed`, or a crash). Outcome: `up/status` gains `"ota": "ok|failed: <reason>"`.
+
+## 11. Apps (hub-side integrations → cards and the next-up line)
+
+Everything below runs on the hub; the desk only receives `card` (3.5) and `next` (3.6), so it needs no extra memory
+per integration. Web app: the **Apps** tab (`#/apps`). All endpoints are per signed-in user unless noted.
+
+* **Webhook** — `POST /api/notify/<hook token>` or `POST /api/notify` with `Authorization: Bearer <hook token>` (the
+  same token as the Claude Code hook). Body: JSON `{title?, text?, icon?, color?, secs?, src?}` (fields of 3.5; `src`
+  defaults to `Webhook`), or `text/plain` (becomes `text`); the same fields also work as query parameters. Needs a title
+  or a text. → `{ok, devices}`; 401 bad token, 429 over 120/min per IP or 30 cards/min per user.
+* **Timers** — `GET/POST /api/timers {minutes 1–720, label ≤ 20}`, `DELETE /api/timers/<id>`; at most 10 running.
+  The running one ending first is the next-up countdown; when it ends: a `Timer` card (60 s).
+* **Calendar** — the user pastes private iCal links (Google "secret address in iCal format", Apple public calendar
+  link, Outlook published ICS). `POST /api/apps/calendar/feeds {url}` (checked by fetching it once; `webcal://` is
+  treated as `https://`), `DELETE /api/apps/calendar/feeds/<index>`, `PATCH /api/apps/calendar {remind: 0|5|10|15|30|60,
+  showNext}`. At most 5 feeds. The hub refetches every 10 min and keeps events of the next 36 h in memory (time zones,
+  daylight saving, RRULE repeats, EXDATE and overridden instances; all-day and cancelled events are skipped). A
+  `Calendar` card goes out `remind` minutes before each event (once per event), and with `showNext` the next event
+  within 12 h is the next-up line.
+* **GitHub** — `PUT /api/apps/github {token}` (a classic token with only the `notifications` scope; checked with
+  `GET /user`), `PATCH /api/apps/github {reasons: {review_requested, mention, ci_activity, assign, comment}}`,
+  `DELETE /api/apps/github`. The hub polls `GET /notifications` (honours `X-Poll-Interval`, `If-Modified-Since`;
+  never marks anything read) and sends a `GitHub` card per new notification with an enabled reason, at most 3 per poll
+  (+ a "N more" card); CI cards are green, or red when the title says failed/cancelled. Only notifications updated after
+  connecting count. The token is stored on the hub and never returned by the API.
+* **Stocks & crypto** — `PUT /api/apps/stocks {items: [{symbol, above?, below?, move?}]}` (≤ 10; symbols like `AAPL`,
+  `BTC-USD`, `EURUSD=X`, `^GSPC`). Every 5 min the hub reads `query1.finance.yahoo.com/v8/finance/chart/<symbol>`
+  (unofficial, delayed). A `Markets` card when the price crosses `above` upwards or `below` downwards (the first reading
+  only records the side), and once per day when the day's move is at least `move` percent.
+* `GET /api/apps` returns all of it for the page (webhook URL, timers, calendar status and the next 3 events, GitHub
+  login + status, last prices); `POST /api/apps/test` sends a test card.
+* Outgoing fetches of user-supplied URLs (calendars) only go to public addresses: https only, private/loopback/
+  link-local/CGNAT and `*.internal`/`*.local` hosts are refused, redirects are re-checked, 3 MB / 15 s limits.
+  `GITHUB_API`, `QUOTES_API` and `ALLOW_PRIVATE_FETCH=1` exist for tests only.

@@ -67,7 +67,7 @@ Open the desk's address (`http://claude-desk-<id>.local` or its IP):
 
 ## 5. Claude Code status
 
-On the hub, open **Claude Code**. It shows your personal hook token and a one-line installer.
+On the hub, open **Apps → Claude Code**. It shows your personal hook token and a one-line installer.
 
 **macOS / Linux** (needs `python3` and `curl`; on macOS run `xcode-select --install` once if python3 is missing):
 ```bash
@@ -91,6 +91,20 @@ file name, ≤60 chars) leave your machine.
 
 To remove: delete the claude-desk entries from `~/.claude/settings.json` (or restore the `.bak-claude-desk-*` backup) and
 the `~/.claude-desk` folder.
+
+
+## 6. More apps (optional)
+
+The same **Apps** tab can put more on the desk, all fetched by the hub (the desk itself needs nothing extra):
+- **Timer**: a countdown under the clock and a card when it ends.
+- **Calendar**: paste your calendar's private iCal link; you get a card before each event and the next one under the clock.
+- **GitHub**: a card for review requests, mentions and build results (a token with only the *notifications* scope).
+- **Stocks & crypto**: a card when a price crosses your level or moves a lot in a day.
+- **Webhook**: your private URL; anything that can call a URL (Zapier, n8n, GitHub Actions, Home Assistant, iPhone
+  Shortcuts, scripts) can show a card.
+
+**Wi-Fi**: on the desk's page in the hub, *Wi-Fi networks* lists what the desk has saved, finds networks near it and
+adds or removes them from anywhere (firmware 1.4.5 or newer).
 
 ---
 

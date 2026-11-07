@@ -10,6 +10,9 @@ One Node/TypeScript process that does everything server-side for claude-desk (se
   and **firmware updates** (`/firmware/latest.json`, `/firmware/claude-desk.bin` from `../firmware/dist/`, `cmd` topic).
 * **First-install guide** `/#/install` (public, phone-first): downloads `/firmware/claude-desk.bin.gz` (or the loader +
   full image), links to the desk's `http://<ip>/update`, and one tap on `http://<ip>/set?hub=<this hub>` connects it.
+* **Apps** `/#/apps`: Claude Code install, timers, calendar reminders (private iCal links), GitHub notifications,
+  stock/crypto alerts and a personal webhook (`POST /api/notify/<token>`), delivered as `card` / `next` (PROTOCOL.md §3.5, §3.6, §11).
+* **Wi-Fi management** for each desk: saved networks, scan, add/remove relayed to the desk (passwords not stored).
 
 Storage is one SQLite file in `$DATA_DIR`, next to the session secret and the broker's TLS cert. Runs as a single instance.
 

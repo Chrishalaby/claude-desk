@@ -110,7 +110,6 @@ void loadExt() {
 }
 #endif
 
-// ------------------------------------------------------------ local name ---
 #define NAME_ADDR 768
 #define NAME_MAGIC 0x484F5354
 struct NameStore { uint32_t magic; char host[33]; };
@@ -200,6 +199,67 @@ void loadNets() {
   }
   for (int i = 0; i < NET_MAX; i++)
     if (NS.n[i].ssid[0]) wifiMulti.addAP(NS.n[i].ssid, NS.n[i].pass);
+}
+
+String jsonStr(const char *s) {
+  String o = "\"";
+  for (const char *p = s; *p; p++) {
+    uint8_t c = (uint8_t)*p;
+    if (c == '"' || c == '\\') { o += '\\'; o += (char)c; }
+    else if (c < 0x20) { char b[8]; snprintf(b, sizeof b, "\\u%04x", c); o += b; }
+    else o += (char)c;
+  }
+  return o + "\"";
+}
+
+bool scanBest(int i) {
+  String s = WiFi.SSID(i);
+  if (!s.length()) return false;
+  int n = WiFi.scanComplete();
+  for (int k = 0; k < n; k++)
+    if (k != i && WiFi.SSID(k) == s && (WiFi.RSSI(k) > WiFi.RSSI(i) || (WiFi.RSSI(k) == WiFi.RSSI(i) && k < i))) return false;
+  return true;
+}
+
+bool inScan(const char *ssid) {
+  int n = WiFi.scanComplete();
+  for (int i = 0; i < n; i++) if (WiFi.SSID(i) == ssid) return true;
+  return false;
+}
+
+#define ROAM_GRACE_MS 8000
+#define ROAM_JOIN_MS 15000
+#define ROAM_SCAN_EVERY_MS 20000
+
+void wifiRoam() {
+  static uint32_t lostAt = 0, joinUntil = 0, nextScan = 0;
+  static bool scanning = false;
+  uint32_t now = millis();
+  if (WiFi.status() == WL_CONNECTED) { lostAt = joinUntil = 0; scanning = false; return; }
+  if (!lostAt) { lostAt = now | 1; return; }
+  if (now - lostAt < ROAM_GRACE_MS) return;
+  if (joinUntil && (int32_t)(now - joinUntil) < 0) return;
+  if (!scanning) {
+    if ((int32_t)(now - nextScan) < 0) return;
+    WiFi.scanDelete();
+    WiFi.disconnect();
+    WiFi.scanNetworks(true);
+    scanning = true;
+    nextScan = now + ROAM_SCAN_EVERY_MS;
+    return;
+  }
+  int n = WiFi.scanComplete();
+  if (n == WIFI_SCAN_RUNNING) return;
+  scanning = false;
+  int bestK = -1, bestI = -1, bestR = -1000;
+  for (int i = 0; i < n; i++)
+    for (int k = 0; k < NET_MAX; k++)
+      if (NS.n[k].ssid[0] && WiFi.SSID(i) == NS.n[k].ssid && WiFi.RSSI(i) > bestR) { bestR = WiFi.RSSI(i); bestK = k; bestI = i; }
+  if (bestK >= 0) {
+    WiFi.begin(NS.n[bestK].ssid, NS.n[bestK].pass, WiFi.channel(bestI), WiFi.BSSID(bestI));
+    joinUntil = now + ROAM_JOIN_MS;
+  }
+  WiFi.scanDelete();
 }
 
 // ------------------------------------------------------------- backlight ---
@@ -298,7 +358,7 @@ static const char SETUP_PAGE[] PROGMEM =
     "<h2>claude-desk setup</h2><form action=/save method=post><label>Wi-Fi network</label><select name=ssid>~nets~</select>"
     "<label>Password</label><input name=pass type=password><button>Connect</button></form>"
     "<p class=m>Or type a hidden network name:</p><form action=/save method=post>"
-    "<input name=ssid placeholder='network name'><input name=pass type=password placeholder=password>"
+    "<input name=ssid placeholder='exact network name' autocapitalize=none autocorrect=off autocomplete=off spellcheck=false><input name=pass type=password placeholder=password>"
     "<button>Connect</button></form><p><a href=/update>Firmware update</a></p>";
 
 void handleSetupRoot() {
@@ -340,7 +400,10 @@ void handleSafeRoot() {
 static const char WIFI_PAGE[] PROGMEM =
     "<h2>Wi-Fi networks</h2><p class=m>Connected to <b>~ssid~</b> as ~ip~ &middot; also <b>~host~.local</b></p>"
     "<p>The device joins whichever saved network is in range.</p><ul>~nets~</ul>"
-    "<form action=/wifi method=post><label>Add network (name)</label><input name=ssid>"
+    "<form action=/wifi method=post><label>Add a network</label><select name=ssid>"
+    "<option value=''>Choose a network in range</option>~opts~</select>"
+    "<label>Or type a hidden network's exact name</label>"
+    "<input name=ssid2 autocapitalize=none autocorrect=off autocomplete=off spellcheck=false>"
     "<label>Password</label><input name=pass type=password><button>Add</button></form><p><a href=/>Back</a></p>";
 
 String wifiVal(const char *k) {
@@ -348,19 +411,35 @@ String wifiVal(const char *k) {
   if (!strcmp(k, "ip")) return WiFi.localIP().toString();
   if (!strcmp(k, "host")) return hostName;
   String o;
-  for (int i = 0; i < NET_MAX; i++)
-    if (NS.n[i].ssid[0]) o += "<li>" + htmlEsc(NS.n[i].ssid) + " &middot; <a href='/wifi?del=" + String(i) + "'>remove</a></li>";
+  if (!strcmp(k, "opts")) {
+    for (int i = 0, n = WiFi.scanComplete(); i < n; i++) {
+      if (!scanBest(i)) continue;
+      String s = htmlEsc(WiFi.SSID(i));
+      o += F("<option value='"); o += s; o += F("'>"); o += s; o += F(" ("); o += WiFi.RSSI(i); o += F(" dBm)</option>");
+    }
+    return o;
+  }
+  for (int i = 0; i < NET_MAX; i++) {
+    if (!NS.n[i].ssid[0]) continue;
+    o += F("<li>"); o += htmlEsc(NS.n[i].ssid);
+    o += inScan(NS.n[i].ssid) ? F(" &middot; in range") : F(" &middot; <b>not in range</b>");
+    o += F(" &middot; <a href='/wifi?del="); o += i; o += F("'>remove</a></li>");
+  }
   return o;
 }
 
 void handleWifi() {
   if (server.hasArg("del")) { delNet(server.arg("del").toInt()); server.sendHeader("Location", "/wifi"); server.send(303); return; }
-  if (server.hasArg("ssid") && server.arg("ssid").length()) {
-    addNet(server.arg("ssid"), server.arg("pass"));
-    wifiMulti.addAP(server.arg("ssid").c_str(), server.arg("pass").c_str());
+  String ssid = server.arg("ssid").length() ? server.arg("ssid") : server.arg("ssid2");
+  if (ssid.length()) {
+    addNet(ssid, server.arg("pass"));
+    wifiMulti.addAP(ssid.c_str(), server.arg("pass").c_str());
     server.sendHeader("Location", "/wifi"); server.send(303); return;
   }
+  WiFi.scanDelete();
+  WiFi.scanNetworks();
   sendPage(WIFI_PAGE, wifiVal);
+  WiFi.scanDelete();
 }
 
 void handleInfoBasic() {
@@ -372,7 +451,7 @@ void handleInfoBasic() {
 
 // ============================================================ normal mode ===
 #ifndef LOADER
-enum View { V_CLOCK, V_NEEDS, V_DONE, V_MSG, V_PAIR };
+enum View { V_CLOCK, V_NEEDS, V_DONE, V_MSG, V_PAIR, V_NOTE };
 bool settingsDirty = true;   // report settings to the hub
 View view = V_CLOCK;
 bool dirty = true, timeValid = false;
@@ -542,6 +621,11 @@ PubSubClient mqtt;
 String pendingPack, pendingPackUrl, pendingPackMd5, pendingOtaUrl, otaResult;
 // current message
 String mFrom, mText, mWhen;
+String nTitle, nText, nSrc, nxText;
+int nIcon = -1;
+uint16_t nColor = 0;
+uint32_t noteUntil = 0, nxAt = 0;
+bool nxLeft = false, wifiScanForHub = false, wifiReport = false;
 bool mPartner = false;
 int mReact = -1;
 
@@ -593,11 +677,38 @@ String hhmm(uint32_t t) {
 
 void applySet(JsonDocument &d);
 
+void refreshNext() {
+  char s[40] = "";
+  time_t now = time(nullptr);
+  if (nxText.length() && now > 1600000000) {
+    if (nxLeft) {
+      long mins = ((long)nxAt - (long)now + 59) / 60;
+      if (mins >= 60) snprintf_P(s, sizeof s, PSTR("%s \xC2\xB7 %ldh %02ldm"), nxText.c_str(), mins / 60, mins % 60);
+      else if (mins > 0) snprintf_P(s, sizeof s, PSTR("%s \xC2\xB7 %ld min"), nxText.c_str(), mins);
+      else nxText = "";
+    } else if ((long)nxAt > (long)now - 60) {
+      struct tm m;
+      time_t a = nxAt;
+      localtime_r(&a, &m);
+      snprintf_P(s, sizeof s, PSTR("%s %02d:%02d"), nxText.c_str(), m.tm_hour, m.tm_min);
+    } else nxText = "";
+  }
+  if (!strcmp(s, uiNext)) return;
+  strcpy(uiNext, s);
+  if (view == V_CLOCK && timeValid && !dirty) {
+    struct tm t;
+    time_t n = now;
+    localtime_r(&n, &t);
+    uiClockDate(t.tm_wday, t.tm_mday, t.tm_mon, W);
+  }
+}
+
 void onMqtt(char *topic, byte *payload, unsigned int len) {
   String t = topic;
   int slash = t.lastIndexOf('/');
   String leaf = t.substring(slash + 1);
   if (t.indexOf("/up/") >= 0) return;
+  if (leaf == "next" && !len) { nxText = ""; refreshNext(); return; }
   JsonDocument d;
   if (deserializeJson(d, payload, len)) return;
   if (leaf == "claude") {
@@ -622,6 +733,32 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
     String c = (const char *)(d["cmd"] | "");
     if (c == "reboot") restartAt = millis() + 500;
     else if (c == "ota") pendingOtaUrl = (const char *)(d["url"] | "");
+    else if (c == F("wifi_scan")) { WiFi.scanDelete(); WiFi.scanNetworks(true); wifiScanForHub = true; }
+    else if (c == F("wifi_add")) {
+      String s = (const char *)(d[F("ssid")] | ""), p = (const char *)(d[F("pass")] | "");
+      if (s.length() && s.length() <= 32 && p.length() <= 64) { addNet(s, p); wifiMulti.addAP(s.c_str(), p.c_str()); }
+      wifiReport = true;
+    } else if (c == F("wifi_del")) {
+      const char *s = d[F("ssid")] | "";
+      for (int i = 0; i < NET_MAX; i++) if (NS.n[i].ssid[0] && !strcmp(NS.n[i].ssid, s)) { delNet(i); break; }
+      wifiReport = true;
+    }
+  } else if (leaf == F("card")) {
+    String ti = (const char *)(d[F("title")] | ""), tx = (const char *)(d[F("text")] | "");
+    if (!ti.length() && !tx.length()) return;
+    if (view != V_CLOCK && view != V_DONE && view != V_NOTE) return;
+    nTitle = ti; nText = tx;
+    nSrc = (const char *)(d[F("src")] | "");
+    nIcon = uiReactionIndex(d[F("icon")] | "");
+    nColor = uiColor(d[F("color")] | "");
+    noteUntil = millis() + 1000UL * constrain((int)(d[F("secs")] | 15), 3, 300);
+    view = V_NOTE; dirty = true;
+    if (scene != SC_NONE) scene = SC_NONE;
+  } else if (leaf == F("next")) {
+    nxText = (const char *)(d[F("text")] | "");
+    nxAt = d[F("at")] | 0;
+    nxLeft = d[F("left")] | false;
+    refreshNext();
   } else if (leaf == "msg") {
     uint32_t id = d["id"] | 0;
     if (!id || id <= X.lastMsg) return;          // already shown (retained copy after reconnect)
@@ -690,6 +827,38 @@ String installedPacks() {
     if (n.endsWith(".bin")) j += ",\"" + n.substring(0, n.length() - 4) + "\"";
   }
   return j + "]";
+}
+
+void hubWifi(bool withScan) {
+  String j = F("{\"saved\":[");
+  bool first = true;
+  for (int i = 0; i < NET_MAX; i++)
+    if (NS.n[i].ssid[0]) { if (!first) j += ','; j += jsonStr(NS.n[i].ssid); first = false; }
+  j += F("],\"current\":");
+  j += jsonStr(WiFi.SSID().c_str());
+  j += F(",\"rssi\":");
+  j += WiFi.RSSI();
+  int n = withScan ? WiFi.scanComplete() : -1;
+  if (n >= 0) {
+    j += F(",\"visible\":[");
+    first = true;
+    for (int i = 0; i < n && j.length() < 820; i++) {
+      if (!scanBest(i)) continue;
+      if (!first) j += ',';
+      first = false;
+      j += F("{\"s\":");
+      j += jsonStr(WiFi.SSID(i).c_str());
+      j += F(",\"r\":");
+      j += WiFi.RSSI(i);
+      j += F(",\"o\":");
+      j += WiFi.encryptionType(i) == ENC_TYPE_NONE ? '1' : '0';
+      j += '}';
+    }
+    j += ']';
+    WiFi.scanDelete();
+  }
+  j += '}';
+  mqtt.publish((String("desk/") + chipId + "/up/wifi").c_str(), j.c_str());
 }
 
 void hubSettings() {   // up/settings
@@ -858,6 +1027,8 @@ void hubLoop() {
     mqtt.loop();
     if ((int32_t)(millis() - nextStatus) >= 0) { hubStatus(); nextStatus = millis() + 10UL * 60 * 1000; }
     if (settingsDirty) { hubSettings(); settingsDirty = false; }
+    if (wifiScanForHub && WiFi.scanComplete() >= 0) { wifiScanForHub = false; wifiReport = false; hubWifi(true); }
+    else if (wifiReport && !wifiScanForHub) { wifiReport = false; hubWifi(false); }
     return;
   }
   if ((int32_t)(millis() - nextMqtt) < 0) return;
@@ -866,6 +1037,7 @@ void hubLoop() {
     mqttBackoff = 5000;
     nextStatus = 0;
     settingsDirty = true;
+    wifiReport = true;
   } else {
     int st = mqtt.state();
     if (st == MQTT_CONNECT_BAD_CREDENTIALS || st == MQTT_CONNECT_UNAUTHORIZED) {
@@ -1017,6 +1189,7 @@ void loopNormal() {
   hubLoop();
   if (uiUnread[0] && (int32_t)(millis() - unreadUntil) >= 0) { uiUnread[0] = 0; if (view == V_CLOCK) dirty = true; }
   if (view == V_MSG && (int32_t)(millis() - msgUntil) >= 0) { view = V_CLOCK; dirty = true; }
+  if (view == V_NOTE && (int32_t)(millis() - noteUntil) >= 0) { view = V_CLOCK; dirty = true; }
   if (view == V_PAIR && (hubPaired || (int32_t)(millis() - pairUntil) >= 0)) { view = V_CLOCK; dirty = true; }
 
   if (WiFi.status() == WL_CONNECTED && (int32_t)(millis() - nextWeather) >= 0) {
@@ -1049,12 +1222,13 @@ void loopNormal() {
       return;
     }
     if (dirty) {
+      refreshNext();
       uiClockFull(t.tm_hour, t.tm_min, t.tm_wday, t.tm_mday, t.tm_mon, W);
       lastMin = t.tm_min; lastDay = t.tm_mday; nextFrame = 0; dirty = false;
       scene = SC_NONE;
       if (!nextWalkBy) nextWalkBy = millis() + random(20, 40) * 60000UL;
     } else {
-      if (t.tm_min != lastMin) { uiClockTime(t.tm_hour, t.tm_min); lastMin = t.tm_min; }
+      if (t.tm_min != lastMin) { uiClockTime(t.tm_hour, t.tm_min); lastMin = t.tm_min; refreshNext(); }
       if (t.tm_mday != lastDay) { uiClockDate(t.tm_wday, t.tm_mday, t.tm_mon, W); lastDay = t.tm_mday; }
     }
 
@@ -1091,6 +1265,9 @@ void loopNormal() {
       dirty = false; nextFrame = 0;
     }
     if (mReact >= 0 && (int32_t)(millis() - nextFrame) >= 0) nextFrame = millis() + uiReactionFrame(mReact, frameNo++);
+  } else if (view == V_NOTE) {
+    if (dirty) { uiNotice(nSrc.c_str(), nTitle.c_str(), nText.c_str(), nIcon, nColor); dirty = false; nextFrame = 0; }
+    if (nIcon >= 0 && (int32_t)(millis() - nextFrame) >= 0) nextFrame = millis() + uiReactionFrame(nIcon, frameNo++);
   } else if (view == V_PAIR) {
     if (dirty) { uiPair(pairCode.c_str(), hubBase().c_str()); dirty = false; }
   } else {
@@ -1199,23 +1376,19 @@ void loop() {
   if (mode == M_SETUP) {
     dns.processNextRequest();
     // credentials were fine after all (e.g. router was rebooting): go back to normal
-    static uint32_t connectedSince = 0, nextTry = 20000;
-    if (WiFi.status() != WL_CONNECTED && netCount() && (int32_t)(millis() - nextTry) >= 0) {
-      wifiMulti.run(3000);                   // a saved network may have come back
-      nextTry = millis() + 20000;
-    }
+    static uint32_t connectedSince = 0;
+    if (netCount()) wifiRoam();
     if (WiFi.status() == WL_CONNECTED) {
       if (!connectedSince) connectedSince = millis();
       else if (millis() - connectedSince > 5000 && !restartAt) restartAt = millis() + 500;
     } else connectedSince = 0;
   } else {
     MDNS.update();
-    static uint32_t nextTry = 0;             // lost Wi-Fi: hop to any saved network in range
-    if (WiFi.status() != WL_CONNECTED && (int32_t)(millis() - nextTry) >= 0) {
-      wifiMulti.run(3000);
-      nextTry = millis() + 15000;
-      if (WiFi.status() == WL_CONNECTED) { MDNS.end(); startMdns(); }
-    }
+    static bool wasUp = true;
+    wifiRoam();
+    bool up = WiFi.status() == WL_CONNECTED;
+    if (up && !wasUp) { MDNS.end(); startMdns(); }
+    wasUp = up;
   }
   if (!bootCleared && millis() > 60000) bootOk();
   if (restartAt && (int32_t)(millis() - restartAt) >= 0) { delay(100); ESP.restart(); }

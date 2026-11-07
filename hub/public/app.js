@@ -14,6 +14,14 @@ const ERRORS = {
   too_long: "Messages are up to 100 characters.", empty: "Type something first.", auth: "Please sign in again.",
   tz: "Unknown timezone.", network: "Can't reach the hub.",
   busy: "An update is running. Give it a couple of minutes.", offline: "The desk is offline.",
+  downgrade: "The desk already runs newer firmware than the hub has.",
+  wifi_pass: "Wi-Fi passwords are 8 to 63 characters (or leave it empty for an open network).", ssid: "Network names are 1 to 32 characters.",
+  minutes: "Pick 1 to 720 minutes.", too_many: "That's the maximum for this.", duplicate: "You already added that.",
+  url: "Paste the calendar link.", calendar_not_a_calendar: "That link isn't a calendar (.ics) link.", calendar_https_only: "Use the https:// version of the link.",
+  calendar_unreachable: "Couldn't reach that calendar.", calendar_dns: "That calendar address doesn't exist.", calendar_private_address: "That address isn't allowed.",
+  calendar_too_big: "That calendar is too big.", calendar_bad_url: "That isn't a valid link.",
+  github_token: "GitHub didn't accept that token.", github_unreachable: "Couldn't reach GitHub. Try again in a minute.",
+  symbol: "Symbols look like AAPL, BTC-USD or EURUSD=X.", level: "Price levels must be positive numbers.", remind: "Pick a reminder time from the list.",
 };
 
 const state = { me: null, config: null, friends: [], devices: [], route: "", poll: null };
@@ -104,7 +112,7 @@ function clock(t) {
 const go = (hash) => { if (location.hash !== hash) location.hash = hash; else render(); };
 
 // ------------------------------------------------------------------ layout
-const TABS = [["#/home", "💬", "Home"], ["#/friends", "👥", "Friends"], ["#/devices", "🖥️", "Devices"], ["#/claude", "✳️", "Claude"], ["#/settings", "⚙️", "Settings"]];
+const TABS = [["#/home", "💬", "Home"], ["#/friends", "👥", "Friends"], ["#/devices", "🖥️", "Devices"], ["#/apps", "🧩", "Apps"], ["#/settings", "⚙️", "Settings"]];
 
 function claudePill() {
   const v = state.me && state.me.claude;
@@ -174,7 +182,6 @@ function viewLogin() {
     h("p", { class: "hint", style: "text-align:center;margin-top:22px" }, "New desk? ", h("a", { href: "#/install" }, "Install guide"))));
 }
 
-// ------------------------------------------------------------------ first install guide
 const DESK_ADDR_RE = /^(\d{1,3}\.){3}\d{1,3}$|^[a-z0-9-]{1,63}\.local$/i;
 const deskHostFor = (u) => (u.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "user") + "-desk";
 function lsGet(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } }
@@ -238,8 +245,8 @@ async function viewInstall() {
         : [h("p", {}, "Create your account (or sign in), open ", h("b", {}, "Devices"), " and enter the code."),
           h("a", { class: "btn primary block", href: "#/login" }, "Create account or sign in")]),
     step(6, "Set it up from here",
-      h("p", {}, "Location, brightness, night hours, colours and emoji style are on the desk's page under Devices, and so is the update button. To show Claude Code on the desk, open ",
-        h("a", { href: "#/claude" }, "Claude"), ".")),
+      h("p", {}, "Location, brightness, night hours, colours and emoji style are on the desk's page under Devices, and so is the update button. For Claude Code status, calendar reminders, GitHub, timers and more, open ",
+        h("a", { href: "#/apps" }, "Apps"), ".")),
   ];
   if (state.me) shell("Install a desk", body, { back: "#/devices" });
   else $app.replaceChildren(h("div", { class: "auth guide" },
@@ -420,6 +427,11 @@ function viewAddDevice() {
 
 // ------------------------------------------------------------------ one desk: status + remote settings
 const DEFAULT_SETTINGS = { layout: 1, soft: 0, casper: 1, pack: "pixel", bday: 25, bnight: 10, nstart: 22, nend: 7 };
+const versionNewer = (a, b) => {
+  const pa = String(a).split(".").map(Number), pb = String(b).split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
+  return false;
+};
 const SAVE_KEYS = ["layout", "soft", "casper", "pack", "bday", "bnight", "nstart", "nend"];
 const LOW_HEAP = 8 * 1024;
 const CRASH_RE = /exception|watchdog|wdt/i;
@@ -449,12 +461,12 @@ async function viewDevice(chip) {
       : h("span", { class: "warn" }, d.online ? `Sending settings to ${nm()}…` : `Settings will apply when ${nm()} comes online`);
     const updating = d.otaPending || inFlight === "ota";
     const locked = !!inFlight || updating;
-    const canUpdate = fw && d.fw && fw.version !== d.fw;
+    const canUpdate = fw && d.fw && versionNewer(fw.version, d.fw);
     const otaLine = updating ? null : d.ota ? `Last update: ${d.ota}${d.otaAt ? " (" + ago(d.otaAt) + ")" : ""}` : null;
     fill(status,
       h("div", { class: "title" }, h("span", { class: "dot" + (d.online ? " on" : "") }), d.online ? "Online" : "Offline · last seen " + ago(d.lastSeen)),
       h("div", { class: "kv" },
-        "firmware", h("b", {}, (d.fw || "?") + (fw ? (fw.version === d.fw ? " (latest)" : ` → ${fw.version} available`) : "")),
+        "firmware", h("b", {}, (d.fw || "?") + (fw ? (canUpdate ? ` → ${fw.version} available` : fw.version === d.fw ? " (latest)" : "") : "")),
         d.host ? ["local", h("b", {}, h("a", { href: `http://${d.host}.local`, target: "_blank", rel: "noopener" }, `${d.host}.local`))] : null,
         d.ip ? ["ip", h("b", {}, d.ip)] : null,
         d.rssi != null ? ["wi-fi", h("b", {}, d.rssi + " dBm")] : null,
@@ -607,21 +619,250 @@ async function viewDevice(chip) {
       results),
     save);
 
-  const deskAddr = data.device.host ? data.device.host + ".local" : data.device.ip;
-  const wifi = deskAddr ? [h("h2", {}, "Wi-Fi networks"), h("div", { class: "card" },
-    h("p", { style: "margin:0" }, "The desk remembers up to 4 networks (home, hotspot, office…) and joins whichever is in range."),
-    h("a", { class: "btn block", href: `http://${deskAddr}/wifi`, target: "_blank", rel: "noopener" }, "Manage Wi-Fi networks"),
-    h("p", { class: "hint", style: "margin:10px 0 0" }, "Opens the desk's own page, so your phone has to be on the same Wi-Fi as the desk. Passwords stay on the desk."))] : null;
-
-  fill(main, h("h2", {}, "Status"), status, form, wifi);
-  state.poll = setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 5000);
+  const wifiEl = wifiCard(enc, () => data);
+  const refreshAll = async () => { await refresh(); wifiEl.update(data); };
+  fill(main, h("h2", {}, "Status"), status, form, h("h2", {}, "Wi-Fi networks"), wifiEl);
+  state.poll = setInterval(() => { if (!document.hidden) refreshAll().catch(() => {}); }, 5000);
 }
 
 // ------------------------------------------------------------------ Claude Code
-async function viewClaude() {
-  shell("Claude Code", h("div", { class: "empty" }, "Loading…"));
-  const [{ token, hub }] = await Promise.all([api("GET", "/api/token"), loadMe()]);
-  shell("Claude Code", []); // repaint header pill with fresh status
+const signal = (rssi) => (rssi >= -60 ? "strong signal" : rssi >= -75 ? "good signal" : "weak signal");
+
+function wifiCard(enc, getData) {
+  const el = h("div", { class: "card" });
+  let w = getData().wifi || { saved: [], current: "", visible: [], scannedAt: null };
+  let pick = "", scanning = false, shownKey = "";
+  const online = () => getData().device.online;
+  const pass = h("input", { type: "password", placeholder: "Wi-Fi password", autocomplete: "off" });
+  const hidden = h("input", { placeholder: "Exact network name", autocapitalize: "none", autocorrect: "off", spellcheck: "false", autocomplete: "off" });
+  const hiddenBox = h("details", { class: "more" }, h("summary", {}, "Hidden network?"), hidden);
+  hidden.addEventListener("input", () => { if (hidden.value && pick) { pick = ""; paint(); hidden.focus(); } });
+  const reload = async () => { try { w = await api("GET", `/api/devices/${enc}/wifi`); } catch { return; } paint(); };
+  el.update = (d) => {
+    const key = JSON.stringify([d.wifi, d.device.online]);
+    if (scanning || key === shownKey) return;
+    if (d.wifi) w = d.wifi;
+    paint();
+  };
+  function paint() {
+    const data = getData();
+    shownKey = JSON.stringify([w, data.device.online]);
+    const deskAddr = data.device.ip || (data.device.host ? data.device.host + ".local" : "");
+    const inRange = new Set(w.visible.map((v) => v.ssid));
+    const newNets = w.visible.filter((v) => !w.saved.includes(v.ssid));
+    fill(el,
+      h("p", { style: "margin:0" }, "Up to 4 networks (home, hotspot, office…). The desk joins whichever is in range."),
+      w.saved.length ? h("div", { class: "list", style: "margin-top:10px" }, w.saved.map((s) => h("div", { class: "row" },
+        h("div", { class: "grow" }, h("div", { class: "title" }, s),
+          h("div", { class: "sub" }, s === w.current ? h("span", { class: "ok" }, "connected now")
+            : w.scannedAt ? (inRange.has(s) ? "in range" : h("span", { class: "warn" }, "not in range: check the name matches exactly")) : "saved")),
+        h("button", { class: "btn small ghost danger", disabled: !online() || s === w.current, onclick: guarded(async () => {
+          if (!confirm(`Remove "${s}" from the desk?`)) return;
+          try { await api("POST", `/api/devices/${enc}/wifi/remove`, { ssid: s }); toast("Removed"); setTimeout(reload, 1500); } catch (e) { fail(e); }
+        }) }, "Remove")))) : h("p", { class: "hint" }, online() ? "Waiting for the desk to report its networks…" : "The desk is offline. Its networks show up here once it's back."),
+      h("label", { class: "f" }, "Add a network"),
+      h("button", { class: "btn small", disabled: !online() || scanning, onclick: guarded(async () => {
+        scanning = true; paint();
+        try {
+          const before = w.scannedAt || 0;
+          await api("POST", `/api/devices/${enc}/wifi/scan`);
+          for (let i = 0; i < 12; i++) {
+            await new Promise((r) => setTimeout(r, 1500));
+            w = await api("GET", `/api/devices/${enc}/wifi`);
+            if ((w.scannedAt || 0) > before) break;
+          }
+        } catch (e) { fail(e); }
+        scanning = false; paint();
+      }) }, scanning ? "Looking for networks…" : w.scannedAt ? "Scan again" : "Find networks near the desk"),
+      newNets.length ? h("div", { class: "list", style: "margin-top:10px" }, newNets.map((v) => h("div", { class: "row tap" + (pick === v.ssid ? " picked" : ""), onclick: () => { pick = v.ssid; hidden.value = ""; paint(); pass.focus(); } },
+        h("div", { class: "grow" }, h("div", { class: "title" }, v.ssid), h("div", { class: "sub" }, `${signal(v.rssi)} · ${v.open ? "no password" : "password"}`)),
+        pick === v.ssid ? h("span", { class: "ok" }, "✓") : null))) : null,
+      hiddenBox,
+      h("form", { onsubmit: guarded(async () => {
+        const ssid = hidden.value || pick;
+        if (!ssid) return toast("Pick a network first", true);
+        try { await api("POST", `/api/devices/${enc}/wifi`, { ssid, pass: pass.value }); pass.value = ""; pick = ""; hidden.value = ""; toast(`Added "${ssid}"`); setTimeout(reload, 1500); }
+        catch (e) { fail(e); }
+      }) }, pick || hidden.value ? h("label", { class: "f" }, `Password for "${pick || hidden.value}"`) : null, pass,
+        h("button", { class: "btn primary block", type: "submit", disabled: !online() }, "Add to the desk")),
+      h("p", { class: "hint", style: "margin:10px 0 0" }, "The password goes straight to the desk over its encrypted link. The hub doesn't keep it."),
+      deskAddr ? h("p", { class: "hint", style: "margin:4px 0 0" }, "On the same Wi-Fi as the desk? You can also use ",
+        h("a", { href: `http://${deskAddr}/wifi`, target: "_blank", rel: "noopener" }, "its own Wi-Fi page"), ".") : null);
+  }
+  paint();
+  return el;
+}
+
+const REMIND_OPTS = [[0, "Off"], [5, "5 min before"], [10, "10 min before"], [15, "15 min before"], [30, "30 min before"], [60, "1 hour before"]];
+const GH_REASONS = [["review_requested", "Review requests"], ["mention", "Mentions"], ["ci_activity", "Build results (CI)"], ["assign", "Assigned to you"], ["comment", "New comments"]];
+const FEED_ERR = {
+  unreachable: "can't reach it", dns: "unknown address", https_only: "needs an https:// link", private_address: "private addresses aren't allowed",
+  not_a_calendar: "not a calendar link", too_big: "too big", bad_url: "not a valid link",
+};
+const clockTime = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const maskSecret = (url) => url.replace(/[^/]+$/, (t) => t.slice(0, 4) + "•".repeat(12));
+
+function appTimers(a) {
+  const el = h("div", { class: "card" });
+  const label = h("input", { maxlength: 20, placeholder: "Label (optional)" });
+  const mins = h("input", { inputmode: "numeric", maxlength: 3, placeholder: "min", style: "max-width:84px" });
+  const start = (n) => guarded(async () => {
+    try { a.timers = await api("POST", "/api/timers", { minutes: n, label: label.value.trim() }); label.value = ""; mins.value = ""; toast(`Timer set for ${n} min`); paint(); }
+    catch (e) { fail(e); }
+  });
+  function paint() {
+    fill(el,
+      h("div", { class: "actions" }, [5, 15, 25, 50].map((n) => h("button", { class: "btn small", onclick: start(n) }, `${n} min`))),
+      h("div", { class: "inline", style: "margin-top:10px" }, label, mins,
+        h("button", { class: "btn small primary", onclick: (e) => { const n = Number(mins.value); if (!(n >= 1 && n <= 720)) return toast("1 to 720 minutes", true); return start(n)(e); } }, "Start")),
+      a.timers.length ? h("div", { class: "list", style: "margin-top:12px" }, a.timers.map((t) => h("div", { class: "row" },
+        h("div", { class: "grow" }, h("div", { class: "title" }, t.label), h("div", { class: "sub" }, "ends " + clockTime(t.ends))),
+        h("button", { class: "btn small ghost", onclick: guarded(async () => {
+          try { await api("DELETE", `/api/timers/${t.id}`); a.timers = a.timers.filter((x) => x.id !== t.id); paint(); } catch (e) { fail(e); }
+        }) }, "Cancel")))) : null,
+      h("p", { class: "hint", style: "margin:10px 0 0" }, "Your desk counts down under the date and shows a card when time's up."));
+  }
+  paint();
+  return el;
+}
+
+function appCalendar(a) {
+  const el = h("div", { class: "card" });
+  const url = h("input", { placeholder: "https://…/basic.ics", autocomplete: "off", autocapitalize: "none", spellcheck: "false", inputmode: "url" });
+  const patch = async (body) => { try { a.calendar = await api("PATCH", "/api/apps/calendar", body); toast("Saved"); } catch (e) { fail(e); } paint(); };
+  function paint() {
+    const c = a.calendar;
+    const remind = h("select", {}, REMIND_OPTS.map(([v, l]) => h("option", { value: v, selected: c.remind === v }, l)));
+    remind.addEventListener("change", () => patch({ remind: Number(remind.value) }));
+    const showNext = h("input", { type: "checkbox", checked: c.showNext, style: "width:auto" });
+    showNext.addEventListener("change", () => patch({ showNext: showNext.checked }));
+    fill(el,
+      c.feeds.length ? h("div", { class: "list" }, c.feeds.map((f, i) => h("div", { class: "row" },
+        h("div", { class: "grow" }, h("div", { class: "title" }, f.label),
+          h("div", { class: "sub" }, f.ok === false ? h("span", { class: "warn" }, "Can't read it: " + (FEED_ERR[f.error] || f.error)) : `${f.count} events in the next day and a half`)),
+        h("button", { class: "btn small ghost", onclick: guarded(async () => {
+          if (!confirm("Remove this calendar?")) return;
+          try { a.calendar = await api("DELETE", `/api/apps/calendar/feeds/${i}`); paint(); } catch (e) { fail(e); }
+        }) }, "Remove")))) : null,
+      h("label", { class: "f", style: c.feeds.length ? "" : "margin-top:0" }, "Add a calendar (its private iCal link)"),
+      h("form", { class: "inline", onsubmit: guarded(async () => {
+        const v = url.value.trim();
+        if (!v) return;
+        try { a.calendar = await api("POST", "/api/apps/calendar/feeds", { url: v }); url.value = ""; toast("Calendar added"); paint(); } catch (e) { fail(e); }
+      }) }, url, h("button", { class: "btn primary", type: "submit" }, "Add")),
+      h("details", { class: "more" }, h("summary", {}, "Where do I find the link?"),
+        h("ul", { class: "help" },
+          h("li", {}, h("b", {}, "Google: "), "calendar settings → your calendar → Integrate calendar → Secret address in iCal format."),
+          h("li", {}, h("b", {}, "Apple: "), "Calendar app → share the calendar → Public Calendar → copy the link."),
+          h("li", {}, h("b", {}, "Outlook: "), "Settings → Calendar → Shared calendars → Publish a calendar → ICS link."))),
+      c.feeds.length ? [
+        h("label", { class: "f" }, "Remind me"), remind,
+        h("label", { class: "check" }, showNext, "Show the next event under the clock"),
+        c.upcoming.length ? h("p", { class: "hint", style: "margin:10px 0 0" }, "Coming up: " + c.upcoming.map((e) => `${e.title} ${clockTime(e.start)}`).join(" · ")) : null,
+      ] : null);
+  }
+  paint();
+  return el;
+}
+
+function appGithub(a) {
+  const el = h("div", { class: "card" });
+  const tok = h("input", { type: "password", placeholder: "ghp_…", autocomplete: "off" });
+  function paint() {
+    const g = a.github;
+    if (!g.connected) {
+      fill(el,
+        h("p", { style: "margin:0" }, "A card when someone asks for your review, mentions you, or a build finishes."),
+        h("ol", { class: "help" },
+          h("li", {}, h("a", { href: "https://github.com/settings/tokens/new?scopes=notifications&description=claude-desk", target: "_blank", rel: "noopener" }, "Create a token"),
+            " with only the ", h("b", {}, "notifications"), " box ticked."),
+          h("li", {}, "Paste it here. It stays on the hub and is never shown again.")),
+        h("form", { class: "inline", onsubmit: guarded(async () => {
+          const v = tok.value.trim();
+          if (!v) return;
+          try { a.github = await api("PUT", "/api/apps/github", { token: v }); tok.value = ""; toast(`Connected as @${a.github.login}`); paint(); } catch (e) { fail(e); }
+        }) }, tok, h("button", { class: "btn primary", type: "submit" }, "Connect")));
+      return;
+    }
+    fill(el,
+      h("div", { class: "title" }, h("span", { class: "dot" + (g.ok === false ? "" : " on") }), `Connected as @${g.login}`),
+      g.ok === false ? h("p", { class: "hint warn" }, g.error === "token" ? "GitHub refused the token. Connect again with a new one." : "Can't reach GitHub right now.") : null,
+      h("label", { class: "f" }, "Show a card for"),
+      GH_REASONS.map(([k, l]) => {
+        const cb = h("input", { type: "checkbox", checked: !!g.reasons[k], style: "width:auto" });
+        cb.addEventListener("change", async () => {
+          try { a.github = await api("PATCH", "/api/apps/github", { reasons: { [k]: cb.checked } }); } catch (e) { fail(e); cb.checked = !cb.checked; }
+        });
+        return h("label", { class: "check" }, cb, l);
+      }),
+      h("button", { class: "btn small ghost danger", style: "margin-top:12px", onclick: guarded(async () => {
+        if (!confirm("Disconnect GitHub? The token is deleted from the hub.")) return;
+        try { await api("DELETE", "/api/apps/github"); a.github = { connected: false, reasons: g.reasons }; paint(); } catch (e) { fail(e); }
+      }) }, "Disconnect"));
+  }
+  paint();
+  return el;
+}
+
+function appMarkets(a) {
+  const el = h("div", { class: "card" });
+  let rows = a.stocks.items.map((x) => ({ ...x }));
+  const field = (r, k, ph, mode) => {
+    const i = h("input", { value: r[k] ?? "", placeholder: ph, inputmode: mode, autocomplete: "off", spellcheck: "false", autocapitalize: k === "symbol" ? "characters" : "none" });
+    i.addEventListener("input", () => { r[k] = i.value; });
+    return i;
+  };
+  const numOrNull = (v) => (v === null || v === undefined || String(v).trim() === "" ? null : Number(v));
+  function paint() {
+    const q = a.stocks.quotes;
+    fill(el,
+      h("p", { style: "margin:0" }, "A card when a price crosses your level, or moves a lot in one day. Stocks like AAPL, crypto like BTC-USD."),
+      rows.map((r, i) => {
+        const qq = q[String(r.symbol || "").toUpperCase()];
+        return h("div", { class: "mkt" },
+          h("div", { class: "mkt-row" }, field(r, "symbol", "Symbol", "text"),
+            h("button", { class: "btn small ghost", type: "button", "aria-label": "Remove", onclick: () => { rows.splice(i, 1); paint(); } }, "✕")),
+          h("div", { class: "mkt-row" }, field(r, "above", "Above", "decimal"), field(r, "below", "Below", "decimal"), field(r, "move", "Move %", "decimal")),
+          qq ? h("div", { class: "sub" }, qq.error ? h("span", { class: "warn" }, "No price yet: " + qq.error) : qq.price != null ? `${qq.price} · ${qq.pct >= 0 ? "+" : ""}${qq.pct}% today` : null) : null);
+      }),
+      h("div", { class: "actions", style: "margin-top:12px" },
+        rows.length < 10 ? h("button", { class: "btn small", type: "button", onclick: () => { rows.push({ symbol: "", above: null, below: null, move: null }); paint(); } }, "+ Add symbol") : null,
+        h("button", { class: "btn small primary", type: "button", onclick: guarded(async () => {
+          const items = rows.filter((r) => String(r.symbol || "").trim()).map((r) => ({ symbol: String(r.symbol).trim(), above: numOrNull(r.above), below: numOrNull(r.below), move: numOrNull(r.move) }));
+          try { a.stocks = await api("PUT", "/api/apps/stocks", { items }); rows = a.stocks.items.map((x) => ({ ...x })); toast("Saved"); paint(); } catch (e) { fail(e); }
+        }) }, "Save")),
+      h("p", { class: "hint", style: "margin:10px 0 0" }, "Checked every 5 minutes, using delayed quotes from Yahoo Finance."));
+  }
+  paint();
+  return el;
+}
+
+function appWebhook(a) {
+  const url = a.webhook.url;
+  const ex = `curl -X POST ${url} -H 'content-type: application/json' -d '{"title":"Build passed","text":"deploy done","icon":"fire"}'`;
+  return h("div", { class: "card" },
+    h("p", { style: "margin:0" }, "Anything that can call a URL can put a card on your desk: Zapier, n8n, GitHub Actions, Home Assistant, iPhone Shortcuts, your own scripts."),
+    h("label", { class: "f" }, "Your private URL"),
+    h("div", { class: "codebox" }, h("div", { class: "code" }, maskSecret(url)), h("button", { class: "btn small", onclick: () => copy(url) }, "Copy")),
+    h("label", { class: "f" }, "Example"),
+    h("div", { class: "codebox" }, h("div", { class: "code" }, maskSecret(url.replace(/\/[^/]+$/, "/")) + "… " + "-d '{\"title\":\"Build passed\",\"text\":\"deploy done\",\"icon\":\"fire\"}'"),
+      h("button", { class: "btn small", onclick: () => copy(ex) }, "Copy")),
+    h("details", { class: "more" }, h("summary", {}, "What can I send?"),
+      h("ul", { class: "help" },
+        h("li", {}, h("b", {}, "title"), ", ", h("b", {}, "text"), ": up to 40 and 120 characters. Plain text works too."),
+        h("li", {}, h("b", {}, "icon"), ": wave, thumbs, laugh, coffee, fire, heart, hug, kiss, goodnight, missyou."),
+        h("li", {}, h("b", {}, "color"), ": teal, orange, green, red, blue, purple, pink, yellow, white or #rrggbb."),
+        h("li", {}, h("b", {}, "secs"), ": how long it stays up, 3 to 300 (default 15)."),
+        h("li", {}, "It uses the same token as the Claude Code hook: regenerating the token changes this URL."))),
+    h("button", { class: "btn block", onclick: guarded(async () => {
+      try { const r = await api("POST", "/api/apps/test"); toast(r.devices ? "Sent. Look at your desk." : "No desk paired yet"); } catch (e) { fail(e); }
+    }) }, "Send a test card"));
+}
+
+async function viewApps() {
+  shell("Apps", h("div", { class: "empty" }, "Loading…"));
+  const [{ token, hub }, a] = await Promise.all([api("GET", "/api/token"), api("GET", "/api/apps"), loadMe()]);
+  shell("Apps", []); // repaint header pill with fresh status
   const m = document.querySelector("main");
   const v = state.me.claude || { s: "idle" };
   const icons = { idle: "😴", working: "⚙️", needs: "✋", done: "✅" };
@@ -632,8 +873,11 @@ async function viewClaude() {
   const win = `$env:CLAUDE_DESK_TOKEN='${token}'; irm ${hub}/install.ps1 | iex`;
   const cmd = (label, text) => [h("label", { class: "f" }, label),
     h("div", { class: "codebox" }, h("div", { class: "code" }, text), h("button", { class: "btn small", onclick: () => copy(text) }, "Copy"))];
-  fill(m, 
-    h("h2", {}, "Status"),
+  fill(m,
+    h("nav", { class: "chips" }, [["Claude Code", "app-claude"], ["Timer", "app-timer"], ["Calendar", "app-calendar"], ["GitHub", "app-github"],
+      ["Markets", "app-markets"], ["Webhook", "app-webhook"]].map(([l, id]) =>
+      h("button", { type: "button", class: "chip", onclick: () => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" }) }, l))),
+    h("h2", { id: "app-claude" }, "Claude Code"),
     h("div", { class: "card status-card" }, h("span", { class: "big" }, icons[v.s] || "•"),
       h("div", { class: "grow" }, h("div", { class: "title" }, words[v.s] || v.s),
         h("div", { class: "sub" }, [v.p, v.d].filter(Boolean).join(" — ") || "Across all your Claude Code sessions"))),
@@ -650,9 +894,14 @@ async function viewClaude() {
       h("button", {
         class: "btn block danger", onclick: guarded(async () => {
           if (!confirm("Regenerate the token? Computers using the old one stop updating until you re-run the install command.")) return;
-          try { await api("POST", "/api/token/regenerate"); toast("New token created"); viewClaude(); } catch (e) { fail(e); }
+          try { await api("POST", "/api/token/regenerate"); toast("New token created"); viewApps(); } catch (e) { fail(e); }
         }),
-      }, "Regenerate token")));
+      }, "Regenerate token")),
+    h("h2", { id: "app-timer" }, "Timer"), appTimers(a),
+    h("h2", { id: "app-calendar" }, "Calendar"), appCalendar(a),
+    h("h2", { id: "app-github" }, "GitHub"), appGithub(a),
+    h("h2", { id: "app-markets" }, "Stocks & crypto"), appMarkets(a),
+    h("h2", { id: "app-webhook" }, "Webhook"), appWebhook(a));
 }
 
 // ------------------------------------------------------------------ settings
@@ -712,7 +961,7 @@ async function render() {
       case "#/friends": return await viewFriends();
       case "#/devices": return await viewDevices();
       case "#/devices/add": state.devices = await api("GET", "/api/devices"); return viewAddDevice();
-      case "#/claude": return await viewClaude();
+      case "#/apps": case "#/claude": return await viewApps();
       case "#/settings": return await viewSettings();
       default: return await viewHome();
     }

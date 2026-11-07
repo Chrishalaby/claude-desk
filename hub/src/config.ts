@@ -22,6 +22,9 @@ export interface Config {
   /** Clock in unix seconds (injectable for tests). */
   now: () => number;
   log: boolean;
+  githubApi: string;
+  quotesApi: string;
+  allowPrivateFetch: boolean;
 }
 
 const num = (v: string | undefined) => (v && /^\d+$/.test(v) ? Number(v) : null);
@@ -50,5 +53,8 @@ export function configFromEnv(env = process.env): Config {
     packsDir: path.resolve(nonEmpty(env.PACKS_DIR) ?? path.join(here, "..", "packs")),
     now: () => Date.now() / 1000,
     log: env.HUB_QUIET !== "1",
+    githubApi: (nonEmpty(env.GITHUB_API) ?? "https://api.github.com").replace(/\/+$/, ""),
+    quotesApi: (nonEmpty(env.QUOTES_API) ?? "https://query1.finance.yahoo.com").replace(/\/+$/, ""),
+    allowPrivateFetch: env.ALLOW_PRIVATE_FETCH === "1",
   };
 }

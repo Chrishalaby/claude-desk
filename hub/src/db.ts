@@ -14,7 +14,7 @@ export interface DeviceRow {
   last_seen: number | null; last_msg_id: number | null; created: number;
   settings: string | null; place: string | null; reported: string | null; reported_at: number | null;
   ota: string | null; ota_at: number | null; host: string | null; maxblk: number | null; reset: string | null;
-  ota_req_at: number | null; ota_from: string | null;
+  ota_req_at: number | null; ota_from: string | null; wifi: string | null; wifi_at: number | null;
 }
 export interface FriendRow {
   a: number; b: number; rel: "friend" | null;
@@ -75,6 +75,22 @@ export function openDb(dataDir: string): DB {
       t INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS messages_pair ON messages(from_id, to_id, id);
+    CREATE TABLE IF NOT EXISTS apps (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      config TEXT NOT NULL,
+      state TEXT,
+      updated INTEGER NOT NULL,
+      PRIMARY KEY (user_id, kind)
+    );
+    CREATE TABLE IF NOT EXISTS timers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      ends INTEGER NOT NULL,
+      created INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS timers_user ON timers(user_id);
     CREATE TABLE IF NOT EXISTS claude_state (
       user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       sessions TEXT NOT NULL,
@@ -85,7 +101,7 @@ export function openDb(dataDir: string): DB {
   const cols = new Set((db.prepare("PRAGMA table_info(devices)").all() as { name: string }[]).map((c) => c.name));
   for (const [col, type] of [["settings", "TEXT"], ["place", "TEXT"], ["reported", "TEXT"], ["reported_at", "INTEGER"],
     ["ota", "TEXT"], ["ota_at", "INTEGER"], ["host", "TEXT"], ["maxblk", "INTEGER"], ["reset", "TEXT"],
-    ["ota_req_at", "INTEGER"], ["ota_from", "TEXT"]]) {
+    ["ota_req_at", "INTEGER"], ["ota_from", "TEXT"], ["wifi", "TEXT"], ["wifi_at", "INTEGER"]]) {
     if (!cols.has(col)) db.exec(`ALTER TABLE devices ADD COLUMN ${col} ${type}`);
   }
   db.exec(`
