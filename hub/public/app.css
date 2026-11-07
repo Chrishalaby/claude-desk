@@ -191,6 +191,8 @@ form > input[type=password] { margin-top: 8px; }
 .thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
 .thumb-card { display: flex; flex-direction: column; align-items: center; }
 .thumb-card canvas { border-radius: 10px; border: 1px solid var(--line); background: #000; }
+.steps { margin: 0 0 10px; padding-left: 18px; }
+.steps li { margin: 3px 0; }
 .days { display: flex; flex-wrap: wrap; gap: 6px; }
 .day { display: flex; align-items: center; gap: 4px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 99px; font-size: 13px; cursor: pointer; }
 .day input { margin: 0; }

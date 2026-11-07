@@ -30,7 +30,9 @@ export interface Config {
   spotifyAccounts: string;
   spotifyApi: string;
   lastfmKey: string | null;
+  lastfmSecret: string | null;
   lastfmApi: string;
+  lastfmAuth: string;
   slackClientId: string | null;
   slackClientSecret: string | null;
   slackApi: string;
@@ -70,7 +72,9 @@ export function configFromEnv(env = process.env): Config {
     spotifyAccounts: (nonEmpty(env.SPOTIFY_ACCOUNTS) ?? "https://accounts.spotify.com").replace(/\/+$/, ""),
     spotifyApi: (nonEmpty(env.SPOTIFY_API) ?? "https://api.spotify.com").replace(/\/+$/, ""),
     lastfmKey: nonEmpty(env.LASTFM_API_KEY),
+    lastfmSecret: nonEmpty(env.LASTFM_SHARED_SECRET),
     lastfmApi: (nonEmpty(env.LASTFM_API) ?? "https://ws.audioscrobbler.com").replace(/\/+$/, ""),
+    lastfmAuth: nonEmpty(env.LASTFM_AUTH) ?? "https://www.last.fm/api/auth/",
     slackClientId: nonEmpty(env.SLACK_CLIENT_ID),
     slackClientSecret: nonEmpty(env.SLACK_CLIENT_SECRET),
     slackApi: (nonEmpty(env.SLACK_API) ?? "https://slack.com/api").replace(/\/+$/, ""),

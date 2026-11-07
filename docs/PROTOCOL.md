@@ -341,9 +341,12 @@ per integration. Web app: the **Apps** tab (`#/apps`). All endpoints are per sig
   per song. Spotify: `GET /api/apps/spotify/connect` (signed in; redirects to Spotify's OAuth with PKCE, scopes
   `user-read-currently-playing user-read-playback-state`), Spotify returns to `GET /api/apps/spotify/callback`, which
   redirects to `/#/apps?ok=spotify` or `?err=<code>`; the hub polls `currently-playing` every 15 s while something plays,
-  30 s otherwise, and refreshes the token itself. Last.fm (YouTube Music, Apple Music, Deezer, Tidal… through their
-  scrobbling): `PUT /api/apps/lastfm {user}` (checked with `user.getinfo`), polled every 30 s with
-  `user.getrecenttracks`. `PATCH /api/apps/music/<spotify|lastfm> {clock?, cards?}`. Spotify wins when both play.
+  30 s otherwise, and refreshes the token itself. A Spotify app in development mode only lets accounts listed on its
+  dashboard in; anyone else gets 403 from `/v1/me` and is sent back with `err=spotify_invite_only`.
+  Last.fm (any app that scrobbles: Spotify, YouTube Music, Apple Music, Deezer, Tidal…): `GET /api/apps/lastfm/connect`
+  (needs `LASTFM_SHARED_SECRET` too) → Last.fm's web auth with `cb = <hub>/api/apps/lastfm/callback/<state>` → the hub
+  calls `auth.getSession` (signed with the secret) for the username; or `PUT /api/apps/lastfm {user}` (checked with
+  `user.getinfo`). Polled every 30 s with `user.getrecenttracks`. `PATCH /api/apps/music/<spotify|lastfm> {clock?, cards?}`. Spotify wins when both play.
   Music is only polled while one of the user's desks is online. Needs `SPOTIFY_CLIENT_ID` / `LASTFM_API_KEY`.
 * **Reminders** — `GET/POST /api/reminders`, `DELETE /api/reminders/<id>`; at most 20. `{kind: "every", label ≤ 24,
   every: 15|30|45|60|90|120|180|240 (min), start, end (minutes after midnight), days}` repeats between start and end;

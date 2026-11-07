@@ -322,7 +322,7 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
 
   const oauthKind = (req: FastifyRequest) => {
     const k = (req.params as { kind: string }).kind;
-    if (k !== "spotify" && k !== "slack") throw new HttpError(404, "not_found");
+    if (k !== "spotify" && k !== "slack" && k !== "lastfm") throw new HttpError(404, "not_found");
     return k;
   };
   const oauthRedirect = (req: FastifyRequest, kind: string) => `${hubUrl(req)}/api/apps/${kind}/callback`;
@@ -343,6 +343,18 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
       return reply.redirect(`/#/apps?ok=${kind}`);
     } catch (e) {
       return reply.redirect(`/#/apps?err=${e instanceof HttpError ? e.code : kind + "_failed"}`);
+    }
+  });
+  app.get("/api/apps/lastfm/callback/:state", async (req, reply) => {
+    const u = sessionUser(req);
+    if (!u) return reply.redirect("/#/login");
+    const token = str(((req.query ?? {}) as Record<string, unknown>).token);
+    if (!token) return reply.redirect("/#/apps?err=lastfm_denied");
+    try {
+      await apps.lastfmCallback(u.id, token, (req.params as { state: string }).state);
+      return reply.redirect("/#/apps?ok=lastfm");
+    } catch (e) {
+      return reply.redirect(`/#/apps?err=${e instanceof HttpError ? e.code : "lastfm_failed"}`);
     }
   });
   app.put("/api/apps/lastfm", { preHandler: appsLimit }, async (req) => {

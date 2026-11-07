@@ -17,6 +17,8 @@ const ERRORS = {
   spotify_not_configured: "Spotify isn't set up on this hub yet (it needs a Spotify app ID).", slack_not_configured: "Slack isn't set up on this hub yet.",
   lastfm_not_configured: "Last.fm isn't set up on this hub yet (it needs an API key).", lastfm_user: "No Last.fm user with that name.",
   lastfm_unreachable: "Couldn't reach Last.fm. Try again in a minute.", oauth_state: "That sign-in took too long. Try again.",
+  spotify_invite_only: "Spotify sign-in on this hub only works for invited accounts for now. Use Last.fm below; it works with Spotify too.",
+  lastfm_denied: "Last.fm sign-in was cancelled.", lastfm_failed: "Last.fm sign-in failed.",
   spotify_denied: "Spotify sign-in was cancelled.", slack_denied: "Slack sign-in was cancelled.", spotify_failed: "Spotify sign-in failed.", slack_failed: "Slack sign-in failed.",
   no_location: "Set your desk's location first (Devices → your desk → Location).", email_host: "That mail server can't be used.",
   email_login: "The mail server refused that address and app password.", email_unreachable: "Couldn't reach that mail server.",
@@ -1049,14 +1051,21 @@ function appMusic(a) {
         : sp.configured ? h("a", { class: "btn block", href: "/api/apps/spotify/connect" }, "Connect Spotify")
         : h("p", { class: "hint" }, "Not set up on this hub yet."),
       h("div", { style: "border-top:1px solid var(--line);margin:14px 0 10px" }),
-      h("b", {}, "YouTube Music, Apple Music, Deezer, Tidal… via Last.fm"),
+      h("b", {}, "Any music app, through Last.fm"),
       lf.connected ? [h("p", { class: "hint", style: "margin:4px 0 0" }, `Following last.fm/user/${lf.user}`), statusLine(lf), opts("lastfm", lf), off("lastfm")]
         : lf.configured ? [
-          h("p", { class: "hint", style: "margin:4px 0 8px" }, "Last.fm records what you play (\"scrobbling\"). For YouTube Music use the free Web Scrobbler browser extension or Pano Scrobbler on Android; Apple Music, Deezer and Tidal have Last.fm apps or built-in support."),
-          h("form", { class: "inline", onsubmit: guarded(async () => {
-            if (!lfUser.value.trim()) return;
-            try { a.music = await api("PUT", "/api/apps/lastfm", { user: lfUser.value.trim() }); lfUser.value = ""; toast("Last.fm connected"); paint(); } catch (e) { fail(e); }
-          }) }, lfUser, h("button", { class: "btn primary", type: "submit" }, "Connect"))]
+          h("p", { class: "hint", style: "margin:4px 0 8px" }, "Last.fm is a free service that keeps a list of what you play, from any app and any device. Link your music app to it once:"),
+          h("ul", { class: "hint steps" },
+            h("li", {}, h("b", {}, "Spotify: "), h("a", { href: "https://www.last.fm/settings/applications", target: "_blank", rel: "noopener" }, "last.fm → Settings → Applications"), " → Spotify → Connect"),
+            h("li", {}, h("b", {}, "YouTube Music: "), "the free Web Scrobbler browser extension, or Pano Scrobbler on Android"),
+            h("li", {}, h("b", {}, "Deezer, Tidal: "), "turn on Last.fm in the app's settings"),
+            h("li", {}, h("b", {}, "Apple Music: "), "a scrobbler app on your Mac or iPhone")),
+          lf.signin ? h("a", { class: "btn primary block", href: "/api/apps/lastfm/connect" }, "Sign in with Last.fm") : null,
+          h("details", { class: "more", open: !lf.signin }, h("summary", {}, lf.signin ? "Or type your Last.fm username" : "Your Last.fm username"),
+            h("form", { class: "inline", style: "margin-top:8px", onsubmit: guarded(async () => {
+              if (!lfUser.value.trim()) return;
+              try { a.music = await api("PUT", "/api/apps/lastfm", { user: lfUser.value.trim() }); lfUser.value = ""; toast("Last.fm connected"); paint(); } catch (e) { fail(e); }
+            }) }, lfUser, h("button", { class: lf.signin ? "btn" : "btn primary", type: "submit" }, "Connect")))]
         : h("p", { class: "hint" }, "Not set up on this hub yet."));
   }
   paint();
@@ -1226,7 +1235,7 @@ async function viewApps() {
   const ok = state.query && state.query.get("ok"), err = state.query && state.query.get("err");
   if (ok || err) {
     history.replaceState(null, "", "#/apps");
-    if (ok) toast(`${ok === "spotify" ? "Spotify" : ok === "slack" ? "Slack" : ok} connected`);
+    if (ok) toast(`${{ spotify: "Spotify", slack: "Slack", lastfm: "Last.fm" }[ok] || ok} connected`);
     else toast(ERRORS[err] || "Sign-in failed", true);
     document.getElementById(ok === "slack" || err?.startsWith("slack") ? "app-slack" : "app-music")?.scrollIntoView();
   }

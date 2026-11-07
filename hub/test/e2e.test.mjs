@@ -55,12 +55,15 @@ const fixtures = http.createServer(async (req, res) => {
   if (u.pathname === "/sa/api/token") {
     const f = new URLSearchParams(await readBody(req));
     if (f.get("client_id") !== "spotify-test") return json(400, { error: "invalid_client" });
+    if (f.get("grant_type") === "authorization_code" && f.get("code") === "blocked") return json(200, { access_token: "acc-blocked", refresh_token: "refb", expires_in: 3600 });
     if (f.get("grant_type") === "authorization_code") return f.get("code") === "good" && f.get("code_verifier")?.length >= 43
       ? json(200, { access_token: "acc1", refresh_token: "ref1", expires_in: 3600 }) : json(400, { error: "invalid_grant" });
     if (f.get("grant_type") === "refresh_token") return json(200, { access_token: "acc2", expires_in: 3600 });
     return json(400, {});
   }
-  if (u.pathname === "/sp/v1/me") return json(200, { display_name: "Erin S" });
+  if (u.pathname === "/sp/v1/me") return req.headers.authorization === "Bearer acc-blocked"
+    ? json(403, { error: { status: 403, message: "Check settings on developer.spotify.com/dashboard, the user may not be registered." } })
+    : json(200, { display_name: "Erin S" });
   if (u.pathname === "/sp/v1/me/player/currently-playing") {
     if (!/^Bearer acc/.test(req.headers.authorization ?? "")) return json(401, {});
     if (!fxPlaying) { res.statusCode = 204; return res.end(); }
@@ -69,6 +72,12 @@ const fixtures = http.createServer(async (req, res) => {
   if (u.pathname === "/lf/2.0/") {
     if (u.searchParams.get("api_key") !== "lastfm-test") return json(403, { error: 10 });
     if (u.searchParams.get("user") === "nobody") return json(200, { error: 6, message: "User not found" });
+    if (u.searchParams.get("method") === "auth.getSession") {
+      const t = u.searchParams.get("token");
+      const sig = md5(`api_keylastfm-testmethodauth.getSessiontoken${t}lastfm-secret`);
+      return t === "good-token-1" && u.searchParams.get("api_sig") === sig
+        ? json(200, { session: { name: "erin_listens", key: "sk1", subscriber: 0 } }) : json(403, { error: 4, message: "Invalid token" });
+    }
     if (u.searchParams.get("method") === "user.getinfo") return json(200, { user: { name: u.searchParams.get("user") } });
     return json(200, { recenttracks: { track: [{ name: "Ocean Eyes", artist: { "#text": "Billie Eilish" }, "@attr": { nowplaying: "true" } }] } });
   }
@@ -124,7 +133,7 @@ function makeConfig() {
     clientDir: path.join(here, "..", "..", "client"),
     firmwareDir: fwDir, packsDir,
     githubApi: fx + "/gh", quotesApi: fx + "/q", allowPrivateFetch: true, weatherApi: fx + "/w",
-    spotifyClientId: "spotify-test", spotifyAccounts: fx + "/sa", spotifyApi: fx + "/sp", lastfmKey: "lastfm-test", lastfmApi: fx + "/lf",
+    spotifyClientId: "spotify-test", spotifyAccounts: fx + "/sa", spotifyApi: fx + "/sp", lastfmKey: "lastfm-test", lastfmSecret: "lastfm-secret", lastfmApi: fx + "/lf", lastfmAuth: fx + "/lfauth/",
     slackClientId: "slack-test", slackClientSecret: "slack-secret", slackApi: fx + "/sl",
     now: () => clock, log: false,
   };
@@ -1128,6 +1137,10 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
     ["spotify-test", "S256", `${base}/api/apps/spotify/callback`]);
   const bad = await fetch(`${base}/api/apps/spotify/callback?code=good&state=forged`, { headers: { cookie: erin.cookie() }, redirect: "manual" });
   assert.equal(bad.headers.get("location"), "/#/apps?err=oauth_state");
+  const blockedState = new URL((await fetch(`${base}/api/apps/spotify/connect`, { headers: { cookie: erin.cookie() }, redirect: "manual" })).headers.get("location")).searchParams.get("state");
+  const blocked = await fetch(`${base}/api/apps/spotify/callback?code=blocked&state=${blockedState}`, { headers: { cookie: erin.cookie() }, redirect: "manual" });
+  assert.equal(blocked.headers.get("location"), "/#/apps?err=spotify_invite_only", "accounts Spotify hasn't allowed get a clear message");
+  assert.equal((await erin.call("GET", "/api/apps")).body.music.spotify.connected, false);
   const cb = await fetch(`${base}/api/apps/spotify/callback?code=good&state=${auth.searchParams.get("state")}`, { headers: { cookie: erin.cookie() }, redirect: "manual" });
   assert.equal(cb.headers.get("location"), "/#/apps?ok=spotify");
   r = await erin.call("GET", "/api/apps");
@@ -1148,6 +1161,20 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
   await hub.apps.tick();
   await de.waitFor((x) => x.topic === "desk/esp-e0e001/next" && x.raw === "", "now playing cleared");
 
+  const go = (url) => fetch(url, { headers: { cookie: erin.cookie() }, redirect: "manual" }).then((x) => x.headers.get("location"));
+  const lfStart = new URL(await go(`${base}/api/apps/lastfm/connect`));
+  assert.equal(lfStart.origin + lfStart.pathname, `${fx}/lfauth/`);
+  assert.equal(lfStart.searchParams.get("api_key"), "lastfm-test");
+  const lfCb = lfStart.searchParams.get("cb");
+  assert.match(lfCb, new RegExp(`^${base}/api/apps/lastfm/callback/[0-9a-f]{32}$`));
+  assert.equal(await go(`${lfCb}?token=bad-token-99`), "/#/apps?err=lastfm_denied");
+  assert.equal(await go(`${lfCb}?token=good-token-1`), "/#/apps?err=oauth_state", "a sign-in link works once");
+  const lfCb2 = new URL(await go(`${base}/api/apps/lastfm/connect`)).searchParams.get("cb");
+  assert.equal(await go(`${base}/api/apps/lastfm/callback/${"0".repeat(32)}?token=good-token-1`), "/#/apps?err=oauth_state");
+  assert.equal(await go(`${lfCb2}?token=good-token-1`), "/#/apps?ok=lastfm");
+  r = await erin.call("GET", "/api/apps");
+  assert.deepEqual([r.body.music.lastfm.connected, r.body.music.lastfm.user, r.body.music.lastfm.signin], [true, "erin_listens", true]);
+  await erin.call("DELETE", "/api/apps/lastfm");
   assert.equal((await erin.call("PUT", "/api/apps/lastfm", { user: "nobody" })).body.error, "lastfm_user");
   r = await erin.call("PUT", "/api/apps/lastfm", { user: "erin_listens" });
   assert.equal(r.status, 200, r.text);

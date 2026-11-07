@@ -85,7 +85,7 @@ Alternative without Docker: Root Directory `hub` works with Railway's Node build
 | `HOST` | `0.0.0.0` | bind address |
 | `HUB_QUIET` | – | `1` silences the startup log |
 | `SPOTIFY_CLIENT_ID` | – | enables Spotify now playing. Create an app at developer.spotify.com (Web API), redirect URI `<hub>/api/apps/spotify/callback`. In development mode only users you add on the app's dashboard (up to 25) can connect. |
-| `LASTFM_API_KEY` | – | enables Last.fm now playing (last.fm/api/account/create) |
+| `LASTFM_API_KEY` / `LASTFM_SHARED_SECRET` | – | enables Last.fm now playing (last.fm/api/account/create gives both). The key alone allows typing a username; with the secret users get a "Sign in with Last.fm" button. |
 | `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` | – | enables Slack mentions. Create an app at api.slack.com/apps, add the **user** scope `search:read` and the redirect URL `<hub>/api/apps/slack/callback` |
 
 ## API (web app)

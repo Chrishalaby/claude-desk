@@ -209,7 +209,7 @@ export class Apps {
       music: {
         playing: p ? { title: p.title, artist: p.artist, src: p.src } : null,
         spotify: { configured: !!this.cfg.spotifyClientId, connected: !!sp, name: sp?.config.name ?? null, clock: sp?.config.clock ?? true, cards: sp?.config.cards ?? false, ...st(sp) },
-        lastfm: { configured: !!this.cfg.lastfmKey, connected: !!lf, user: lf?.config.user ?? null, clock: lf?.config.clock ?? true, cards: lf?.config.cards ?? false, ...st(lf) },
+        lastfm: { configured: !!this.cfg.lastfmKey, signin: !!(this.cfg.lastfmKey && this.cfg.lastfmSecret), connected: !!lf, user: lf?.config.user ?? null, clock: lf?.config.clock ?? true, cards: lf?.config.cards ?? false, ...st(lf) },
       },
       reminders: this.listReminders(userId),
       rain: { on: !!rain, hasLocation: !!this.location(userId), ...st(rain) },
@@ -227,11 +227,12 @@ export class Apps {
     this.updateNext(userId);
   }
 
-  oauthStart(userId: number, kind: "spotify" | "slack", redirectUri: string): string {
+  oauthStart(userId: number, kind: "spotify" | "slack" | "lastfm", redirectUri: string): string {
     const now = this.now();
     for (const [k, v] of this.oauth) if (v.exp < now) this.oauth.delete(k);
     if (kind === "spotify" && !this.cfg.spotifyClientId) throw new HttpError(409, "spotify_not_configured");
     if (kind === "slack" && !(this.cfg.slackClientId && this.cfg.slackClientSecret)) throw new HttpError(409, "slack_not_configured");
+    if (kind === "lastfm" && !(this.cfg.lastfmKey && this.cfg.lastfmSecret)) throw new HttpError(409, "lastfm_not_configured");
     const state = crypto.randomBytes(16).toString("hex");
     const verifier = crypto.randomBytes(48).toString("base64url");
     this.oauth.set(state, { userId, kind, verifier, exp: now + 600 });
@@ -241,6 +242,7 @@ export class Apps {
         redirect_uri: redirectUri, code_challenge_method: "S256", code_challenge: crypto.createHash("sha256").update(verifier).digest("base64url"), state,
       });
     }
+    if (kind === "lastfm") return this.cfg.lastfmAuth + "?" + new URLSearchParams({ api_key: this.cfg.lastfmKey!, cb: `${redirectUri}/${state}` });
     return "https://slack.com/oauth/v2/authorize?" + new URLSearchParams({ client_id: this.cfg.slackClientId!, user_scope: "search:read", redirect_uri: redirectUri, state });
   }
 
@@ -258,6 +260,7 @@ export class Apps {
     }));
     if (tok.status !== 200 || !tok.body?.access_token || !tok.body?.refresh_token) throw new HttpError(400, "spotify_denied");
     const me = await callJson(`${this.cfg.spotifyApi}/v1/me`, { headers: { Authorization: `Bearer ${tok.body.access_token}` } }).catch(() => ({ status: 0, body: null }));
+    if (me.status === 403) throw new HttpError(403, "spotify_invite_only");
     const prev = this.get<SpotifyConfig, Status>(userId, "spotify");
     const now = this.now();
     this.put(userId, "spotify", {
@@ -274,8 +277,24 @@ export class Apps {
     const r = await callJson(`${this.cfg.lastfmApi}/2.0/?` + new URLSearchParams({ method: "user.getinfo", user, api_key: this.cfg.lastfmKey, format: "json" }))
       .catch(() => { throw new HttpError(400, "lastfm_unreachable"); });
     if (r.status !== 200 || r.body?.error || !r.body?.user) throw new HttpError(400, "lastfm_user");
+    this.saveLastfm(userId, String(r.body.user.name || user));
+  }
+
+  async lastfmCallback(userId: number, token: string, state: string) {
+    this.takeState(userId, "lastfm", state);
+    if (!/^[A-Za-z0-9_-]{8,64}$/.test(token)) throw new HttpError(400, "lastfm_denied");
+    const key = this.cfg.lastfmKey ?? "";
+    const sig = crypto.createHash("md5").update(`api_key${key}methodauth.getSessiontoken${token}${this.cfg.lastfmSecret ?? ""}`).digest("hex");
+    const r = await callJson(`${this.cfg.lastfmApi}/2.0/?` + new URLSearchParams({ method: "auth.getSession", api_key: key, token, api_sig: sig, format: "json" }))
+      .catch(() => { throw new HttpError(400, "lastfm_unreachable"); });
+    const name = r.body?.session?.name;
+    if (r.status !== 200 || !name || !/^[A-Za-z0-9_.-]{2,40}$/.test(String(name))) throw new HttpError(400, "lastfm_denied");
+    this.saveLastfm(userId, String(name));
+  }
+
+  private saveLastfm(userId: number, user: string) {
     const prev = this.get<LastfmConfig, Status>(userId, "lastfm");
-    this.put(userId, "lastfm", { user: String(r.body.user.name || user), clock: prev?.config.clock ?? true, cards: prev?.config.cards ?? false }, { ok: true, error: null, at: this.now() });
+    this.put(userId, "lastfm", { user, clock: prev?.config.clock ?? true, cards: prev?.config.cards ?? false }, { ok: true, error: null, at: this.now() });
     this.due.set(`lastfm:${userId}`, this.now());
   }
 
