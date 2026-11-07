@@ -739,6 +739,32 @@ void doOta() {
   dirty = true;
 }
 
+#define PEND_SLOT 80
+#define PEND_MAGIC 0x50454E44
+struct Pending { uint32_t magic; uint8_t kind, _pad[3]; char pack[16]; char md5[36]; char url[128]; };
+
+void queueDownload(uint8_t kind, const String &url) {
+  Pending p;
+  memset(&p, 0, sizeof p);
+  p.magic = PEND_MAGIC;
+  p.kind = kind;
+  strncpy(p.url, url.c_str(), sizeof p.url - 1);
+  strncpy(p.pack, pendingPack.c_str(), sizeof p.pack - 1);
+  strncpy(p.md5, pendingPackMd5.c_str(), sizeof p.md5 - 1);
+  ESP.rtcUserMemoryWrite(PEND_SLOT, (uint32_t *)&p, sizeof p);
+}
+
+void runPendingDownload() {
+  Pending p;
+  ESP.rtcUserMemoryRead(PEND_SLOT, (uint32_t *)&p, sizeof p);
+  if (p.magic != PEND_MAGIC) return;
+  uint32_t zero = 0;
+  ESP.rtcUserMemoryWrite(PEND_SLOT, &zero, sizeof zero);
+  p.url[sizeof p.url - 1] = p.pack[sizeof p.pack - 1] = p.md5[sizeof p.md5 - 1] = 0;
+  if (p.kind == 1) { pendingOtaUrl = p.url; doOta(); }
+  else if (p.kind == 2) { pendingPack = p.pack; pendingPackUrl = p.url; pendingPackMd5 = p.md5; downloadPack(); }
+}
+
 void hubStatus() {
   char b[240];
   snprintf(b, sizeof b, "{\"fw\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"heap\":%u,\"up\":%lu%s%s%s}", FW_VERSION,
@@ -748,7 +774,7 @@ void hubStatus() {
 }
 
 void hubLoop() {
-  if (!X.host[0] || hubState == HUB_FORGOTTEN || WiFi.status() != WL_CONNECTED) return;
+  if (restartAt || !X.host[0] || hubState == HUB_FORGOTTEN || WiFi.status() != WL_CONNECTED) return;
   if (hubState == HUB_OFF || hubState == HUB_HELLO) {
     if ((int32_t)(millis() - nextHello) < 0) return;
     if (!hubHello()) { nextHello = millis() + 60000; hubState = HUB_HELLO; return; }
@@ -769,8 +795,16 @@ void hubLoop() {
     nextMqtt = 0;
   }
   if (pendingOtaUrl.length() || (pendingPack.length() && pendingPackUrl.length())) {
+    bool ota = pendingOtaUrl.length();
+    const String &url = ota ? pendingOtaUrl : pendingPackUrl;
     mqttStop();                               // free the TLS session's RAM for the download
-    if (pendingOtaUrl.length()) doOta(); else downloadPack();
+    if (url.length() < sizeof(Pending::url)) {
+      queueDownload(ota ? 1 : 2, url);
+      uiMessage(ota ? "UPDATING" : "DOWNLOADING", "restarting to make room", "", "", COL_TEAL);
+      restartAt = millis() + 300;
+      return;
+    }
+    if (ota) doOta(); else downloadPack();
     nextMqtt = 0; nextStatus = 0;
     return;
   }
@@ -1037,6 +1071,9 @@ void setup() {
 
   bool online = connectWifi(25000);
   if (!online) startSetup();
+#ifndef LOADER
+  if (online && mode == M_NORMAL) runPendingDownload();
+#endif
 
   updater.setup(&server, "/update");
   server.on("/reboot", handleReboot);

@@ -240,5 +240,8 @@ Emoji sets other than the built-in pixel art are **packs** the hub serves; a des
   `POST /api/devices/<chip>/ota` / `POST /api/devices/<chip>/reboot` (owner only; `409 {"error":"offline"}` when
   the desk isn't connected, since `cmd` is not retained).
 * Button → `desk/<chip>/cmd` (not retained): `{ "cmd": "ota", "url": "...", "md5": "...", "version": "1.4.0" }`.
-  Also `{ "cmd": "reboot" }`. The device disconnects MQTT (to free RAM for one TLS session), downloads and flashes
-  (ESP8266httpUpdate, md5 checked), and reboots. Progress/outcome: `up/status` gains `"ota": "ok|failed: <reason>"`.
+  Also `{ "cmd": "reboot" }`. The device disconnects MQTT, stores the download in RTC memory and restarts; right
+  after Wi-Fi is up (before hello/MQTT, ~32 KB free) it downloads and flashes (ESP8266httpUpdate, md5 checked) and
+  reboots. Pack downloads (`set` with a `packUrl`) take the same restart-then-download path. Measured on 1.4.1: doing
+  the download in place after only disconnecting MQTT left too little heap for the HTTPS download (`connection
+  failed`, or a crash). Outcome: `up/status` gains `"ota": "ok|failed: <reason>"`.

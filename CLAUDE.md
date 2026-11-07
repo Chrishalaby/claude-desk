@@ -31,26 +31,28 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 - RAM is the constraint (~80 KB total; ~41 KB static). One BearSSL TLS session ≈ 25 KB → the firmware never holds two:
   hello (HTTPS) runs before MQTT; pack downloads/OTA stop MQTT first. Measured on the real desk (1.4.1, default 16 KB
   BearSSL RX buffer): ~32 KB free before the hub link, **~2.7 KB free while MQTT/TLS is up** — weather fetches failed.
-  1.4.2 uses a 2 KB RX buffer for MQTT (hub caps TLS records at 2 KB, PROTOCOL.md §3). Check `heap` in `/info` or
-  `up/status` after changes. Plan B if still too tight: plain MQTT (would need a hub listener + doc change).
+  1.4.2 uses a 2 KB RX buffer for MQTT (hub caps TLS records at 2 KB, PROTOCOL.md §3): **~17 KB free while
+  connected** on 1.4.3, weather works. OTA and pack downloads restart first and download before hello/MQTT (1.4.3);
+  the in-place download failed on the real desk. Check `heap` in `/info` or `up/status` after changes.
+  - Desk stuck on a firmware whose OTA fails: 4 quick `GET /reboot` (each within 60 s of boot) → SAFE MODE (no hub,
+    ~33 KB free) → `curl -F firmware=@firmware/dist/claude-desk.bin http://<ip>/update`. The next boot is SAFE MODE
+    again; after 60 s uptime, `/reboot` once more to get back to normal.
 - Factory firmware's update page only accepts ≈528 KB → first install uses `claude-desk.bin.gz` or the loader route.
 
 ## Owner's setup / current state (Nov 2026)
 - Owner: Chris (GitHub `Chrishalaby`), macOS, Claude Code user. Repo: github.com/Chrishalaby/claude-desk (public).
-- His desk currently runs **firmware 1.0.4** (before Wi-Fi list / Casper / hub support) and has been offline because his
-  home Wi-Fi is down. 1.0.4 only knows one network; to move it to his phone hotspot: power-cycle → `claude-desk-setup`
-  AP → 192.168.4.1 → pick hotspot (this replaces the home network; re-add it later at `/wifi` on ≥1.2).
-  Then upload `firmware/dist/claude-desk.bin` to `http://<ip>/update` (OTA from 1.0.x accepts the full image).
-  Home LAN IP was 192.168.1.107; mDNS name `claude-desk.local` (1.0–1.4.0; per-desk names from 1.4.1).
+- His desk runs **firmware 1.4.3**, is on his phone hotspot (home Wi-Fi is down; re-add it at `/wifi` later), paired
+  on the hub as `chris-desk` (`chris-desk.local`). 1.0.4 → 1.4.1 went by local `/update`; 1.4.1 → 1.4.3 via SAFE MODE
+  (its own OTA failed, see Hardware facts).
 - His Mac still has the **old local tracker** from before the hub (`~/Claude/geekmagic/claude-desk/`, launchd
   `com.chris.claude-desk`, hooks pointing at `.../claude-desk/hook.sh`). Running the hub's `install.sh` removes both.
   Note: macOS blocks LAN access for launchd services (Local Network privacy) — that's why hooks now go to the hub.
 - Hub is live at `https://claude-desk.up.railway.app` (Railway project `claude-desk`; MQTT via the TCP proxy, the hub
-  hands the endpoint to devices). Next: register (invite code), flash desk to 1.4.1, set hub address on the desk, pair,
-  install hooks with the token, test: needs/done cards, a message + reaction between two accounts, remote settings,
-  pack download (Fluent/Twemoji/Noto), OTA button.
-- Untested so far: Windows `install.ps1`/`hook.ps1` (written carefully, never executed), TLS on device,
-  pack download and OTA on device (host-tested pack format only).
+  hands the endpoint to devices). Phone-first install guide at `/#/install`. Next: install hooks with the token
+  (removes the old tracker), test: needs/done cards, a message + reaction between two accounts, remote settings,
+  pack download (Fluent/Twemoji/Noto), OTA button (needs a firmware newer than the desk's).
+- Untested so far: Windows `install.ps1`/`hook.ps1` (written carefully, never executed), the restart-then-download
+  path for OTA and packs on the device, the install guide on a real phone and on a stock GeekMagic.
 
 ## Conventions
 - Owner prefers terse answers. Keep personal data (locations, names) out of the public repo.
