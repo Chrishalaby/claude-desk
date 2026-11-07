@@ -5,7 +5,7 @@ Turn a **GeekMagic SmallTV Ultra** (the ~$20 ESP8266 desk clock) into a little d
 - **Clock + weather** for wherever you live (tall clock layout or a clean one, sharp anti-aliased text, Meteocons weather icons).
 - **Claude Code status** — a pixel robot that works when Claude works, and a full-screen **NEEDS YOU** card when Claude Code is waiting for a permission (stays until you answer; several sessions stack as "+2 more waiting"), then **DONE**.
 - **Moods** — the robot blinks, dozes off when you've been away, and sleeps at night. Optionally **Casper the dog** trots by, naps next to it and sleeps there at night.
-- **Friends network** — pair your desk with a small self-hosted hub and send friends (and partners) messages and reactions that pop up on their desk instantly. Partners get extra reactions (❤️ hug, kiss, goodnight, miss you).
+- **Friends network** — pair your desk with a small self-hosted hub and send friends messages and reactions (👋 👍 😂 ☕ 🔥 ❤️ 🤗 😘 🌙 🥺) that pop up on their desk instantly.
 
 ```
 Claude Code ── hook ──▶ hub (Railway) ── MQTT/TLS ──▶ your desk

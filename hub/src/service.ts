@@ -10,11 +10,10 @@ import { firmwareInfo, packIndex } from "./files.js";
 
 export const PAIR_ROTATE_SECS = 10 * 60;
 export const PAIR_GRACE_SECS = 60;
-export const FRIEND_REACTIONS = ["wave", "thumbs", "laugh", "coffee", "fire"] as const;
-export const PARTNER_REACTIONS = ["heart", "hug", "kiss", "goodnight", "missyou"] as const;
+export const REACTIONS = ["wave", "thumbs", "laugh", "coffee", "fire", "heart", "hug", "kiss", "goodnight", "missyou"] as const;
 export const MSG_MAX = 100;
 export const OTA_WINDOW_SECS = 5 * 60;
-export type Rel = "friend" | "partner";
+export type Rel = "friend";
 
 /** Remote settings (PROTOCOL.md section 8): key -> validator returning the normalized value or undefined. */
 const bit = (v: unknown) => (v === true || v === 1 || v === "1" ? 1 : v === false || v === 0 || v === "0" ? 0 : undefined);
@@ -517,7 +516,7 @@ export class Service {
     return rows.map((r) => this.friendView(me, r)).sort((x, y) => x.username.localeCompare(y.username));
   }
 
-  requestFriend(me: number, username: string, rel: Rel) {
+  requestFriend(me: number, username: string) {
     const other = this.userByName(username);
     if (!other) throw new HttpError(404, "no_such_user");
     if (other.id === me) throw new HttpError(400, "self");
@@ -525,20 +524,11 @@ export class Service {
     const r = this.friendRow(me, other.id);
     const now = this.now();
     if (!r) {
-      this.db.prepare("INSERT INTO friends (a, b, rel, pending_rel, pending_from, updated) VALUES (?, ?, NULL, ?, ?, ?)")
-        .run(a, b, rel, me, now);
-    } else if (r.pending_rel && r.pending_from === other.id && r.pending_rel === rel) {
-      // they already asked for exactly this: accept
-      this.db.prepare("UPDATE friends SET rel = ?, pending_rel = NULL, pending_from = NULL, updated = ? WHERE a = ? AND b = ?")
-        .run(rel, now, a, b);
-    } else if (r.rel === rel && !r.pending_rel) {
-      // already in that relationship: nothing to do
-    } else if (r.rel === rel) {
-      // asking for the current relationship again cancels any other pending change
-      this.db.prepare("UPDATE friends SET pending_rel = NULL, pending_from = NULL, updated = ? WHERE a = ? AND b = ?").run(now, a, b);
-    } else {
-      this.db.prepare("UPDATE friends SET pending_rel = ?, pending_from = ?, updated = ? WHERE a = ? AND b = ?")
-        .run(rel, me, now, a, b);
+      this.db.prepare("INSERT INTO friends (a, b, rel, pending_rel, pending_from, updated) VALUES (?, ?, NULL, 'friend', ?, ?)")
+        .run(a, b, me, now);
+    } else if (!r.rel && r.pending_from === other.id) {
+      this.db.prepare("UPDATE friends SET rel = 'friend', pending_rel = NULL, pending_from = NULL, updated = ? WHERE a = ? AND b = ?")
+        .run(now, a, b);
     }
     return this.friendView(me, this.friendRow(me, other.id)!);
   }
@@ -547,7 +537,7 @@ export class Service {
     const other = this.userByName(username);
     const r = other && this.friendRow(me, other.id);
     if (!other || !r || !r.pending_rel || r.pending_from !== other.id) throw new HttpError(404, "no_request");
-    this.db.prepare("UPDATE friends SET rel = pending_rel, pending_rel = NULL, pending_from = NULL, updated = ? WHERE a = ? AND b = ?")
+    this.db.prepare("UPDATE friends SET rel = 'friend', pending_rel = NULL, pending_from = NULL, updated = ? WHERE a = ? AND b = ?")
       .run(this.now(), r.a, r.b);
     return this.friendView(me, this.friendRow(me, other.id)!);
   }
@@ -609,10 +599,7 @@ export class Service {
       if (charLen(t) > MSG_MAX) throw new HttpError(400, "too_long");
     } else if (kind === "reaction") {
       r = String(reaction ?? "");
-      const isFriend = (FRIEND_REACTIONS as readonly string[]).includes(r);
-      const isPartner = (PARTNER_REACTIONS as readonly string[]).includes(r);
-      if (!isFriend && !isPartner) throw new HttpError(400, "bad_reaction");
-      if (isPartner && rel !== "partner") throw new HttpError(403, "partner_only");
+      if (!(REACTIONS as readonly string[]).includes(r)) throw new HttpError(400, "bad_reaction");
     } else {
       throw new HttpError(400, "bad_kind");
     }

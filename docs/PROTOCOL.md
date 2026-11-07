@@ -93,14 +93,15 @@ of the Stop (done), of the activity that made it `working`, or when it went idle
 
 ### 3.2 `desk/<chip>/msg` — retained (latest message only), hub → device
 ```json
-{ "id": 1234, "from": "chris", "name": "Chris", "rel": "friend|partner",
+{ "id": 1234, "from": "chris", "name": "Chris", "rel": "friend",
   "kind": "text|reaction", "text": "see you at 8?", "reaction": "heart", "t": 1762412345 }
 ```
 * `id` strictly increases per hub. Device remembers the last shown id (persisted) and shows a message only if `id > lastShown`.
 * `text` ≤ 100 chars (device wraps to ≤ 3 lines; hub enforces the length). Always a string: `""` for reactions.
 * `reaction` is `""` for text messages. `name` ≤ 20 chars.
-* `reaction` ∈ friend set `wave, thumbs, laugh, coffee, fire` and partner-only set `heart, hug, kiss, goodnight, missyou`.
-  Hub rejects partner-only reactions for non-partner relationships.
+* `reaction` ∈ `wave, thumbs, laugh, coffee, fire, heart, hug, kiss, goodnight, missyou`, open to every friend.
+* `rel` is always `"friend"` (there used to be a `"partner"` level; the hub converts old data on start). Firmware
+  still styles `"partner"` differently, so the field stays for compatibility.
 
 ### 3.3 `desk/<chip>/cfg` — retained, hub → device
 Paired:
@@ -173,10 +174,10 @@ Hub publishes the view to `desk/<chip>/claude` for **every device owned by that 
 
 ## 6. Friends
 
-* `POST /api/friends {username, rel: "friend"|"partner"}` → pending request.
+* `POST /api/friends {username}` → pending request (a `rel` field is ignored). If the other person already asked you,
+  this accepts their request. Messages and reactions need an accepted request: someone can only put something on
+  your desk after you said yes.
 * `POST /api/friends/<username>/accept`, `/decline`, `DELETE /api/friends/<username>`.
-* Changing `rel` = new request that the other side must accept.
-* A user may have any number of friends and partners (it's their business).
 
 ## 7. Client installers (served by the hub, hub URL baked in)
 

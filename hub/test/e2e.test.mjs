@@ -167,33 +167,30 @@ test("accounts: invite code, registration, login, timezone", async () => {
   assert.equal(r.body.displayName, "Bobby");
 });
 
-test("friends: request, accept, relationship change, decline, partner", async () => {
-  let r = await alice.call("POST", "/api/friends", { username: "bob", rel: "partner" });
+test("friends: request, accept, mutual request connects, decline, one friend type", async () => {
+  let r = await alice.call("POST", "/api/friends", { username: "bob" });
   assert.equal(r.status, 200);
-  assert.deepEqual([r.body.rel, r.body.pendingRel, r.body.pendingFrom], [null, "partner", "me"]);
+  assert.deepEqual([r.body.rel, r.body.pendingRel, r.body.pendingFrom], [null, "friend", "me"]);
   r = await bob.call("GET", "/api/friends");
-  assert.deepEqual(r.body.map((f) => [f.username, f.pendingRel, f.pendingFrom]), [["alice", "partner", "them"]]);
+  assert.deepEqual(r.body.map((f) => [f.username, f.pendingRel, f.pendingFrom]), [["alice", "friend", "them"]]);
   // the requester can't accept their own request
   assert.equal((await alice.call("POST", "/api/friends/bob/accept")).status, 404);
   r = await bob.call("POST", "/api/friends/alice/accept");
   assert.equal(r.status, 200);
-  assert.equal(r.body.rel, "partner");
-
-  // carol <-> alice: friends; a change to partner is declined and the friendship stays
-  await carol.call("POST", "/api/friends", { username: "alice", rel: "friend" });
-  r = await alice.call("POST", "/api/friends/carol/accept");
   assert.equal(r.body.rel, "friend");
-  await carol.call("POST", "/api/friends", { username: "alice", rel: "partner" });
-  r = await alice.call("GET", "/api/friends");
-  const c = r.body.find((f) => f.username === "carol");
-  assert.deepEqual([c.rel, c.pendingRel, c.pendingFrom], ["friend", "partner", "them"]);
-  assert.equal((await alice.call("POST", "/api/friends/carol/decline")).status, 200);
-  r = await alice.call("GET", "/api/friends");
-  assert.deepEqual(r.body.map((f) => [f.username, f.rel, f.pendingRel]), [["bob", "partner", null], ["carol", "friend", null]]);
 
-  assert.equal((await alice.call("POST", "/api/friends", { username: "alice", rel: "friend" })).status, 400);
-  assert.equal((await alice.call("POST", "/api/friends", { username: "nobody", rel: "friend" })).status, 404);
-  assert.equal((await alice.call("POST", "/api/friends", { username: "bob", rel: "lover" })).status, 400);
+  // carol -> alice, then alice -> carol: the second request accepts the first
+  await carol.call("POST", "/api/friends", { username: "alice", rel: "partner" });
+  r = await alice.call("POST", "/api/friends", { username: "carol" });
+  assert.deepEqual([r.body.rel, r.body.pendingRel], ["friend", null]);
+  // asking again once connected changes nothing
+  r = await carol.call("POST", "/api/friends", { username: "alice" });
+  assert.deepEqual([r.body.rel, r.body.pendingRel], ["friend", null]);
+  r = await alice.call("GET", "/api/friends");
+  assert.deepEqual(r.body.map((f) => [f.username, f.rel, f.pendingRel]), [["bob", "friend", null], ["carol", "friend", null]]);
+
+  assert.equal((await alice.call("POST", "/api/friends", { username: "alice" })).status, 400);
+  assert.equal((await alice.call("POST", "/api/friends", { username: "nobody" })).status, 404);
 });
 
 test("TLS: TLS 1.2 ECDHE-RSA-AES128-GCM-SHA256, RSA-2048, fingerprint + pubkey match hello", async () => {
@@ -444,14 +441,14 @@ test("hook: needs -> working -> done -> idle, parallel PostToolUse keeps a pendi
   await claude((j) => j.s === "idle", "idle");
 });
 
-test("messages: text + reactions, retained delivery, partner-only rule, limits, history", async () => {
+test("messages: text + reactions, retained delivery, every reaction for friends, limits, history", async () => {
   const b = devB.client;
   let r = await alice.call("POST", "/api/messages", { to: "bob", kind: "text", text: "see you at 8?" });
   assert.equal(r.status, 200, r.text);
   assert.equal(r.body.devices, 1);
   const id1 = r.body.message.id;
   let m = await b.waitFor((x) => x.topic === `desk/${devB.chip}/msg`, "text msg");
-  assert.deepEqual(m.json, { id: id1, from: "alice", name: "Alice", rel: "partner", kind: "text", text: "see you at 8?", reaction: "", t: clock });
+  assert.deepEqual(m.json, { id: id1, from: "alice", name: "Alice", rel: "friend", kind: "text", text: "see you at 8?", reaction: "", t: clock });
 
   r = await alice.call("POST", "/api/messages", { to: "bob", kind: "reaction", reaction: "heart" });
   assert.equal(r.status, 200);
@@ -468,13 +465,16 @@ test("messages: text + reactions, retained delivery, partner-only rule, limits, 
   assert.equal(m.json.reaction, "heart");
   devB.client = b2;
 
-  // partner-only reactions are refused between friends
+  // any friend can send any reaction; unknown ones are refused
   r = await carol.call("POST", "/api/messages", { to: "alice", kind: "reaction", reaction: "heart" });
-  assert.equal(r.status, 403);
-  assert.equal(r.body.error, "partner_only");
+  assert.equal(r.status, 200, r.text);
+  m = await devA.client.waitFor((x) => x.topic === `desk/${devA.chip}/msg` && x.json.reaction === "heart", "heart to alice");
+  assert.deepEqual([m.json.from, m.json.name, m.json.rel, m.json.reaction], ["carol", "Carol", "friend", "heart"]);
+  assert.equal((await carol.call("POST", "/api/messages", { to: "alice", kind: "reaction", reaction: "eggplant" })).body.error, "bad_reaction");
+  clock += 61;
   r = await carol.call("POST", "/api/messages", { to: "alice", kind: "reaction", reaction: "wave" });
   assert.equal(r.status, 200);
-  m = await devA.client.waitFor((x) => x.topic === `desk/${devA.chip}/msg`, "wave to alice");
+  m = await devA.client.waitFor((x) => x.topic === `desk/${devA.chip}/msg` && x.json.reaction === "wave", "wave to alice");
   assert.deepEqual([m.json.from, m.json.name, m.json.rel, m.json.reaction], ["carol", "Carol", "friend", "wave"]);
 
   // validation

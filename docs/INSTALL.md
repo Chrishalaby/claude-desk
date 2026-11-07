@@ -62,7 +62,7 @@ Open the desk's address (`http://claude-desk-<id>.local` or its IP):
 1. Open the hub address, **register** (invite code from whoever runs the hub), sign in.
 2. **Devices → Pair**: enter the 6-digit code from the desk and give it a name. The desk switches back to the clock and
    takes its new local address, `http://<username>-desk.local` (shown on the desk's page in the hub).
-3. **Friends → Add**: enter a friend's username and choose **friend** or **partner**. They accept on their side.
+3. **Friends → Add**: enter a friend's username. They accept on their side.
 4. Pick a friend on **Home** to send a message (≤100 characters) or a reaction. It pops up on their desk within a second.
 
 ## 5. Claude Code status

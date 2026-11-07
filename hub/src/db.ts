@@ -17,8 +17,8 @@ export interface DeviceRow {
   ota_req_at: number | null; ota_from: string | null;
 }
 export interface FriendRow {
-  a: number; b: number; rel: "friend" | "partner" | null;
-  pending_rel: "friend" | "partner" | null; pending_from: number | null; updated: number;
+  a: number; b: number; rel: "friend" | null;
+  pending_rel: "friend" | null; pending_from: number | null; updated: number;
 }
 export interface MessageRow {
   id: number; from_id: number; to_id: number; rel: string; kind: "text" | "reaction";
@@ -88,6 +88,12 @@ export function openDb(dataDir: string): DB {
     ["ota_req_at", "INTEGER"], ["ota_from", "TEXT"]]) {
     if (!cols.has(col)) db.exec(`ALTER TABLE devices ADD COLUMN ${col} ${type}`);
   }
+  db.exec(`
+    UPDATE friends SET rel = 'friend' WHERE rel IS NOT NULL AND rel != 'friend';
+    UPDATE friends SET pending_rel = NULL, pending_from = NULL WHERE rel IS NOT NULL AND pending_rel IS NOT NULL;
+    UPDATE friends SET pending_rel = 'friend' WHERE rel IS NULL AND pending_rel IS NOT NULL AND pending_rel != 'friend';
+    UPDATE messages SET rel = 'friend' WHERE rel != 'friend';
+  `);
   return db;
 }
 

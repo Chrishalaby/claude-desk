@@ -4,7 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Config } from "./config.js";
 import type { DB, UserRow } from "./db.js";
 import { CHIP_RE } from "./broker.js";
-import { HttpError, type Rel, type Service } from "./service.js";
+import { HttpError, type Service } from "./service.js";
 import { firmwareInfo, PACK_ID_RE, readBlob } from "./files.js";
 import { charLen, hashPassword, isValidTz, oneLine, randomHex, RateLimiter, safeEqual, sha256, trunc, verifyPassword } from "./util.js";
 
@@ -252,9 +252,7 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
 
   app.post("/api/friends", { preHandler: auth }, async (req) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
-    const rel = b.rel === undefined ? "friend" : b.rel;
-    if (rel !== "friend" && rel !== "partner") throw new HttpError(400, "rel");
-    return svc.requestFriend(req.user!.id, str(b.username).trim().slice(0, 40), rel as Rel);
+    return svc.requestFriend(req.user!.id, str(b.username).trim().slice(0, 40));
   });
 
   app.post("/api/friends/:username/accept", { preHandler: auth }, async (req) =>

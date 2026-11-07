@@ -1,16 +1,16 @@
 "use strict";
 // claude-desk web app: vanilla JS, no build step. All user data goes through textContent (h()).
 
-const FRIEND_REACTIONS = [["wave", "👋"], ["thumbs", "👍"], ["laugh", "😂"], ["coffee", "☕"], ["fire", "🔥"]];
-const PARTNER_REACTIONS = [["heart", "❤️"], ["hug", "🤗"], ["kiss", "😘"], ["goodnight", "🌙"], ["missyou", "🥺"]];
-const EMOJI = Object.fromEntries([...FRIEND_REACTIONS, ...PARTNER_REACTIONS]);
+const REACTIONS = [["wave", "👋"], ["thumbs", "👍"], ["laugh", "😂"], ["coffee", "☕"], ["fire", "🔥"],
+  ["heart", "❤️"], ["hug", "🤗"], ["kiss", "😘"], ["goodnight", "🌙"], ["missyou", "🥺"]];
+const EMOJI = Object.fromEntries(REACTIONS);
 const MSG_MAX = 100;
 const ERRORS = {
   credentials: "Wrong username or password.", invite: "That invite code isn't right.", taken: "That username is taken.",
   username: "Username: 3-20 characters, a-z 0-9 _", password: "Password must be at least 8 characters.",
   rate_limited: "Slow down a little and try again in a minute.", no_such_user: "No user with that name.",
   self: "That's you.", invalid_code: "No device is showing that code. Check the screen and try again.",
-  code: "The pair code has 6 digits.", not_friends: "You're not friends yet.", partner_only: "That reaction is for partners.",
+  code: "The pair code has 6 digits.", not_friends: "You're not friends yet.",
   too_long: "Messages are up to 100 characters.", empty: "Type something first.", auth: "Please sign in again.",
   tz: "Unknown timezone.", network: "Can't reach the hub.",
   busy: "An update is running. Give it a couple of minutes.", offline: "The desk is offline.",
@@ -255,9 +255,9 @@ async function viewHome() {
   const friends = state.friends.filter((f) => f.rel);
   const list = friends.length
     ? h("div", { class: "list" }, friends.map((f) => h("div", { class: "row tap", onclick: () => go("#/chat/" + f.username) },
-        h("div", { class: "avatar" + (f.rel === "partner" ? " partner" : "") }, f.rel === "partner" ? "❤" : f.displayName.slice(0, 1)),
+        h("div", { class: "avatar" }, f.displayName.slice(0, 1)),
         h("div", { class: "grow" }, h("div", { class: "title" }, f.displayName),
-          h("div", { class: "sub" }, "@" + f.username + (f.rel === "partner" ? " · partner" : ""))),
+          h("div", { class: "sub" }, "@" + f.username)),
         h("span", { class: "chev" }, "›"))))
     : h("div", { class: "card empty" }, "No friends yet. ", h("a", { href: "#/friends" }, "Add someone"), " to send messages to their desk.");
   fill(main, h("h2", {}, "Send to a desk"), list,
@@ -267,7 +267,6 @@ async function viewHome() {
 async function viewChat(username) {
   if (!state.friends.length) await loadFriends().catch(() => {});
   const fr = state.friends.find((f) => f.username === username);
-  const partner = fr && fr.rel === "partner";
   const msgs = h("div", { class: "msgs" });
   const input = h("input", { maxlength: MSG_MAX, placeholder: "Message to their desk…", enterkeyhint: "send", autocomplete: "off" });
   const count = h("span", { class: "count" }, "0/" + MSG_MAX);
@@ -284,13 +283,12 @@ async function viewChat(username) {
       await refresh();
     } catch (e) { fail(e); }
   }
-  const reactBtn = ([key, emoji], isPartner) => h("button", {
-    type: "button", class: isPartner ? "partner" : "", title: key, "aria-label": key,
-    onclick: () => send({ kind: "reaction", reaction: key }),
+  const reactBtn = ([key, emoji]) => h("button", {
+    type: "button", title: key, "aria-label": key,
+    onclick: guarded(() => send({ kind: "reaction", reaction: key })),
   }, emoji);
   const composer = h("div", { class: "composer" },
-    h("div", { class: "reacts" }, FRIEND_REACTIONS.map((r) => reactBtn(r, false)),
-      partner ? [h("span", { class: "sep" }), PARTNER_REACTIONS.map((r) => reactBtn(r, true))] : null),
+    h("div", { class: "reacts" }, REACTIONS.map(reactBtn)),
     h("form", {
       class: "inline", onsubmit: async (e) => {
         e.preventDefault();
@@ -328,65 +326,58 @@ async function viewFriends() {
   const main = shell("Friends", h("div", { class: "empty" }, "Loading…"));
   await loadFriends();
   const username = h("input", { placeholder: "username", autocapitalize: "none", spellcheck: "false", maxlength: 20 });
-  const rel = h("select", {}, h("option", { value: "friend" }, "Friend"), h("option", { value: "partner" }, "Partner"));
   const add = h("form", {
     class: "card", onsubmit: guarded(async () => {
       const u = username.value.trim().toLowerCase().replace(/^@/, "");
       if (!u) return;
       try {
-        const r = await api("POST", "/api/friends", { username: u, rel: rel.value });
-        toast(r.rel === rel.value && !r.pendingRel ? "You're connected" : "Request sent");
+        const r = await api("POST", "/api/friends", { username: u });
+        toast(r.rel ? "You're connected" : "Request sent");
         viewFriends();
       } catch (ex) { fail(ex); }
     }),
-  }, h("div", { class: "inline" }, username, rel, h("button", { class: "btn primary", type: "submit" }, "Add")),
-    h("p", { class: "hint", style: "margin-bottom:0" }, "Partners can also send each other ❤️ 🤗 😘 🌙 🥺."));
+  }, h("div", { class: "inline" }, username, h("button", { class: "btn primary", type: "submit" }, "Add")),
+    h("p", { class: "hint", style: "margin-bottom:0" }, "Once they accept, you can send each other messages and reactions."));
 
   const act = (method, url, msg) => async () => { try { await api(method, url); if (msg) toast(msg); viewFriends(); } catch (e) { fail(e); } };
   const incoming = state.friends.filter((f) => f.pendingFrom === "them");
   const outgoing = state.friends.filter((f) => f.pendingFrom === "me");
   const current = state.friends.filter((f) => f.rel);
   const enc = encodeURIComponent;
-  const relTag = (r) => h("span", { class: "tag" + (r === "partner" ? " partner" : "") }, r);
 
-  fill(main, 
+  fill(main,
     h("h2", {}, "Add"), add,
     incoming.length ? [h("h2", {}, "Requests"), h("div", { class: "list" }, incoming.map((f) => h("div", { class: "row" },
       h("div", { class: "avatar" }, f.displayName.slice(0, 1)),
       h("div", { class: "grow" }, h("div", { class: "title" }, f.displayName),
-        h("div", { class: "sub" }, "@" + f.username + (f.rel ? ` · wants to change ${f.rel} → ${f.pendingRel}` : ` · wants to be your ${f.pendingRel}`))),
+        h("div", { class: "sub" }, "@" + f.username + " · wants to connect")),
       h("div", { class: "actions" },
-        h("button", { class: "btn small primary", onclick: act("POST", `/api/friends/${enc(f.username)}/accept`, "Accepted") }, "Accept"),
-        h("button", { class: "btn small ghost", onclick: act("POST", `/api/friends/${enc(f.username)}/decline`) }, "Decline")))))] : null,
+        h("button", { class: "btn small primary", onclick: guarded(act("POST", `/api/friends/${enc(f.username)}/accept`, "Accepted")) }, "Accept"),
+        h("button", { class: "btn small ghost", onclick: guarded(act("POST", `/api/friends/${enc(f.username)}/decline`)) }, "Decline")))))] : null,
     h("h2", {}, "Your people"),
     current.length ? h("div", { class: "list" }, current.map((f) => h("div", { class: "row" },
-      h("div", { class: "avatar" + (f.rel === "partner" ? " partner" : "") }, f.displayName.slice(0, 1)),
-      h("div", { class: "grow" }, h("div", { class: "title" }, f.displayName, relTag(f.rel)),
-        h("div", { class: "sub" }, "@" + f.username + (f.pendingFrom === "me" ? ` · asked to change to ${f.pendingRel}` : ""))),
+      h("div", { class: "avatar" }, f.displayName.slice(0, 1)),
+      h("div", { class: "grow" }, h("div", { class: "title" }, f.displayName),
+        h("div", { class: "sub" }, "@" + f.username)),
       h("div", { class: "actions" },
         h("button", { class: "btn small ghost", "aria-label": "Options", onclick: () => friendMenu(f) }, "•••")))))
       : h("div", { class: "card empty" }, "Nobody yet."),
     outgoing.filter((f) => !f.rel).length ? [h("h2", {}, "Sent"), h("div", { class: "list" }, outgoing.filter((f) => !f.rel).map((f) => h("div", { class: "row" },
       h("div", { class: "avatar" }, f.displayName.slice(0, 1)),
-      h("div", { class: "grow" }, h("div", { class: "title" }, f.displayName), h("div", { class: "sub" }, `@${f.username} · ${f.pendingRel} request pending`)),
-      h("button", { class: "btn small ghost", onclick: act("POST", `/api/friends/${enc(f.username)}/decline`, "Cancelled") }, "Cancel"))))] : null,
+      h("div", { class: "grow" }, h("div", { class: "title" }, f.displayName), h("div", { class: "sub" }, `@${f.username} · request pending`)),
+      h("button", { class: "btn small ghost", onclick: guarded(act("POST", `/api/friends/${enc(f.username)}/decline`, "Cancelled")) }, "Cancel"))))] : null,
   );
 
 }
 
 function friendMenu(f) {
   const enc = encodeURIComponent(f.username);
-  const other = f.rel === "partner" ? "friend" : "partner";
   const close = () => dlg.remove();
   const doIt = (fn) => async () => { close(); try { await fn(); viewFriends(); } catch (e) { fail(e); } };
   const dlg = h("div", { style: "position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:20;display:flex;align-items:flex-end;justify-content:center", onclick: (e) => { if (e.target === dlg) close(); } },
     h("div", { class: "card", style: "width:100%;max-width:560px;border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom))" },
       h("div", { class: "title", style: "font-weight:600;margin-bottom:12px" }, f.displayName + " · @" + f.username),
-      f.pendingFrom === "me"
-        ? h("button", { class: "btn block", style: "margin-top:0", onclick: doIt(() => api("POST", `/api/friends/${enc}/decline`)) }, `Cancel ${f.pendingRel} request`)
-        : h("button", { class: "btn block", style: "margin-top:0", onclick: doIt(async () => { await api("POST", "/api/friends", { username: f.username, rel: other }); toast("Request sent"); }) },
-            `Ask to be ${other === "partner" ? "partners" : "just friends"}`),
-      h("button", { class: "btn block danger", style: "margin-top:8px", onclick: doIt(async () => {
+      h("button", { class: "btn block danger", style: "margin-top:0", onclick: doIt(async () => {
         if (!confirm(`Remove @${f.username}? You won't be able to message each other.`)) return;
         await api("DELETE", `/api/friends/${enc}`); toast("Removed");
       }) }, "Remove"),
