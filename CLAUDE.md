@@ -19,7 +19,7 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 - `hub/` Node ≥22 TypeScript: fastify + aedes (MQTT/TLS) + better-sqlite3. `npm test` = full e2e (must stay green).
   Deploys on Railway from the **repo root** with `hub/Dockerfile`, volume at `/data`, `DATA_DIR=/data`,
   `HUB_INVITE_CODE`, `PORT=8080` (domain targets 8080), TCP Proxy → 8883. Build/deploy settings live on the Railway
-  service (new services can't use `hub/railway.json`; it is no longer read). The Dockerfile installs python3/make/g++
+  service (there is no railway.json: new services can't use config-as-code). The Dockerfile installs python3/make/g++
   because better-sqlite3 13 compiles from source.
 - `client/` hook (`hook.py` macOS/Linux, `hook.ps1` Windows) + installers; the hub serves them with `__HUB_URL__` replaced
   (first occurrence only — keep the placeholder's first occurrence as the value).
@@ -50,18 +50,22 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 
 ## Owner's setup / current state (Nov 2026)
 - Owner: Chris (GitHub `Chrishalaby`), macOS, Claude Code user. Repo: github.com/Chrishalaby/claude-desk (public).
-- His desk runs **firmware 1.4.3**, is on his phone hotspot (home Wi-Fi is down; re-add it at `/wifi` later), paired
-  on the hub as `chris-desk` (`chris-desk.local`). 1.0.4 → 1.4.1 went by local `/update`; 1.4.1 → 1.4.3 via SAFE MODE
-  (its own OTA failed, see Hardware facts).
-- His Mac still has the **old local tracker** from before the hub (`~/Claude/geekmagic/claude-desk/`, launchd
-  `com.chris.claude-desk`, hooks pointing at `.../claude-desk/hook.sh`). Running the hub's `install.sh` removes both.
-  Note: macOS blocks LAN access for launchd services (Local Network privacy) — that's why hooks now go to the hub.
+- His desk runs **firmware 1.4.4**, is on his phone hotspot (home Wi-Fi is down; add it from the hub's desk page →
+  Wi-Fi networks later), paired on the hub as "Chris" (`chris-desk.local`). ~22 KB free while connected.
+  1.0.4 → 1.4.1 by local `/update`; 1.4.1 → 1.4.3 via SAFE MODE (its own OTA failed); 1.4.3 → 1.4.4 by the hub's
+  Update button (restart-then-download path, verified on the device).
+- Claude Code hooks are installed on his Mac (`~/.claude-desk/hook.py`, token in `config.json`) and reach the hub.
+  The old local tracker's launchd job and hooks are gone; its folder `~/Claude/geekmagic/claude-desk/` is unused.
+  macOS blocks LAN access for launchd services (Local Network privacy), which is why hooks go to the hub.
 - Hub is live at `https://claude-desk.up.railway.app` (Railway project `claude-desk`; MQTT via the TCP proxy, the hub
-  hands the endpoint to devices). Phone-first install guide at `/#/install`. Next: install hooks with the token
-  (removes the old tracker), test: needs/done cards, a message + reaction between two accounts, remote settings,
-  pack download (Fluent/Twemoji/Noto), OTA button (needs a firmware newer than the desk's).
-- Untested so far: Windows `install.ps1`/`hook.ps1` (written carefully, never executed), the restart-then-download
-  path for OTA and packs on the device, the install guide on a real phone and on a stock GeekMagic.
+  hands the endpoint to devices). Phone-first install guide at `/#/install`. The invite code is weak; change
+  `HUB_INVITE_CODE` before sharing the hub widely.
+- Still to test on the device: needs/done cards from a real session, a message + reaction between two accounts,
+  remote settings, pack download (Fluent/Twemoji/Noto, same restart-then-download path as OTA).
+- Untested so far: Windows `install.ps1`/`hook.ps1` (written carefully, never executed), the install guide on a real
+  phone and on a stock GeekMagic.
+- Commercial plans: talking to GeekMagic (Shenzhen Fumantu Technology) about OEM units flashed with this firmware.
+  The "Claude" name would have to change (or be cleared with Anthropic) before selling.
 
 ## Conventions
 - Owner prefers terse answers. Keep personal data (locations, names) out of the public repo.
