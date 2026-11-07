@@ -19,6 +19,9 @@ const ERRORS = {
   lastfm_unreachable: "Couldn't reach Last.fm. Try again in a minute.", oauth_state: "That sign-in took too long. Try again.",
   spotify_invite_only: "Spotify sign-in on this hub only works for invited accounts for now. Use Last.fm below; it works with Spotify too.",
   lastfm_denied: "Last.fm sign-in was cancelled.", lastfm_failed: "Last.fm sign-in failed.",
+  google_denied: "Google sign-in was cancelled.", google_failed: "Google sign-in failed.",
+  google_scope: "Google didn't share your calendar. Sign in again and tick the calendar box.",
+  google_not_configured: "Google sign-in isn't set up on this hub yet.",
   spotify_denied: "Spotify sign-in was cancelled.", slack_denied: "Slack sign-in was cancelled.", spotify_failed: "Spotify sign-in failed.", slack_failed: "Slack sign-in failed.",
   no_location: "Set your desk's location first (Devices → your desk → Location).", email_host: "That mail server can't be used.",
   email_login: "The mail server refused that address and app password.", email_unreachable: "Couldn't reach that mail server.",
@@ -913,6 +916,21 @@ function appCalendar(a) {
     const showNext = h("input", { type: "checkbox", checked: c.showNext, style: "width:auto" });
     showNext.addEventListener("change", () => patch({ showNext: showNext.checked }));
     const pcCal = c.fromComputer > 0 || a.computer.cal === "ok";
+    const g = c.google;
+    const google = g.connected ? [
+      h("div", { class: "row", style: "padding-top:0" },
+        h("div", { class: "grow" }, h("div", { class: "title" }, "Google Calendar"),
+          h("div", { class: "sub" }, g.ok === false
+            ? h("span", { class: "warn" }, g.error === "reconnect" ? "Google signed you out. Sign in again." : "Can't read it right now; trying again in a few minutes.")
+            : `${g.email || "Connected"} · ${g.upcoming} upcoming`)),
+        h("button", { class: "btn small ghost", onclick: guarded(async () => {
+          if (!confirm("Disconnect Google Calendar?")) return;
+          try { await api("DELETE", "/api/apps/google"); a.calendar = (await api("GET", "/api/apps")).calendar; paint(); } catch (e) { fail(e); }
+        }) }, "Disconnect")),
+      g.error === "reconnect" ? h("a", { class: "btn block", href: "/api/apps/google/connect" }, "Sign in with Google again") : null]
+      : g.configured ? [h("a", { class: "btn primary block", href: "/api/apps/google/connect" }, "Sign in with Google"),
+        h("p", { class: "hint", style: "margin:6px 0 4px" }, "Read-only: your desk reminds you before meetings and shows the next one under the clock.")] : null;
+    const other = pcCal || g.connected || g.configured;
     const linkForm = [
       h("label", { class: "f", style: c.feeds.length || pcCal ? "" : "margin-top:0" }, "Add a calendar (its private iCal link)"),
       h("form", { class: "inline", onsubmit: guarded(async () => {
@@ -926,7 +944,8 @@ function appCalendar(a) {
           h("li", {}, h("b", {}, "Apple: "), "Calendar app → share the calendar → Public Calendar → copy the link."),
           h("li", {}, h("b", {}, "Outlook: "), "Settings → Calendar → Shared calendars → Publish a calendar → ICS link.")))];
     fill(el,
-      pcCal ? h("p", { class: "hint", style: "margin:0 0 6px" }, `From your computer: ${c.fromComputer} upcoming event${c.fromComputer === 1 ? "" : "s"}.`) : null,
+      google,
+      c.fromComputer > 0 ? h("p", { class: "hint", style: g.connected || g.configured ? "margin:10px 0 6px" : "margin:0 0 6px" }, `From your computer: ${c.fromComputer} upcoming event${c.fromComputer === 1 ? "" : "s"}.`) : null,
       c.feeds.length ? h("div", { class: "list" }, c.feeds.map((f, i) => h("div", { class: "row" },
         h("div", { class: "grow" }, h("div", { class: "title" }, f.label),
           h("div", { class: "sub" }, f.ok === false ? h("span", { class: "warn" }, "Can't read it: " + (FEED_ERR[f.error] || f.error)) : `${f.count} events in the next day and a half`)),
@@ -934,8 +953,8 @@ function appCalendar(a) {
           if (!confirm("Remove this calendar?")) return;
           try { a.calendar = await api("DELETE", `/api/apps/calendar/feeds/${i}`); paint(); } catch (e) { fail(e); }
         }) }, "Remove")))) : null,
-      pcCal && !c.feeds.length ? h("details", { class: "more", style: "margin-top:0" }, h("summary", {}, "Add a calendar link instead"), linkForm) : linkForm,
-      c.feeds.length || pcCal ? [
+      other && !c.feeds.length ? h("details", { class: "more" }, h("summary", {}, "Add a calendar link instead"), linkForm) : linkForm,
+      c.feeds.length || pcCal || g.connected ? [
         h("label", { class: "f" }, "Remind me"), remind,
         h("label", { class: "check" }, showNext, "Show the next event under the clock"),
         c.upcoming.length ? h("p", { class: "hint", style: "margin:10px 0 0" }, "Coming up: " + c.upcoming.map((e) => `${e.title} ${clockTime(e.start)}`).join(" · ")) : null,
@@ -1290,9 +1309,10 @@ async function viewApps() {
   const ok = state.query && state.query.get("ok"), err = state.query && state.query.get("err");
   if (ok || err) {
     history.replaceState(null, "", "#/apps");
-    if (ok) toast(`${{ spotify: "Spotify", slack: "Slack", lastfm: "Last.fm" }[ok] || ok} connected`);
+    if (ok) toast(`${{ spotify: "Spotify", slack: "Slack", lastfm: "Last.fm", google: "Google Calendar" }[ok] || ok} connected`);
     else toast(ERRORS[err] || "Sign-in failed", true);
-    document.getElementById(ok === "slack" || err?.startsWith("slack") ? "app-slack" : "app-music")?.scrollIntoView();
+    const kind = ok || String(err).split("_")[0];
+    document.getElementById(kind === "slack" ? "app-slack" : kind === "google" ? "app-calendar" : "app-music")?.scrollIntoView();
   }
 }
 

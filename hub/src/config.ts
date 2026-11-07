@@ -36,6 +36,11 @@ export interface Config {
   slackClientId: string | null;
   slackClientSecret: string | null;
   slackApi: string;
+  googleClientId: string | null;
+  googleClientSecret: string | null;
+  googleAccounts: string;
+  googleOAuth: string;
+  googleApi: string;
 }
 
 const num = (v: string | undefined) => (v && /^\d+$/.test(v) ? Number(v) : null);
@@ -78,5 +83,10 @@ export function configFromEnv(env = process.env): Config {
     slackClientId: nonEmpty(env.SLACK_CLIENT_ID),
     slackClientSecret: nonEmpty(env.SLACK_CLIENT_SECRET),
     slackApi: (nonEmpty(env.SLACK_API) ?? "https://slack.com/api").replace(/\/+$/, ""),
+    googleClientId: nonEmpty(env.GOOGLE_CLIENT_ID),
+    googleClientSecret: nonEmpty(env.GOOGLE_CLIENT_SECRET),
+    googleAccounts: (nonEmpty(env.GOOGLE_ACCOUNTS) ?? "https://accounts.google.com").replace(/\/+$/, ""),
+    googleOAuth: (nonEmpty(env.GOOGLE_OAUTH) ?? "https://oauth2.googleapis.com").replace(/\/+$/, ""),
+    googleApi: (nonEmpty(env.GOOGLE_API) ?? "https://www.googleapis.com").replace(/\/+$/, ""),
   };
 }

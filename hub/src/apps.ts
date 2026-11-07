@@ -54,6 +54,9 @@ interface EmailConfig { host: string; user: string; pass: string; subjects: bool
 interface EmailState extends Status { uidNext: number; uidValidity: string; unseen: number }
 interface SlackConfig { token: string; userId: string; team: string }
 interface SlackState extends Status { lastTs: string }
+interface GoogleConfig { refresh: string; access: string; exp: number; email: string }
+interface GoogleState extends Status { count: number; calendars: number }
+const GOOGLE_CAL_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
 interface ReminderRow { id: number; user_id: number; label: string; kind: string; every_min: number | null; start_min: number | null;
   end_min: number | null; at_min: number | null; days: number; last_fired: number }
 export const REMINDER_EVERY = [15, 30, 45, 60, 90, 120, 180, 240];
@@ -158,6 +161,7 @@ export class Apps {
   private oauth = new Map<string, { userId: number; kind: string; verifier: string; exp: number }>();
   private playing = new Map<number, Playing>();
   private pcEvents = new Map<number, { at: number; events: CalEvent[] }>();
+  private googleEvents = new Map<number, CalEvent[]>();
   private badgeCardAt = new Map<string, number>();
 
   constructor(private db: DB, private svc: Service, private cfg: Config, private log: (...a: unknown[]) => void = () => {}) {}
@@ -203,6 +207,7 @@ export class Apps {
         showNext: cal?.config.showNext ?? true,
         upcoming: this.calEvents(userId).filter((e) => e.start > now).slice(0, 3).map((e) => ({ title: e.title, start: e.start })),
         fromComputer: (this.pcEvents.get(userId)?.events ?? []).filter((e) => e.start > now).length,
+        google: this.googleView(userId),
       },
       github: gh
         ? { connected: true, login: gh.config.login, reasons: gh.config.reasons, ok: gh.state.ok ?? null, error: gh.state.error ?? null, at: gh.state.at ?? null }
@@ -243,18 +248,33 @@ export class Apps {
   private hasOnlineDesk(userId: number) { return this.svc.devicesOf(userId).some((d) => this.svc.broker?.isOnline(d.chip)); }
 
   disconnect(userId: number, kind: string) {
-    if (!["spotify", "lastfm", "rain", "email", "slack"].includes(kind)) throw new HttpError(404, "not_found");
+    if (!["spotify", "lastfm", "rain", "email", "slack", "google"].includes(kind)) throw new HttpError(404, "not_found");
+    if (kind === "google") {
+      const g = this.get<GoogleConfig, GoogleState>(userId, "google");
+      if (g) callJson(`${this.cfg.googleOAuth}/revoke`, form({ token: g.config.refresh })).catch(() => {});
+      this.googleEvents.delete(userId);
+    }
     this.remove(userId, kind);
     if ((kind === "spotify" || kind === "lastfm") && this.playing.get(userId)?.src === kind) this.playing.delete(userId);
     this.updateNext(userId);
   }
 
-  oauthStart(userId: number, kind: "spotify" | "slack" | "lastfm", redirectUri: string): string {
+  private googleView(userId: number) {
+    const g = this.get<GoogleConfig, GoogleState>(userId, "google");
+    return {
+      configured: !!(this.cfg.googleClientId && this.cfg.googleClientSecret), connected: !!g, email: g?.config.email ?? null,
+      ok: g?.state.ok ?? null, error: g?.state.error ?? null, at: g?.state.at ?? null,
+      upcoming: (this.googleEvents.get(userId) ?? []).filter((e) => e.start > this.now()).length,
+    };
+  }
+
+  oauthStart(userId: number, kind: "spotify" | "slack" | "lastfm" | "google", redirectUri: string): string {
     const now = this.now();
     for (const [k, v] of this.oauth) if (v.exp < now) this.oauth.delete(k);
     if (kind === "spotify" && !this.cfg.spotifyClientId) throw new HttpError(409, "spotify_not_configured");
     if (kind === "slack" && !(this.cfg.slackClientId && this.cfg.slackClientSecret)) throw new HttpError(409, "slack_not_configured");
     if (kind === "lastfm" && !(this.cfg.lastfmKey && this.cfg.lastfmSecret)) throw new HttpError(409, "lastfm_not_configured");
+    if (kind === "google" && !(this.cfg.googleClientId && this.cfg.googleClientSecret)) throw new HttpError(409, "google_not_configured");
     const state = crypto.randomBytes(16).toString("hex");
     const verifier = crypto.randomBytes(48).toString("base64url");
     this.oauth.set(state, { userId, kind, verifier, exp: now + 600 });
@@ -262,6 +282,13 @@ export class Apps {
       return `${this.cfg.spotifyAccounts}/authorize?` + new URLSearchParams({
         response_type: "code", client_id: this.cfg.spotifyClientId!, scope: "user-read-currently-playing user-read-playback-state",
         redirect_uri: redirectUri, code_challenge_method: "S256", code_challenge: crypto.createHash("sha256").update(verifier).digest("base64url"), state,
+      });
+    }
+    if (kind === "google") {
+      return `${this.cfg.googleAccounts}/o/oauth2/v2/auth?` + new URLSearchParams({
+        client_id: this.cfg.googleClientId!, redirect_uri: redirectUri, response_type: "code", scope: `openid email ${GOOGLE_CAL_SCOPE}`,
+        access_type: "offline", prompt: "consent", include_granted_scopes: "true", state,
+        code_challenge_method: "S256", code_challenge: crypto.createHash("sha256").update(verifier).digest("base64url"),
       });
     }
     if (kind === "lastfm") return this.cfg.lastfmAuth + "?" + new URLSearchParams({ api_key: this.cfg.lastfmKey!, cb: `${redirectUri}/${state}` });
@@ -445,7 +472,7 @@ export class Apps {
     const pc = this.get<ComputerConfig, ComputerState>(userId, "computer");
     const fromPc = pc?.config.calendar !== false ? this.pcEvents.get(userId)?.events ?? [] : [];
     const seen = new Set<string>();
-    return [...(this.events.get(userId) ?? []), ...fromPc].sort((a, b) => a.start - b.start)
+    return [...(this.events.get(userId) ?? []), ...(this.googleEvents.get(userId) ?? []), ...fromPc].sort((a, b) => a.start - b.start)
       .filter((e) => { const k = `${e.title}|${e.start}`; return !seen.has(k) && !!seen.add(k); });
   }
 
@@ -677,6 +704,79 @@ export class Apps {
     this.due.set(`email:${userId}`, this.now() + 180);
   }
 
+  async googleCallback(userId: number, code: string, state: string, redirectUri: string) {
+    const o = this.takeState(userId, "google", state);
+    const tok = await callJson(`${this.cfg.googleOAuth}/token`, form({
+      grant_type: "authorization_code", code, redirect_uri: redirectUri, code_verifier: o.verifier,
+      client_id: this.cfg.googleClientId ?? "", client_secret: this.cfg.googleClientSecret ?? "",
+    }));
+    const t = tok.body;
+    if (tok.status !== 200 || !t?.access_token || !t?.refresh_token) throw new HttpError(400, "google_denied");
+    if (!String(t.scope ?? "").split(" ").includes(GOOGLE_CAL_SCOPE)) throw new HttpError(400, "google_scope");
+    let email = "";
+    try { email = String(JSON.parse(Buffer.from(String(t.id_token).split(".")[1], "base64url").toString("utf8")).email ?? ""); } catch { email = ""; }
+    const now = this.now();
+    this.put(userId, "google", { refresh: t.refresh_token, access: t.access_token, exp: now + (Number(t.expires_in) || 3600), email: trunc(email, 80) },
+      { ok: true, error: null, at: now, count: 0, calendars: 0 });
+    if (!this.get(userId, "calendar")) this.put(userId, "calendar", { feeds: [], remind: 10, showNext: true }, { feeds: [], reminded: [] });
+    await this.run(`google:${userId}`, () => this.pollGoogle(userId));
+  }
+
+  private async googleToken(userId: number, c: GoogleConfig, s: GoogleState): Promise<string | null> {
+    if (c.exp - 60 > this.now()) return c.access;
+    const r = await callJson(`${this.cfg.googleOAuth}/token`, form({
+      grant_type: "refresh_token", refresh_token: c.refresh, client_id: this.cfg.googleClientId ?? "", client_secret: this.cfg.googleClientSecret ?? "",
+    }));
+    if (r.status !== 200 || !r.body?.access_token) {
+      Object.assign(s, { ok: false, error: r.body?.error === "invalid_grant" ? "reconnect" : `http_${r.status}`, at: this.now() });
+      return null;
+    }
+    c.access = r.body.access_token;
+    c.exp = this.now() + (Number(r.body.expires_in) || 3600);
+    return c.access;
+  }
+
+  private async pollGoogle(userId: number) {
+    const cur = this.get<GoogleConfig, GoogleState>(userId, "google");
+    if (!cur) return;
+    const c = cur.config, s = cur.state;
+    try {
+      const token = await this.googleToken(userId, c, s);
+      if (token) {
+        const auth = { headers: { Authorization: `Bearer ${token}` } };
+        const list = await callJson(`${this.cfg.googleApi}/calendar/v3/users/me/calendarList?minAccessRole=reader&fields=items(id,selected,hidden)`, auth);
+        if (list.status === 401) { c.exp = 0; throw new FetchError("reconnect"); }
+        if (list.status !== 200) throw new FetchError(`http_${list.status}`);
+        const ids = ((list.body?.items ?? []) as any[]).filter((x) => x.selected && !x.hidden && typeof x.id === "string").map((x) => x.id as string).slice(0, 10);
+        const now = this.now();
+        const range = new URLSearchParams({
+          timeMin: new Date((now - 3600) * 1000).toISOString(), timeMax: new Date((now + 36 * 3600) * 1000).toISOString(),
+          singleEvents: "true", orderBy: "startTime", maxResults: "50",
+          fields: "items(id,status,summary,location,start,end,attendees(self,responseStatus))",
+        });
+        const events: CalEvent[] = [];
+        for (const id of ids) {
+          const r = await callJson(`${this.cfg.googleApi}/calendar/v3/calendars/${encodeURIComponent(id)}/events?${range}`, auth);
+          if (r.status !== 200) continue;
+          for (const e of (r.body?.items ?? []) as any[]) {
+            if (e.status === "cancelled" || !e.start?.dateTime) continue;
+            if ((e.attendees ?? []).some((a: any) => a.self && a.responseStatus === "declined")) continue;
+            const start = Math.floor(Date.parse(e.start.dateTime) / 1000), end = Math.floor(Date.parse(e.end?.dateTime ?? e.start.dateTime) / 1000);
+            if (!Number.isFinite(start)) continue;
+            events.push({ key: `g:${e.id}:${start}`, start, end: Number.isFinite(end) ? end : start, title: trunc(oneLine(String(e.summary || "Busy")), 100),
+              location: trunc(oneLine(String(e.location ?? "")), 60) });
+          }
+        }
+        this.googleEvents.set(userId, events.sort((a, b) => a.start - b.start));
+        Object.assign(s, { ok: true, error: null, count: events.length, calendars: ids.length });
+      }
+    } catch (e) { Object.assign(s, { ok: false, error: errCode(e) }); }
+    s.at = this.now();
+    if (this.get(userId, "google")) this.put(userId, "google", c, s);
+    this.due.set(`google:${userId}`, this.now() + CALENDAR_EVERY_SECS);
+    this.updateNext(userId);
+  }
+
   async slackCallback(userId: number, code: string, state: string, redirectUri: string) {
     this.takeState(userId, "slack", state);
     const r = await callJson(`${this.cfg.slackApi}/oauth.v2.access`, form({
@@ -770,7 +870,7 @@ export class Apps {
     if (!cur || !(index >= 0 && index < cur.config.feeds.length)) throw new HttpError(404, "not_found");
     cur.config.feeds.splice(index, 1);
     cur.state.feeds?.splice(index, 1);
-    if (!cur.config.feeds.length && !this.pcEvents.get(userId)?.events.length) { this.remove(userId, "calendar"); this.events.delete(userId); }
+    if (!cur.config.feeds.length && !this.pcEvents.get(userId)?.events.length && !this.get(userId, "google")) { this.remove(userId, "calendar"); this.events.delete(userId); }
     else if (!cur.config.feeds.length) { this.put(userId, "calendar", cur.config, cur.state); this.events.delete(userId); }
     else { this.put(userId, "calendar", cur.config, cur.state); this.due.delete(`calendar:${userId}`); }
     this.updateNext(userId);
@@ -1021,6 +1121,7 @@ export class Apps {
       else if (r.kind === "rain") jobs.push(this.run(key, () => this.pollRain(r.user_id)));
       else if (r.kind === "email") jobs.push(this.run(key, () => this.pollEmail(r.user_id)));
       else if (r.kind === "slack") jobs.push(this.run(key, () => this.pollSlack(r.user_id)));
+      else if (r.kind === "google") jobs.push(this.run(key, () => this.pollGoogle(r.user_id)));
       else if (r.kind === "spotify" || r.kind === "lastfm") {
         if (!this.hasOnlineDesk(r.user_id)) { this.setPlaying(r.user_id, r.kind, null); this.due.set(key, now + 60); continue; }
         jobs.push(this.run(key, () => (r.kind === "spotify" ? this.pollSpotify(r.user_id) : this.pollLastfm(r.user_id))));

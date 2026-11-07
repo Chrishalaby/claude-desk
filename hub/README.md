@@ -86,6 +86,7 @@ Alternative without Docker: Root Directory `hub` works with Railway's Node build
 | `HUB_QUIET` | – | `1` silences the startup log |
 | `SPOTIFY_CLIENT_ID` | – | enables Spotify now playing. Create an app at developer.spotify.com (Web API), redirect URI `<hub>/api/apps/spotify/callback`. In development mode only users you add on the app's dashboard (up to 25) can connect. |
 | `LASTFM_API_KEY` / `LASTFM_SHARED_SECRET` | – | enables Last.fm now playing (last.fm/api/account/create gives both). The key alone allows typing a username; with the secret users get a "Sign in with Last.fm" button. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | – | enables **Sign in with Google** for calendars. Google Cloud Console: enable the Google Calendar API; Google Auth Platform → Branding, Audience *External* + *In production*, Data access `…/auth/calendar.readonly`; Clients → *Web application* with the redirect URI `<hub>/api/apps/google/callback`. Unverified apps show a warning and allow 100 users; Google's review needs your own domain, a privacy policy and a demo video. |
 | `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` | – | enables Slack mentions. Create an app at api.slack.com/apps, add the **user** scope `search:read` and the redirect URL `<hub>/api/apps/slack/callback` |
 
 ## API (web app)

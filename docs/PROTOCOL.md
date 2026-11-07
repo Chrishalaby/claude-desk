@@ -330,7 +330,17 @@ per integration. Web app: the **Apps** tab (`#/apps`). All endpoints are per sig
   or a text. → `{ok, devices}`; 401 bad token, 429 over 120/min per IP or 30 cards/min per user.
 * **Timers** — `GET/POST /api/timers {minutes 1–720, label ≤ 20}`, `DELETE /api/timers/<id>`; at most 10 running.
   The running one ending first is the next-up countdown; when it ends: a `Timer` card (60 s).
-* **Calendar** — the user pastes private iCal links (Google "secret address in iCal format", Apple public calendar
+* **Google Calendar** — `GET /api/apps/google/connect` → Google OAuth (PKCE + client secret, `access_type=offline`,
+  `prompt=consent`, scopes `openid email https://www.googleapis.com/auth/calendar.readonly`) → `GET
+  /api/apps/google/callback` → `/#/apps?ok=google` or `?err=google_denied|google_scope|oauth_state` (`google_scope`:
+  the user unticked the calendar box). Every 10 min the hub refreshes the access token itself, reads the calendar list
+  (only calendars ticked in Google, up to 10) and their events for the next 36 h (`singleEvents=true`; all-day,
+  cancelled and declined events skipped), and merges them with the other calendar sources for reminders and the
+  next-up line. `DELETE /api/apps/google` disconnects and revokes the token. Shown as `calendar.google` in
+  `GET /api/apps` `{configured, connected, email, ok, error, at, upcoming}`. Needs `GOOGLE_CLIENT_ID` and
+  `GOOGLE_CLIENT_SECRET`; `calendar.readonly` is a sensitive scope, so until Google verifies the app users see an
+  "unverified app" screen and at most 100 can sign in.
+* **Calendar links** — the user pastes private iCal links (Google "secret address in iCal format", Apple public calendar
   link, Outlook published ICS). `POST /api/apps/calendar/feeds {url}` (checked by fetching it once; `webcal://` is
   treated as `https://`), `DELETE /api/apps/calendar/feeds/<index>`, `PATCH /api/apps/calendar {remind: 0|5|10|15|30|60,
   showNext}`. At most 5 feeds. The hub refetches every 10 min and keeps events of the next 36 h in memory (time zones,

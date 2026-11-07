@@ -41,7 +41,7 @@ let clock = Math.floor(Date.now() / 1000);
 
 const GH_TOKEN = "ghp_" + "a".repeat(36);
 const GH_LAST_MODIFIED = "Sat, 07 Nov 2026 10:00:00 GMT";
-let fxPrice = 240, fxGhUpdated = 0, fxPlaying = null, fxSlackTs = "0";
+let fxPrice = 240, fxGhUpdated = 0, fxPlaying = null, fxSlackTs = "0", fxGoogleRevoked = null, fxGoogleToken = null;
 const readBody = (req) => new Promise((r) => { let b = ""; req.on("data", (c) => { b += c; }); req.on("end", () => r(b)); });
 const icsTime = (t) => new Date(t * 1000).toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
 const icsFor = (now) => ["BEGIN:VCALENDAR", "VERSION:2.0",
@@ -80,6 +80,35 @@ const fixtures = http.createServer(async (req, res) => {
     }
     if (u.searchParams.get("method") === "user.getinfo") return json(200, { user: { name: u.searchParams.get("user") } });
     return json(200, { recenttracks: { track: [{ name: "Ocean Eyes", artist: { "#text": "Billie Eilish" }, "@attr": { nowplaying: "true" } }] } });
+  }
+  if (u.pathname === "/go/token") {
+    const f = new URLSearchParams(await readBody(req));
+    if (f.get("client_id") !== "google-test" || f.get("client_secret") !== "google-secret") return json(401, { error: "invalid_client" });
+    const idToken = ["x", Buffer.from(JSON.stringify({ email: "erin@example.com" })).toString("base64url"), "sig"].join(".");
+    const cal = "https://www.googleapis.com/auth/calendar.readonly";
+    if (f.get("grant_type") === "authorization_code" && f.get("code_verifier")?.length >= 43) {
+      if (f.get("code") === "good") return json(200, { access_token: "gacc1", refresh_token: "gref1", expires_in: 3600, id_token: idToken, scope: `openid ${cal} https://www.googleapis.com/auth/userinfo.email` });
+      if (f.get("code") === "noscope") return json(200, { access_token: "gacc0", refresh_token: "gref0", expires_in: 3600, id_token: idToken, scope: "openid email" });
+    }
+    if (f.get("grant_type") === "refresh_token" && f.get("refresh_token") === "gref1") return json(200, { access_token: "gacc2", expires_in: 3600 });
+    return json(400, { error: "invalid_grant" });
+  }
+  if (u.pathname === "/go/revoke") { fxGoogleRevoked = new URLSearchParams(await readBody(req)).get("token"); return json(200, {}); }
+  if (u.pathname.startsWith("/gapi/calendar/v3/")) {
+    if (!/^Bearer gacc[12]$/.test(req.headers.authorization ?? "")) return json(401, {});
+    fxGoogleToken = req.headers.authorization.slice(7);
+    if (u.pathname === "/gapi/calendar/v3/users/me/calendarList") return json(200, { items: [{ id: "erin@example.com", selected: true }, { id: "en.holidays#holiday@group.v.calendar.google.com", selected: false }, { id: "team@group.calendar.google.com", selected: true }] });
+    const cal = decodeURIComponent(u.pathname.split("/")[5]);
+    if (u.searchParams.get("singleEvents") !== "true" || !u.searchParams.get("timeMin")) return json(400, {});
+    const at = (t) => ({ dateTime: new Date(t * 1000).toISOString() });
+    if (cal === "erin@example.com") return json(200, { items: [
+      { id: "e1", status: "confirmed", summary: "1:1 with Sam", location: "Zoom", start: at(clock + 1800), end: at(clock + 3600) },
+      { id: "e2", status: "confirmed", summary: "Holiday", start: { date: "2026-11-08" }, end: { date: "2026-11-09" } },
+      { id: "e3", status: "confirmed", summary: "Declined thing", start: at(clock + 4000), end: at(clock + 5000), attendees: [{ self: true, responseStatus: "declined" }] },
+      { id: "e4", status: "cancelled", summary: "Cancelled", start: at(clock + 4500), end: at(clock + 5000) },
+    ] });
+    if (cal === "team@group.calendar.google.com") return json(200, { items: [{ id: "t1", status: "confirmed", summary: "Team sync", start: at(clock + 7200), end: at(clock + 9000) }] });
+    return json(404, {});
   }
   if (u.pathname === "/w/v1/forecast") {
     const slot = Math.floor(clock / 900) * 900;
@@ -134,7 +163,7 @@ function makeConfig() {
     firmwareDir: fwDir, packsDir,
     githubApi: fx + "/gh", quotesApi: fx + "/q", allowPrivateFetch: true, weatherApi: fx + "/w",
     spotifyClientId: "spotify-test", spotifyAccounts: fx + "/sa", spotifyApi: fx + "/sp", lastfmKey: "lastfm-test", lastfmSecret: "lastfm-secret", lastfmApi: fx + "/lf", lastfmAuth: fx + "/lfauth/",
-    slackClientId: "slack-test", slackClientSecret: "slack-secret", slackApi: fx + "/sl",
+    slackClientId: "slack-test", slackClientSecret: "slack-secret", slackApi: fx + "/sl", googleClientId: "google-test", googleClientSecret: "google-secret", googleAccounts: fx + "/ga", googleOAuth: fx + "/go", googleApi: fx + "/gapi",
     now: () => clock, log: false,
   };
 }
@@ -1280,6 +1309,30 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
   assert.deepEqual((await erin.call("GET", "/api/apps")).body.calendar.upcoming, [], "computer calendar can be turned off");
   await erin.call("PATCH", "/api/apps/computer", { calendar: true });
   await pcr({ calendar: "ok", events: [] });
+
+  const gStart = new URL(await go(`${base}/api/apps/google/connect`));
+  assert.equal(gStart.origin + gStart.pathname, `${fx}/ga/o/oauth2/v2/auth`);
+  assert.deepEqual(["client_id", "redirect_uri", "access_type", "prompt", "code_challenge_method"].map((k) => gStart.searchParams.get(k)),
+    ["google-test", `${base}/api/apps/google/callback`, "offline", "consent", "S256"]);
+  assert.ok(gStart.searchParams.get("scope").split(" ").includes("https://www.googleapis.com/auth/calendar.readonly"));
+  assert.equal(await go(`${base}/api/apps/google/callback?code=noscope&state=${gStart.searchParams.get("state")}`), "/#/apps?err=google_scope", "calendar box unticked");
+  assert.equal(await go(`${base}/api/apps/google/callback?error=access_denied&state=x`), "/#/apps?err=google_denied");
+  const gState = new URL(await go(`${base}/api/apps/google/connect`)).searchParams.get("state");
+  assert.equal(await go(`${base}/api/apps/google/callback?code=good&state=${gState}`), "/#/apps?ok=google");
+  r = await erin.call("GET", "/api/apps");
+  assert.deepEqual([r.body.calendar.google.connected, r.body.calendar.google.email, r.body.calendar.google.upcoming], [true, "erin@example.com", 2]);
+  assert.deepEqual(r.body.calendar.upcoming.map((e) => e.title), ["1:1 with Sam", "Team sync"], "selected calendars only; no all-day, declined or cancelled events");
+  assert.ok(!r.text.includes("gref1") && !r.text.includes("gacc1"), "Google tokens never leave the hub");
+  await de.waitFor((x) => x.topic === "desk/esp-e0e001/next" && x.json?.text === "1:1 with Sam", "next meeting from Google");
+  clock += 3600;
+  await hub.apps.tick();
+  assert.equal(fxGoogleToken, "gacc2", "the hub refreshes Google's access token itself");
+  assert.deepEqual((await erin.call("GET", "/api/apps")).body.calendar.google, { configured: true, connected: true, email: "erin@example.com", ok: true, error: null, at: clock, upcoming: 2 });
+  await erin.call("DELETE", "/api/apps/google");
+  await sleep(50);
+  assert.equal(fxGoogleRevoked, "gref1", "disconnecting revokes access at Google");
+  r = await erin.call("GET", "/api/apps");
+  assert.deepEqual([r.body.calendar.google.connected, r.body.calendar.upcoming.length], [false, 0]);
 
   const nowMin = Math.floor((clock % 86400) / 60);
   const nextMin = (nowMin + 1) % 1440;

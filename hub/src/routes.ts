@@ -335,7 +335,7 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
 
   const oauthKind = (req: FastifyRequest) => {
     const k = (req.params as { kind: string }).kind;
-    if (k !== "spotify" && k !== "slack" && k !== "lastfm") throw new HttpError(404, "not_found");
+    if (k !== "spotify" && k !== "slack" && k !== "lastfm" && k !== "google") throw new HttpError(404, "not_found");
     return k;
   };
   const oauthRedirect = (req: FastifyRequest, kind: string) => `${hubUrl(req)}/api/apps/${kind}/callback`;
@@ -352,7 +352,9 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     if (q.error || !q.code || !q.state) return reply.redirect(`/#/apps?err=${kind}_denied`);
     try {
       if (kind === "spotify") await apps.spotifyCallback(u.id, q.code, q.state, oauthRedirect(req, kind));
-      else await apps.slackCallback(u.id, q.code, q.state, oauthRedirect(req, kind));
+      else if (kind === "google") await apps.googleCallback(u.id, q.code, q.state, oauthRedirect(req, kind));
+      else if (kind === "slack") await apps.slackCallback(u.id, q.code, q.state, oauthRedirect(req, kind));
+      else return reply.redirect(`/#/apps?err=${kind}_failed`);
       return reply.redirect(`/#/apps?ok=${kind}`);
     } catch (e) {
       return reply.redirect(`/#/apps?err=${e instanceof HttpError ? e.code : kind + "_failed"}`);
