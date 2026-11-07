@@ -14,6 +14,13 @@ const ERRORS = {
   too_long: "Messages are up to 100 characters.", empty: "Type something first.", auth: "Please sign in again.",
   tz: "Unknown timezone.", network: "Can't reach the hub.",
   busy: "An update is running. Give it a couple of minutes.", offline: "The desk is offline.",
+  spotify_not_configured: "Spotify isn't set up on this hub yet (it needs a Spotify app ID).", slack_not_configured: "Slack isn't set up on this hub yet.",
+  lastfm_not_configured: "Last.fm isn't set up on this hub yet (it needs an API key).", lastfm_user: "No Last.fm user with that name.",
+  lastfm_unreachable: "Couldn't reach Last.fm. Try again in a minute.", oauth_state: "That sign-in took too long. Try again.",
+  spotify_denied: "Spotify sign-in was cancelled.", slack_denied: "Slack sign-in was cancelled.", spotify_failed: "Spotify sign-in failed.", slack_failed: "Slack sign-in failed.",
+  no_location: "Set your desk's location first (Devices → your desk → Location).", email_host: "That mail server can't be used.",
+  email_login: "The mail server refused that address and app password.", email_unreachable: "Couldn't reach that mail server.",
+  label: "Give it a name.", days: "Pick at least one day.", time: "Check the times.", every: "Pick how often.", strokes: "That drawing data was invalid.",
   downgrade: "The desk already runs newer firmware than the hub has.",
   wifi_pass: "Wi-Fi passwords are 8 to 63 characters (or leave it empty for an open network).", ssid: "Network names are 1 to 32 characters.",
   minutes: "Pick 1 to 720 minutes.", too_many: "That's the maximum for this.", duplicate: "You already added that.",
@@ -256,6 +263,125 @@ async function viewInstall() {
 }
 
 // ------------------------------------------------------------------ home + chat
+const DRAW_COLORS = ["#ffffff", "#000000", "#f05a50", "#ff8c42", "#ffd03e", "#6ec878", "#3cc8b4", "#64a0ff", "#b482ff", "#ff96ac", "#a0643c", "#9a9890"];
+const DRAW_SIZES = [["S", 3], ["M", 7], ["L", 14]];
+const toB64 = (arr) => { let s = ""; for (let i = 0; i < arr.length; i += 4096) s += String.fromCharCode(...arr.slice(i, i + 4096)); return btoa(s); };
+const fromB64 = (s) => Uint8Array.from(atob(s || ""), (c) => c.charCodeAt(0));
+
+function drawBytes(ctx, bytes, scale, st = {}) {
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (let i = 0; i < bytes.length;) {
+    if (bytes[i] === 0xff) { st.c = DRAW_COLORS[bytes[i + 1]] || "#fff"; st.w = bytes[i + 2]; st.px = null; i += 3; continue; }
+    const x = bytes[i], y = bytes[i + 1];
+    i += 2;
+    ctx.strokeStyle = st.c; ctx.fillStyle = st.c; ctx.lineWidth = st.w * scale;
+    ctx.beginPath();
+    if (st.px == null) { ctx.arc(x * scale, y * scale, (st.w * scale) / 2, 0, Math.PI * 2); ctx.fill(); }
+    else { ctx.moveTo(st.px * scale, st.py * scale); ctx.lineTo(x * scale, y * scale); ctx.stroke(); }
+    st.px = x; st.py = y;
+  }
+  return st;
+}
+
+function doodleThumb(b64, size = 140) {
+  const c = h("canvas", { width: 240, height: 240, class: "thumb", style: `width:${size}px;height:${size}px` });
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, 240, 240);
+  drawBytes(ctx, fromB64(b64), 1);
+  return c;
+}
+
+async function openDoodle({ to = null, id = null, title, onClose = null }) {
+  try { if (!id) id = (await api("POST", "/api/doodles", { to })).id; } catch (e) { return fail(e); }
+  const own = !to;
+  const canvas = h("canvas", { width: 480, height: 480, class: "draw-canvas" });
+  const ctx = canvas.getContext("2d");
+  const clearCanvas = () => { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, 480, 480); };
+  clearCanvas();
+  let color = 6, size = 7, ended = false, pending = [], carry = 0, inflight = false, stroke = null, lastPt = null;
+  const swatches = h("div", { class: "swatches" });
+  const sizes = h("div", { class: "seg seg-3", style: "width:min(92vw,440px)" });
+  const paintTools = () => {
+    fill(swatches, DRAW_COLORS.map((c, i) => h("button", { type: "button", class: "sw" + (i === color ? " on" : ""), style: `background:${c}`,
+      title: i === 1 ? "Eraser" : "", "aria-label": i === 1 ? "Eraser" : "Colour", onclick: () => { color = i; paintTools(); } }, i === 1 ? "⌫" : "")));
+    fill(sizes, DRAW_SIZES.map(([l, v]) => h("button", { type: "button", class: size === v ? "on" : "", onclick: () => { size = v; paintTools(); } }, l)));
+  };
+  paintTools();
+  const flush = async () => {
+    if (inflight || ended || pending.length <= carry) return;
+    const out = pending;
+    pending = []; carry = 0;
+    if (stroke && lastPt) { pending.push(0xff, stroke.c, stroke.w, ...lastPt); carry = pending.length; }
+    inflight = true;
+    try { await api("POST", `/api/doodles/${id}/strokes`, { s: toB64(out) }); } catch (e) { fail(e); }
+    inflight = false;
+  };
+  const timer = setInterval(flush, 100);
+  const pt = (e) => {
+    const r = canvas.getBoundingClientRect();
+    return [Math.max(0, Math.min(239, Math.round(((e.clientX - r.left) / r.width) * 240))), Math.max(0, Math.min(239, Math.round(((e.clientY - r.top) / r.height) * 240)))];
+  };
+  const local = {};
+  canvas.addEventListener("pointerdown", (e) => {
+    if (ended) return;
+    canvas.setPointerCapture(e.pointerId);
+    const p = pt(e);
+    stroke = { c: color, w: size };
+    lastPt = p;
+    pending.push(0xff, color, size, ...p);
+    drawBytes(ctx, Uint8Array.from([0xff, color, size, ...p]), 2, local);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!stroke || ended) return;
+    const p = pt(e);
+    if (Math.abs(p[0] - lastPt[0]) + Math.abs(p[1] - lastPt[1]) < 2) return;
+    pending.push(...p);
+    drawBytes(ctx, Uint8Array.from(p), 2, local);
+    lastPt = p;
+  });
+  const up = () => { stroke = null; lastPt = null; if (pending.length === carry) { pending = []; carry = 0; } };
+  canvas.addEventListener("pointerup", up);
+  canvas.addEventListener("pointercancel", up);
+  const me = state.me && state.me.username;
+  const es = new EventSource(`/api/doodles/${id}/events`);
+  es.addEventListener("init", (ev) => { const d = JSON.parse(ev.data); clearCanvas(); drawBytes(ctx, fromB64(d.data), 2); });
+  es.addEventListener("strokes", (ev) => { const d = JSON.parse(ev.data); if (d.by !== me) drawBytes(ctx, fromB64(d.s), 2); });
+  es.addEventListener("clear", (ev) => { const d = JSON.parse(ev.data); if (d.by !== me) { clearCanvas(); toast("Canvas cleared"); } });
+  es.addEventListener("end", () => { if (!ended) { ended = true; toast("Drawing saved"); close(); } });
+  const keep = h("select", { style: "max-width:150px" }, [[60, "1 minute"], [600, "10 minutes"], [3600, "1 hour"]].map(([v, l]) => h("option", { value: v }, l)));
+  const close = () => { ended = true; clearInterval(timer); es.close(); dlg.remove(); if (onClose) onClose(); else if (state.route.startsWith("/chat/")) render(); };
+  const dlg = h("div", { class: "draw-overlay" },
+    h("div", { class: "draw-head" }, h("b", {}, title || (own ? "Your canvas" : "Drawing")),
+      h("span", { class: "hint", style: "margin:0" }, own ? "Shows on your desk as you draw" : "Live on both desks; you can both draw")),
+    canvas, swatches, sizes,
+    h("div", { class: "actions", style: "justify-content:center" },
+      h("button", { class: "btn small", onclick: guarded(async () => {
+        if (!confirm("Clear the canvas for everyone?")) return;
+        pending = []; carry = 0; clearCanvas();
+        try { await api("POST", `/api/doodles/${id}/clear`); } catch (e) { fail(e); }
+      }) }, "Clear"),
+      own ? keep : null,
+      h("button", { class: "btn small primary", onclick: guarded(async () => {
+        await flush();
+        try { await api("POST", `/api/doodles/${id}/end`, { secs: own ? Number(keep.value) : 60 }); ended = true; toast("Drawing saved"); close(); } catch (e) { fail(e); }
+      }) }, "Done"),
+      h("button", { class: "btn small ghost", onclick: () => { flush(); close(); } }, own ? "Close" : "Leave")),
+    own ? null : h("p", { class: "hint", style: "text-align:center;max-width:440px" }, "Leave keeps the drawing open for your friend. Done saves it in your chat for both of you."));
+  document.body.append(dlg);
+}
+
+async function activeDoodlesBanner(filterUser) {
+  let list = [];
+  try { list = await api("GET", "/api/doodles/active"); } catch { return null; }
+  list = list.filter((d) => d.with && (!filterUser || d.with === filterUser));
+  if (!list.length) return null;
+  return h("div", { class: "list", style: "margin-bottom:10px" }, list.map((d) => h("div", { class: "row tap", onclick: () => openDoodle({ to: d.with, id: d.id, title: `Drawing with ${d.withName}` }) },
+    h("div", { class: "avatar" }, "✏️"),
+    h("div", { class: "grow" }, h("div", { class: "title" }, d.startedByMe ? `Your drawing with ${d.withName}` : `${d.withName} is drawing with you`),
+      h("div", { class: "sub" }, "Live · tap to join")),
+    h("span", { class: "chev" }, "›"))));
+}
+
 async function viewHome() {
   const main = shell("claude-desk", h("div", { class: "empty" }, "Loading…"));
   await loadFriends();
@@ -267,7 +393,8 @@ async function viewHome() {
           h("div", { class: "sub" }, "@" + f.username)),
         h("span", { class: "chev" }, "›"))))
     : h("div", { class: "card empty" }, "No friends yet. ", h("a", { href: "#/friends" }, "Add someone"), " to send messages to their desk.");
-  fill(main, h("h2", {}, "Send to a desk"), list,
+  const live = await activeDoodlesBanner(null);
+  fill(main, live ? [h("h2", {}, "Live drawings"), live] : null, h("h2", {}, "Send to a desk"), list,
     state.friends.some((f) => f.pendingFrom === "them") ? h("p", { class: "hint" }, h("a", { href: "#/friends" }, "You have friend requests waiting.")) : null);
 }
 
@@ -295,7 +422,10 @@ async function viewChat(username) {
     onclick: guarded(() => send({ kind: "reaction", reaction: key })),
   }, emoji);
   const composer = h("div", { class: "composer" },
-    h("div", { class: "reacts" }, REACTIONS.map(reactBtn)),
+    h("div", { class: "reacts" },
+      h("button", { type: "button", class: "draw-btn", title: "Draw together", "aria-label": "Draw together",
+        onclick: () => openDoodle({ to: username, title: `Drawing with ${fr ? fr.displayName : "@" + username}` }) }, "✏️"),
+      REACTIONS.map(reactBtn)),
     h("form", {
       class: "inline", onsubmit: async (e) => {
         e.preventDefault();
@@ -315,7 +445,9 @@ async function viewChat(username) {
     if (sig === last) return;
     const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 80;
     last = sig;
-    msgs.replaceChildren(...(list.length ? list.map((m) => m.kind === "reaction"
+    msgs.replaceChildren(...(list.length ? list.map((m) => m.kind === "doodle"
+      ? h("div", { class: "bubble react" + (m.mine ? " mine" : "") }, doodleThumb(m.doodle), h("span", { class: "meta" }, "drawing · " + clock(m.t)))
+      : m.kind === "reaction"
       ? h("div", { class: "bubble react" + (m.mine ? " mine" : ""), title: m.reaction }, EMOJI[m.reaction] || m.reaction, h("span", { class: "meta" }, clock(m.t)))
       : h("div", { class: "bubble" + (m.mine ? " mine" : "") }, m.text, h("span", { class: "meta" }, clock(m.t))))
       : [h("div", { class: "empty" }, "Say hi. It pops up on their desk.")]));
@@ -323,9 +455,12 @@ async function viewChat(username) {
     first = false;
   }
 
-  shell(fr ? fr.displayName : "@" + username, [msgs, fr && fr.rel ? composer : h("div", { class: "empty" }, "You're not friends with @" + username + ".")], { back: "#/home", chat: true });
+  const liveBox = h("div", {});
+  const refreshLive = async () => { const b = await activeDoodlesBanner(username); fill(liveBox, b); };
+  shell(fr ? fr.displayName : "@" + username, [liveBox, msgs, fr && fr.rel ? composer : h("div", { class: "empty" }, "You're not friends with @" + username + ".")], { back: "#/home", chat: true });
   await refresh().catch(fail);
-  state.poll = setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 4000);
+  refreshLive();
+  state.poll = setInterval(() => { if (!document.hidden) { refresh().catch(() => {}); refreshLive(); } }, 4000);
 }
 
 // ------------------------------------------------------------------ friends
@@ -859,6 +994,186 @@ function appWebhook(a) {
     }) }, "Send a test card"));
 }
 
+function appCanvas() {
+  const el = h("div", { class: "card" });
+  const keep = h("select", { style: "max-width:150px" }, [[60, "1 minute"], [600, "10 minutes"], [3600, "1 hour"]].map(([v, l]) => h("option", { value: v }, l)));
+  async function paint() {
+    let mine = [];
+    try { mine = await api("GET", "/api/doodles/mine"); } catch { mine = []; }
+    fill(el,
+      h("p", { style: "margin:0" }, "Draw something for your own desk: a note, a doodle, a reminder. Friends can draw with you from the chat (✏️)."),
+      h("button", { class: "btn primary block", onclick: () => openDoodle({ to: null, title: "Your canvas", onClose: paint }) }, "Draw on my desk"),
+      mine.length ? [h("label", { class: "f" }, "Your drawings"),
+        h("div", { class: "inline", style: "margin-bottom:8px" }, h("span", { class: "hint", style: "margin:0" }, "Show for"), keep),
+        h("div", { class: "thumbs" }, mine.map((d) => h("div", { class: "thumb-card" }, doodleThumb(d.data, 96),
+          h("div", { class: "actions", style: "justify-content:center;margin-top:6px" },
+            h("button", { class: "btn small", onclick: guarded(async () => {
+              try { await api("POST", `/api/doodles/${d.id}/show`, { secs: Number(keep.value) }); toast("On your desk"); } catch (e) { fail(e); }
+            }) }, "Show"),
+            h("button", { class: "btn small ghost danger", "aria-label": "Delete", onclick: guarded(async () => {
+              if (!confirm("Delete this drawing?")) return;
+              try { await api("DELETE", `/api/doodles/${d.id}`); paint(); } catch (e) { fail(e); }
+            }) }, "✕")))))] : null);
+  }
+  paint();
+  return el;
+}
+
+const MAIL_PRESETS = [["imap.gmail.com", "Gmail"], ["imap.mail.me.com", "iCloud"], ["imap.mail.yahoo.com", "Yahoo"], ["imap.fastmail.com", "Fastmail"], ["", "Other"]];
+const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const toMin = (v) => { const [hh, mm] = String(v || "").split(":").map(Number); return hh * 60 + (mm || 0); };
+const fromMin = (m) => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+const statusLine = (x, okText) => x.ok === false ? h("p", { class: "hint warn", style: "margin:8px 0 0" }, ERRORS[x.error] || (x.error === "reconnect" ? "Sign-in expired. Connect again." : "Problem: " + x.error))
+  : okText ? h("p", { class: "hint", style: "margin:8px 0 0" }, okText) : null;
+const toggle = (label, checked, onchange) => {
+  const cb = h("input", { type: "checkbox", checked, style: "width:auto" });
+  cb.addEventListener("change", () => onchange(cb.checked, cb));
+  return h("label", { class: "check" }, cb, label);
+};
+
+function appMusic(a) {
+  const el = h("div", { class: "card" });
+  const lfUser = h("input", { placeholder: "Last.fm username", autocapitalize: "none", autocomplete: "off", spellcheck: "false" });
+  const opt = (kind, k) => async (v, cb) => { try { a.music = await api("PATCH", `/api/apps/music/${kind}`, { [k]: v }); } catch (e) { fail(e); cb.checked = !v; } };
+  function paint() {
+    const m = a.music, sp = m.spotify, lf = m.lastfm;
+    const opts = (kind, x) => [toggle("Show what's playing under the clock", x.clock, opt(kind, "clock")), toggle("Show a card when the song changes", x.cards, opt(kind, "cards"))];
+    const off = (kind) => h("button", { class: "btn small ghost danger", style: "margin-top:10px", onclick: guarded(async () => {
+      if (!confirm("Disconnect?")) return;
+      try { await api("DELETE", `/api/apps/${kind}`); a = { ...a, music: (await api("GET", "/api/apps")).music }; paint(); } catch (e) { fail(e); }
+    }) }, "Disconnect");
+    fill(el,
+      m.playing ? h("div", { class: "title", style: "margin-bottom:10px" }, "♫ ", m.playing.title, h("span", { class: "sub" }, " · " + m.playing.artist)) : null,
+      h("b", {}, "Spotify"),
+      sp.connected ? [h("p", { class: "hint", style: "margin:4px 0 0" }, `Connected as ${sp.name}`), statusLine(sp), opts("spotify", sp), off("spotify")]
+        : sp.configured ? h("a", { class: "btn block", href: "/api/apps/spotify/connect" }, "Connect Spotify")
+        : h("p", { class: "hint" }, "Not set up on this hub yet."),
+      h("div", { style: "border-top:1px solid var(--line);margin:14px 0 10px" }),
+      h("b", {}, "YouTube Music, Apple Music, Deezer, Tidal… via Last.fm"),
+      lf.connected ? [h("p", { class: "hint", style: "margin:4px 0 0" }, `Following last.fm/user/${lf.user}`), statusLine(lf), opts("lastfm", lf), off("lastfm")]
+        : lf.configured ? [
+          h("p", { class: "hint", style: "margin:4px 0 8px" }, "Last.fm records what you play (\"scrobbling\"). For YouTube Music use the free Web Scrobbler browser extension or Pano Scrobbler on Android; Apple Music, Deezer and Tidal have Last.fm apps or built-in support."),
+          h("form", { class: "inline", onsubmit: guarded(async () => {
+            if (!lfUser.value.trim()) return;
+            try { a.music = await api("PUT", "/api/apps/lastfm", { user: lfUser.value.trim() }); lfUser.value = ""; toast("Last.fm connected"); paint(); } catch (e) { fail(e); }
+          }) }, lfUser, h("button", { class: "btn primary", type: "submit" }, "Connect"))]
+        : h("p", { class: "hint" }, "Not set up on this hub yet."));
+  }
+  paint();
+  return el;
+}
+
+function appReminders(a) {
+  const el = h("div", { class: "card" });
+  let kind = "every";
+  const label = h("input", { maxlength: 24, placeholder: "Drink water" });
+  const everyLabel = (n) => n < 60 ? `every ${n} min` : `every ${n / 60} h`.replace(".5 h", "½ h");
+  const every = h("select", {}, [15, 30, 45, 60, 90, 120, 180, 240].map((n) => h("option", { value: n, selected: n === 60 }, everyLabel(n))));
+  const start = h("input", { type: "time", value: "09:00" }), end = h("input", { type: "time", value: "18:00" }), at = h("input", { type: "time", value: "09:00" });
+  const days = DAY_NAMES.map((d, i) => { const cb = h("input", { type: "checkbox", checked: i < 5, style: "width:auto" }); return { d, cb }; });
+  const describe = (r) => {
+    const ds = DAY_NAMES.filter((_, i) => r.days & (1 << i));
+    const when = r.days === 127 ? "every day" : r.days === 31 ? "weekdays" : r.days === 96 ? "weekends" : ds.join(", ");
+    return r.kind === "at" ? `${fromMin(r.at)} · ${when}` : `${everyLabel(r.every)}, ${fromMin(r.start)}–${fromMin(r.end)} · ${when}`;
+  };
+  function paint() {
+    fill(el,
+      a.reminders.length ? h("div", { class: "list", style: "margin-bottom:12px" }, a.reminders.map((r) => h("div", { class: "row" },
+        h("div", { class: "grow" }, h("div", { class: "title" }, r.label), h("div", { class: "sub" }, describe(r))),
+        h("button", { class: "btn small ghost", onclick: guarded(async () => {
+          try { await api("DELETE", `/api/reminders/${r.id}`); a.reminders = a.reminders.filter((x) => x.id !== r.id); paint(); } catch (e) { fail(e); }
+        }) }, "Remove")))) : null,
+      h("div", { class: "seg seg-2" }, [["every", "Repeat"], ["at", "At a time"]].map(([k, l]) => h("button", { type: "button", class: kind === k ? "on" : "", onclick: () => { kind = k; paint(); } }, l))),
+      h("label", { class: "f" }, "What"), label,
+      kind === "every" ? [h("label", { class: "f" }, "How often"), every, h("div", { class: "two" }, h("div", {}, h("label", { class: "f" }, "From"), start), h("div", {}, h("label", { class: "f" }, "Until"), end))]
+        : [h("label", { class: "f" }, "Time"), at],
+      h("label", { class: "f" }, "Days"),
+      h("div", { class: "days" }, days.map(({ d, cb }) => h("label", { class: "day" }, cb, d))),
+      h("button", { class: "btn primary block", onclick: guarded(async () => {
+        const mask = days.reduce((m, { cb }, i) => m | (cb.checked ? 1 << i : 0), 0);
+        const b = kind === "at" ? { kind, label: label.value, at: toMin(at.value), days: mask }
+          : { kind, label: label.value, every: Number(every.value), start: toMin(start.value), end: toMin(end.value), days: mask };
+        try { a.reminders = await api("POST", "/api/reminders", b); label.value = ""; toast("Reminder added"); paint(); } catch (e) { fail(e); }
+      }) }, "Add reminder"));
+  }
+  paint();
+  return el;
+}
+
+function appRain(a) {
+  const el = h("div", { class: "card" });
+  function paint() {
+    const r = a.rain;
+    fill(el,
+      h("p", { style: "margin:0" }, "A card about 30 minutes before rain starts where your desk is."),
+      !r.hasLocation ? h("p", { class: "hint warn" }, ERRORS.no_location) : null,
+      toggle("Rain alerts", r.on, async (v, cb) => { try { a.rain = await api("PUT", "/api/apps/rain", { on: v }); paint(); } catch (e) { fail(e); cb.checked = !v; } }),
+      r.on ? statusLine(r, "On. Checked every 15 minutes.") : null);
+  }
+  paint();
+  return el;
+}
+
+function appEmail(a) {
+  const el = h("div", { class: "card" });
+  const preset = h("select", {}, MAIL_PRESETS.map(([v, l]) => h("option", { value: v }, l)));
+  const host = h("input", { placeholder: "imap.example.com", autocapitalize: "none", spellcheck: "false" });
+  const user = h("input", { placeholder: "you@example.com", type: "email", autocapitalize: "none", autocomplete: "off" });
+  const pass = h("input", { placeholder: "App password", type: "password", autocomplete: "off" });
+  const subjects = h("input", { type: "checkbox", checked: true, style: "width:auto" });
+  preset.addEventListener("change", () => { host.value = preset.value; host.parentElement.style.display = preset.value ? "none" : ""; });
+  host.value = MAIL_PRESETS[0][0];
+  function paint() {
+    const e = a.email;
+    if (e.connected) {
+      fill(el, h("div", { class: "title" }, h("span", { class: "dot" + (e.ok === false ? "" : " on") }), e.user),
+        h("p", { class: "hint", style: "margin:4px 0 0" }, `${e.host}${e.unseen != null ? ` · ${e.unseen} unread` : ""}`), statusLine(e),
+        toggle("Show the subject on the desk", e.subjects, async (v, cb) => { try { a.email = await api("PATCH", "/api/apps/email", { subjects: v }); } catch (err) { fail(err); cb.checked = !v; } }),
+        h("button", { class: "btn small ghost danger", style: "margin-top:10px", onclick: guarded(async () => {
+          if (!confirm("Disconnect email? The app password is deleted from the hub.")) return;
+          try { await api("DELETE", "/api/apps/email"); a.email = { connected: false }; paint(); } catch (err) { fail(err); }
+        }) }, "Disconnect"));
+      return;
+    }
+    fill(el,
+      h("p", { style: "margin:0" }, "A card when new mail arrives. Uses an app password (not your real one), so you can revoke it any time."),
+      h("details", { class: "more" }, h("summary", {}, "How do I get an app password?"),
+        h("ul", { class: "help" },
+          h("li", {}, h("b", {}, "Gmail: "), "turn on 2-Step Verification, then myaccount.google.com/apppasswords."),
+          h("li", {}, h("b", {}, "iCloud: "), "account.apple.com → Sign-In and Security → App-Specific Passwords."),
+          h("li", {}, h("b", {}, "Yahoo: "), "Account security → Generate app password."),
+          h("li", {}, h("b", {}, "Outlook / Hotmail: "), "not supported (Microsoft turned off app passwords for mail)."))),
+      h("label", { class: "f" }, "Provider"), preset,
+      h("div", { style: "display:none" }, h("label", { class: "f" }, "IMAP server"), host),
+      h("label", { class: "f" }, "Email address"), user,
+      h("label", { class: "f" }, "App password"), pass,
+      h("label", { class: "check" }, subjects, "Show the subject on the desk"),
+      h("button", { class: "btn primary block", onclick: guarded(async () => {
+        try { a.email = await api("PUT", "/api/apps/email", { host: host.value.trim(), user: user.value.trim(), pass: pass.value, subjects: subjects.checked }); pass.value = ""; toast("Email connected"); paint(); }
+        catch (err) { fail(err); }
+      }) }, "Connect"));
+  }
+  paint();
+  return el;
+}
+
+function appSlack(a) {
+  const el = h("div", { class: "card" });
+  const s = a.slack;
+  if (s.connected) {
+    fill(el, h("div", { class: "title" }, h("span", { class: "dot" + (s.ok === false ? "" : " on") }), `Connected to ${s.team || "Slack"}`),
+      statusLine(s, "A card when someone @mentions you. Checked every minute."),
+      h("button", { class: "btn small ghost danger", style: "margin-top:10px", onclick: guarded(async () => {
+        if (!confirm("Disconnect Slack?")) return;
+        try { await api("DELETE", "/api/apps/slack"); a.slack = { ...s, connected: false }; el.replaceWith(appSlack(a)); } catch (e) { fail(e); }
+      }) }, "Disconnect"));
+  } else {
+    fill(el, h("p", { style: "margin:0" }, "A card when someone @mentions you in Slack."),
+      s.configured ? h("a", { class: "btn block", href: "/api/apps/slack/connect" }, "Connect Slack") : h("p", { class: "hint" }, "Not set up on this hub yet."));
+  }
+  return el;
+}
+
 async function viewApps() {
   shell("Apps", h("div", { class: "empty" }, "Loading…"));
   const [{ token, hub }, a] = await Promise.all([api("GET", "/api/token"), api("GET", "/api/apps"), loadMe()]);
@@ -874,8 +1189,8 @@ async function viewApps() {
   const cmd = (label, text) => [h("label", { class: "f" }, label),
     h("div", { class: "codebox" }, h("div", { class: "code" }, text), h("button", { class: "btn small", onclick: () => copy(text) }, "Copy"))];
   fill(m,
-    h("nav", { class: "chips" }, [["Claude Code", "app-claude"], ["Timer", "app-timer"], ["Calendar", "app-calendar"], ["GitHub", "app-github"],
-      ["Markets", "app-markets"], ["Webhook", "app-webhook"]].map(([l, id]) =>
+    h("nav", { class: "chips" }, [["Claude Code", "app-claude"], ["Canvas", "app-canvas"], ["Music", "app-music"], ["Timer", "app-timer"], ["Reminders", "app-reminders"], ["Rain", "app-rain"], ["Calendar", "app-calendar"], ["GitHub", "app-github"],
+      ["Markets", "app-markets"], ["Email", "app-email"], ["Slack", "app-slack"], ["Webhook", "app-webhook"]].map(([l, id]) =>
       h("button", { type: "button", class: "chip", onclick: () => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" }) }, l))),
     h("h2", { id: "app-claude" }, "Claude Code"),
     h("div", { class: "card status-card" }, h("span", { class: "big" }, icons[v.s] || "•"),
@@ -897,11 +1212,24 @@ async function viewApps() {
           try { await api("POST", "/api/token/regenerate"); toast("New token created"); viewApps(); } catch (e) { fail(e); }
         }),
       }, "Regenerate token")),
+    h("h2", { id: "app-canvas" }, "Your canvas"), appCanvas(),
+    h("h2", { id: "app-music" }, "Now playing"), appMusic(a),
     h("h2", { id: "app-timer" }, "Timer"), appTimers(a),
+    h("h2", { id: "app-reminders" }, "Reminders"), appReminders(a),
+    h("h2", { id: "app-rain" }, "Rain alerts"), appRain(a),
     h("h2", { id: "app-calendar" }, "Calendar"), appCalendar(a),
     h("h2", { id: "app-github" }, "GitHub"), appGithub(a),
     h("h2", { id: "app-markets" }, "Stocks & crypto"), appMarkets(a),
+    h("h2", { id: "app-email" }, "Email"), appEmail(a),
+    h("h2", { id: "app-slack" }, "Slack"), appSlack(a),
     h("h2", { id: "app-webhook" }, "Webhook"), appWebhook(a));
+  const ok = state.query && state.query.get("ok"), err = state.query && state.query.get("err");
+  if (ok || err) {
+    history.replaceState(null, "", "#/apps");
+    if (ok) toast(`${ok === "spotify" ? "Spotify" : ok === "slack" ? "Slack" : ok} connected`);
+    else toast(ERRORS[err] || "Sign-in failed", true);
+    document.getElementById(ok === "slack" || err?.startsWith("slack") ? "app-slack" : "app-music")?.scrollIntoView();
+  }
 }
 
 // ------------------------------------------------------------------ settings
@@ -940,8 +1268,9 @@ async function loadFriends() { state.friends = await api("GET", "/api/friends");
 async function render() {
   clearInterval(state.poll); state.poll = null;
   document.getElementById("toast").className = "";
-  const hash = location.hash || "#/home";
+  const [hash, query] = (location.hash || "#/home").split("?");
   state.route = hash.slice(1);
+  state.query = new URLSearchParams(query || "");
   try {
     if (!state.config) state.config = await api("GET", "/api/config").catch(() => ({}));
     if (hash === "#/install") {

@@ -29,6 +29,8 @@ void uiCasperZ(int casperX, uint32_t t);   // rising z's above sleeping Casper  
 // hub features
 extern char uiUnread[24];             // non-empty: show an envelope + sender on the clock
 extern char uiNext[40];
+extern bool uiNextMusic;
+void uiDrawFooter(const char *s);
 void uiNotice(const char *src, const char *title, const char *text, int icon, uint16_t color);
 uint16_t uiColor(const char *s);
 extern bool uiLocationSet;

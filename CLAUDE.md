@@ -21,8 +21,10 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
   `HUB_INVITE_CODE`, `PORT=8080` (domain targets 8080), TCP Proxy → 8883. Build/deploy settings live on the Railway
   service (there is no railway.json: new services can't use config-as-code). The Dockerfile installs python3/make/g++
   because better-sqlite3 13 compiles from source.
-  - `src/apps.ts` = hub-side integrations (timers, calendar via node-ical, GitHub notifications, Yahoo quotes); they
-    only ever send `card` / `next` to desks (PROTOCOL.md §3.5, §3.6, §11). `src/net.ts` = `safeFetch` (public https
+  - `src/apps.ts` = hub-side integrations (timers, reminders, calendar via node-ical, GitHub notifications, Yahoo
+    quotes, Spotify/Last.fm now playing, Open-Meteo rain, IMAP email via imapflow, Slack mentions); they only ever send
+    `card` / `next` to desks (PROTOCOL.md §3.5, §3.6, §11). Spotify/Last.fm/Slack need env vars (hub/README.md).
+  - `src/doodles.ts` = live drawings: binary `draw` topic to desks (§3.8), SSE to browsers (§12). `src/net.ts` = `safeFetch` (public https
     only) for user-supplied URLs. New integrations go here, never on the desk.
 - `client/` hook (`hook.py` macOS/Linux, `hook.ps1` Windows) + installers; the hub serves them with `__HUB_URL__` replaced
   (first occurrence only — keep the placeholder's first occurrence as the value).
@@ -31,7 +33,7 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 - Pins: MOSI 13, SCLK 14, DC 0, RST 2, CS none; backlight GPIO5 PWM **active-low**; `invertDisplay(true)`.
 - Panel looks best with gamma preset 2 (`gtab=2`), sharp text on, vivid colours, ~25% day brightness; cards must be
   pure black (dark greys tint green in RGB565).
-- RAM is the constraint (~80 KB total; static RAM 37.8 KB on 1.4.5, was 42.9 KB on 1.4.1). Memory rules:
+- RAM is the constraint (~80 KB total; static RAM 37.9 KB on 1.4.6, was 42.9 KB on 1.4.1). Memory rules:
   - **String literals live in RAM on the ESP8266.** Web pages are PROGMEM templates (`~key~` placeholders, streamed
     by `sendPage`/`sendTpl`, never built as one big String); use `PSTR()`/`F()`/`snprintf_P` for anything long.
   - Drawing code shares one row buffer (`gRowBuf`); don't add per-function `static` pixel buffers.
@@ -53,10 +55,9 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 
 ## Owner's setup / current state (Nov 2026)
 - Owner: Chris (GitHub `Chrishalaby`), macOS, Claude Code user. Repo: github.com/Chrishalaby/claude-desk (public).
-- His desk runs **firmware 1.4.4** (1.4.5 is built: cards, next-up line, Wi-Fi from the hub, the reconnect fix),
-  paired on the hub as "Chris" (`chris-desk.local`), ~22 KB free while connected. It has 2 saved networks (hotspot
-  + home); on 1.4.4 it does not switch between them by itself (3 s join limit), a restart does.
-  1.0.4 → 1.4.1 by local `/update`; 1.4.1 → 1.4.3 via SAFE MODE (its own OTA failed); 1.4.3 → 1.4.4 by the hub's
+- His desk runs **firmware 1.4.5** (1.4.6 is built: drawings, the now-playing line), paired on the hub as "Chris"
+  (`chris-desk.local`), ~21 KB free while connected, on home Wi-Fi with the hotspot also saved.
+  1.0.4 → 1.4.1 by local `/update`; 1.4.1 → 1.4.3 via SAFE MODE (its own OTA failed); later versions by the hub's
   Update button (restart-then-download path, verified on the device).
 - Claude Code hooks are installed on his Mac (`~/.claude-desk/hook.py`, token in `config.json`) and reach the hub.
   The old local tracker's launchd job and hooks are gone; its folder `~/Claude/geekmagic/claude-desk/` is unused.
@@ -64,9 +65,9 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 - Hub is live at `https://claude-desk.up.railway.app` (Railway project `claude-desk`; MQTT via the TCP proxy, the hub
   hands the endpoint to devices). Phone-first install guide at `/#/install`. The invite code is weak; change
   `HUB_INVITE_CODE` before sharing the hub widely.
-- Still to test on the device: 1.4.5 (cards, next-up line, Wi-Fi switching and hub-managed Wi-Fi), needs/done cards
-  from a real session, a message + reaction between two accounts, remote settings, pack download. Apps against the
-  real services: a real calendar feed, a real GitHub token (only a fake token and a live BTC-USD quote were tried).
+- Still to test on the device: 1.4.6 (drawings, now playing), Wi-Fi switching, needs/done cards from a real session,
+  a message + reaction between two accounts, remote settings, pack download. Apps against the real services: a real
+  calendar feed, GitHub token, Spotify/Last.fm/Slack (need their env vars on Railway), an IMAP account, rain alerts.
 - Untested so far: Windows `install.ps1`/`hook.ps1` (written carefully, never executed), the install guide on a real
   phone and on a stock GeekMagic.
 - Commercial plans: talking to GeekMagic (Shenzhen Fumantu Technology) about OEM units flashed with this firmware.

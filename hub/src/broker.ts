@@ -19,6 +19,7 @@ export interface BrokerHooks {
 export interface Broker {
   port: number;
   publish(topic: string, payload: object | null, retain?: boolean, done?: () => void): void;
+  publishRaw(topic: string, payload: Buffer, retain?: boolean): void;
   /** Disconnects a device (after `delayMs`, so queued messages can be flushed first). */
   kick(chip: string, delayMs?: number): void;
   isOnline(chip: string): boolean;
@@ -120,6 +121,11 @@ export async function startBroker(port: number, host: string, mat: TlsMaterial, 
       aedes.publish({ cmd: "publish", topic, payload: buf, qos: 1, retain, dup: false } as any, (err) => {
         if (err) hooks.log("publish failed", topic, err.message);
         done?.();
+      });
+    },
+    publishRaw(topic, payload, retain = false) {
+      aedes.publish({ cmd: "publish", topic, payload, qos: 1, retain, dup: false } as any, (err) => {
+        if (err) hooks.log("publish failed", topic, err.message);
       });
     },
     kick(chip, delayMs = 0) {

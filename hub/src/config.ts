@@ -25,6 +25,15 @@ export interface Config {
   githubApi: string;
   quotesApi: string;
   allowPrivateFetch: boolean;
+  weatherApi: string;
+  spotifyClientId: string | null;
+  spotifyAccounts: string;
+  spotifyApi: string;
+  lastfmKey: string | null;
+  lastfmApi: string;
+  slackClientId: string | null;
+  slackClientSecret: string | null;
+  slackApi: string;
 }
 
 const num = (v: string | undefined) => (v && /^\d+$/.test(v) ? Number(v) : null);
@@ -56,5 +65,14 @@ export function configFromEnv(env = process.env): Config {
     githubApi: (nonEmpty(env.GITHUB_API) ?? "https://api.github.com").replace(/\/+$/, ""),
     quotesApi: (nonEmpty(env.QUOTES_API) ?? "https://query1.finance.yahoo.com").replace(/\/+$/, ""),
     allowPrivateFetch: env.ALLOW_PRIVATE_FETCH === "1",
+    weatherApi: (nonEmpty(env.WEATHER_API) ?? "https://api.open-meteo.com").replace(/\/+$/, ""),
+    spotifyClientId: nonEmpty(env.SPOTIFY_CLIENT_ID),
+    spotifyAccounts: (nonEmpty(env.SPOTIFY_ACCOUNTS) ?? "https://accounts.spotify.com").replace(/\/+$/, ""),
+    spotifyApi: (nonEmpty(env.SPOTIFY_API) ?? "https://api.spotify.com").replace(/\/+$/, ""),
+    lastfmKey: nonEmpty(env.LASTFM_API_KEY),
+    lastfmApi: (nonEmpty(env.LASTFM_API) ?? "https://ws.audioscrobbler.com").replace(/\/+$/, ""),
+    slackClientId: nonEmpty(env.SLACK_CLIENT_ID),
+    slackClientSecret: nonEmpty(env.SLACK_CLIENT_SECRET),
+    slackApi: (nonEmpty(env.SLACK_API) ?? "https://slack.com/api").replace(/\/+$/, ""),
   };
 }

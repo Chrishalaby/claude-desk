@@ -451,7 +451,7 @@ void handleInfoBasic() {
 
 // ============================================================ normal mode ===
 #ifndef LOADER
-enum View { V_CLOCK, V_NEEDS, V_DONE, V_MSG, V_PAIR, V_NOTE };
+enum View { V_CLOCK, V_NEEDS, V_DONE, V_MSG, V_PAIR, V_NOTE, V_DRAW };
 bool settingsDirty = true;   // report settings to the hub
 View view = V_CLOCK;
 bool dirty = true, timeValid = false;
@@ -624,8 +624,10 @@ String mFrom, mText, mWhen;
 String nTitle, nText, nSrc, nxText;
 int nIcon = -1;
 uint16_t nColor = 0;
-uint32_t noteUntil = 0, nxAt = 0;
-bool nxLeft = false, wifiScanForHub = false, wifiReport = false;
+uint32_t noteUntil = 0, nxAt = 0, drawUntil = 0;
+bool nxLeft = false, nxMusic = false, wifiScanForHub = false, wifiReport = false;
+uint16_t drawId = 0;
+String drawFrom;
 bool mPartner = false;
 int mReact = -1;
 
@@ -681,7 +683,9 @@ void refreshNext() {
   char s[40] = "";
   time_t now = time(nullptr);
   if (nxText.length() && now > 1600000000) {
-    if (nxLeft) {
+    if (nxMusic) {
+      snprintf(s, sizeof s, "%s", nxText.c_str());
+    } else if (nxLeft) {
       long mins = ((long)nxAt - (long)now + 59) / 60;
       if (mins >= 60) snprintf_P(s, sizeof s, PSTR("%s \xC2\xB7 %ldh %02ldm"), nxText.c_str(), mins / 60, mins % 60);
       else if (mins > 0) snprintf_P(s, sizeof s, PSTR("%s \xC2\xB7 %ld min"), nxText.c_str(), mins);
@@ -693,6 +697,7 @@ void refreshNext() {
       snprintf_P(s, sizeof s, PSTR("%s %02d:%02d"), nxText.c_str(), m.tm_hour, m.tm_min);
     } else nxText = "";
   }
+  uiNextMusic = nxMusic && s[0];
   if (!strcmp(s, uiNext)) return;
   strcpy(uiNext, s);
   if (view == V_CLOCK && timeValid && !dirty) {
@@ -703,11 +708,69 @@ void refreshNext() {
   }
 }
 
+static const uint8_t DRAW_RGB[] PROGMEM = {255, 255, 255, 0, 0, 0, 240, 90, 80, 255, 140, 66, 255, 208, 62, 110, 200, 120,
+                                           60, 200, 180, 100, 160, 255, 180, 130, 255, 255, 150, 172, 160, 100, 60, 154, 152, 144};
+#define DRAW_COLORS 12
+
+uint16_t drawColor(uint8_t i) {
+  if (i >= DRAW_COLORS) i = 0;
+  return c565(pgm_read_byte(DRAW_RGB + i * 3), pgm_read_byte(DRAW_RGB + i * 3 + 1), pgm_read_byte(DRAW_RGB + i * 3 + 2));
+}
+
+void onDraw(const uint8_t *p, unsigned int len) {
+  if (len < 3) return;
+  uint8_t op = p[0];
+  uint16_t id = (p[1] << 8) | p[2];
+  if (op == 1) {
+    if (view == V_NEEDS || view == V_PAIR || view == V_MSG) { drawId = 0; return; }
+    drawId = id;
+    drawFrom = "";
+    for (unsigned i = 0; len > 3 && i < p[3] && 4 + i < len; i++) drawFrom += (char)p[4 + i];
+    view = V_DRAW;
+    dirty = false;
+    if (scene != SC_NONE) scene = SC_NONE;
+    gFill(0, 0, SCR_W, SCR_H, 0);
+    drawUntil = millis() + 120000UL;
+    strncpy(uiUnread, drawFrom.c_str(), sizeof uiUnread - 1);
+    uiUnread[sizeof uiUnread - 1] = 0;
+    unreadUntil = millis() + 3UL * 3600 * 1000;
+    return;
+  }
+  if (!drawId || id != drawId || view != V_DRAW) return;
+  drawUntil = millis() + 120000UL;
+  if (op == 4) { gFill(0, 0, SCR_W, SCR_H, 0); return; }
+  if (op == 3) {
+    uiDrawFooter((drawFrom == F("you") ? hhmm(0) : "from " + drawFrom + " \xC2\xB7 " + hhmm(0)).c_str());
+    drawUntil = millis() + 1000UL * (len >= 5 ? constrain((p[3] << 8) | p[4], 10, 3600) : 60);
+    return;
+  }
+  if (op != 2) return;
+  uint16_t c = drawColor(0);
+  int w = 3, px = -1, py = -1;
+  for (unsigned i = 3; i < len;) {
+    if (p[i] == 0xFF) {
+      if (i + 2 >= len) break;
+      c = drawColor(p[i + 1]);
+      w = constrain(p[i + 2], 1, 24);
+      px = py = -1;
+      i += 3;
+      continue;
+    }
+    if (i + 1 >= len) break;
+    int x = p[i], y = p[i + 1];
+    i += 2;
+    gLine(px < 0 ? x : px, py < 0 ? y : py, x, y, w, c);
+    px = x;
+    py = y;
+  }
+}
+
 void onMqtt(char *topic, byte *payload, unsigned int len) {
   String t = topic;
   int slash = t.lastIndexOf('/');
   String leaf = t.substring(slash + 1);
   if (t.indexOf("/up/") >= 0) return;
+  if (leaf == F("draw")) { onDraw(payload, len); return; }
   if (leaf == "next" && !len) { nxText = ""; refreshNext(); return; }
   JsonDocument d;
   if (deserializeJson(d, payload, len)) return;
@@ -758,6 +821,7 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
     nxText = (const char *)(d[F("text")] | "");
     nxAt = d[F("at")] | 0;
     nxLeft = d[F("left")] | false;
+    nxMusic = String((const char *)(d[F("k")] | "")) == F("music");
     refreshNext();
   } else if (leaf == "msg") {
     uint32_t id = d["id"] | 0;
@@ -1190,6 +1254,7 @@ void loopNormal() {
   if (uiUnread[0] && (int32_t)(millis() - unreadUntil) >= 0) { uiUnread[0] = 0; if (view == V_CLOCK) dirty = true; }
   if (view == V_MSG && (int32_t)(millis() - msgUntil) >= 0) { view = V_CLOCK; dirty = true; }
   if (view == V_NOTE && (int32_t)(millis() - noteUntil) >= 0) { view = V_CLOCK; dirty = true; }
+  if (view == V_DRAW && (int32_t)(millis() - drawUntil) >= 0) { view = V_CLOCK; dirty = true; }
   if (view == V_PAIR && (hubPaired || (int32_t)(millis() - pairUntil) >= 0)) { view = V_CLOCK; dirty = true; }
 
   if (WiFi.status() == WL_CONNECTED && (int32_t)(millis() - nextWeather) >= 0) {
@@ -1265,6 +1330,8 @@ void loopNormal() {
       dirty = false; nextFrame = 0;
     }
     if (mReact >= 0 && (int32_t)(millis() - nextFrame) >= 0) nextFrame = millis() + uiReactionFrame(mReact, frameNo++);
+  } else if (view == V_DRAW) {
+    dirty = false;
   } else if (view == V_NOTE) {
     if (dirty) { uiNotice(nSrc.c_str(), nTitle.c_str(), nText.c_str(), nIcon, nColor); dirty = false; nextFrame = 0; }
     if (nIcon >= 0 && (int32_t)(millis() - nextFrame) >= 0) nextFrame = millis() + uiReactionFrame(nIcon, frameNo++);

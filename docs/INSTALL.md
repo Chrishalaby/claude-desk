@@ -96,10 +96,17 @@ the `~/.claude-desk` folder.
 ## 6. More apps (optional)
 
 The same **Apps** tab can put more on the desk, all fetched by the hub (the desk itself needs nothing extra):
+- **Canvas**: draw on your desk from your phone. From a friend's chat, ✏️ draws on both desks at once, and they can
+  join in and draw with you.
+- **Now playing**: the song under the clock (Spotify, or YouTube Music, Apple Music and others through Last.fm).
 - **Timer**: a countdown under the clock and a card when it ends.
+- **Reminders**: "drink water every hour, 9 to 6 on weekdays", or once a day at a set time.
+- **Rain alerts**: a card about 30 minutes before rain starts where your desk is.
 - **Calendar**: paste your calendar's private iCal link; you get a card before each event and the next one under the clock.
 - **GitHub**: a card for review requests, mentions and build results (a token with only the *notifications* scope).
 - **Stocks & crypto**: a card when a price crosses your level or moves a lot in a day.
+- **Email**: a card for new mail (Gmail, iCloud, Yahoo, Fastmail or any IMAP server, with an app password).
+- **Slack**: a card when someone @mentions you.
 - **Webhook**: your private URL; anything that can call a URL (Zapier, n8n, GitHub Actions, Home Assistant, iPhone
   Shortcuts, scripts) can show a card.
 

@@ -44,7 +44,7 @@ export function fitPayload<T extends Record<string, unknown>>(obj: T, fields: (k
 }
 
 export interface CardInput { src?: unknown; title?: unknown; text?: unknown; icon?: unknown; color?: unknown; secs?: unknown }
-export interface NextUp { text: string; at: number; left?: boolean }
+export interface NextUp { text: string; at: number; left?: boolean; kind?: "music" }
 export const CARD_COLORS = ["teal", "orange", "green", "red", "blue", "purple", "pink", "yellow", "white"] as const;
 
 export function normalizeCard(c: CardInput, id: number) {
@@ -450,7 +450,9 @@ export class Service {
   }
 
   setNext(userId: number, next: NextUp | null) {
-    const payload = next ? { text: trunc(oneLine(next.text), 24), at: Math.floor(next.at), left: !!next.left } : null;
+    const payload = !next ? null : next.kind === "music"
+      ? { text: trunc(oneLine(next.text), 38), at: 0, left: false, k: "music" }
+      : { text: trunc(oneLine(next.text), 24), at: Math.floor(next.at), left: !!next.left };
     const key = JSON.stringify(payload);
     if ((this.nextKey.get(userId) ?? "null") === key) return;
     this.nextKey.set(userId, key);
@@ -673,6 +675,9 @@ export class Service {
     return {
       id: m.id, from: from?.username, to: to?.username, mine: m.from_id === me,
       rel: m.rel, kind: m.kind, text: m.text, reaction: m.reaction, t: m.t,
+      doodle: m.kind === "doodle" && m.doodle_id
+        ? Buffer.from((this.db.prepare("SELECT data FROM doodles WHERE id = ?").get(m.doodle_id) as { data: Buffer } | undefined)?.data ?? Buffer.alloc(0)).toString("base64")
+        : undefined,
     };
   }
 

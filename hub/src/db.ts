@@ -21,7 +21,7 @@ export interface FriendRow {
   pending_rel: "friend" | null; pending_from: number | null; updated: number;
 }
 export interface MessageRow {
-  id: number; from_id: number; to_id: number; rel: string; kind: "text" | "reaction";
+  id: number; from_id: number; to_id: number; rel: string; kind: "text" | "reaction" | "doodle"; doodle_id?: number | null;
   text: string; reaction: string; t: number;
 }
 
@@ -83,6 +83,29 @@ export function openDb(dataDir: string): DB {
       updated INTEGER NOT NULL,
       PRIMARY KEY (user_id, kind)
     );
+    CREATE TABLE IF NOT EXISTS doodles (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      a INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      b INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      data BLOB NOT NULL,
+      started INTEGER NOT NULL,
+      ended INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS doodles_a ON doodles(a);
+    CREATE TABLE IF NOT EXISTS reminders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      label TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      every_min INTEGER,
+      start_min INTEGER,
+      end_min INTEGER,
+      at_min INTEGER,
+      days INTEGER NOT NULL,
+      last_fired INTEGER NOT NULL DEFAULT 0,
+      created INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS reminders_user ON reminders(user_id);
     CREATE TABLE IF NOT EXISTS timers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -104,6 +127,8 @@ export function openDb(dataDir: string): DB {
     ["ota_req_at", "INTEGER"], ["ota_from", "TEXT"], ["wifi", "TEXT"], ["wifi_at", "INTEGER"]]) {
     if (!cols.has(col)) db.exec(`ALTER TABLE devices ADD COLUMN ${col} ${type}`);
   }
+  const mcols = new Set((db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name));
+  if (!mcols.has("doodle_id")) db.exec("ALTER TABLE messages ADD COLUMN doodle_id INTEGER");
   db.exec(`
     UPDATE friends SET rel = 'friend' WHERE rel IS NOT NULL AND rel != 'friend';
     UPDATE friends SET pending_rel = NULL, pending_from = NULL WHERE rel IS NOT NULL AND pending_rel IS NOT NULL;

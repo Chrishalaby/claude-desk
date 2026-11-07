@@ -28,6 +28,7 @@ uint16_t COL_GREY   = c565(130, 136, 148);
 int uiLayout = 0;
 char uiUnread[24] = "";
 char uiNext[40] = "";
+bool uiNextMusic = false;
 bool uiLocationSet = true;
 bool (*uiPackEntry)(int idx, bool small, EmojiHdr &h) = nullptr;
 void (*uiPackRead)(uint32_t off, uint8_t *buf, int n) = nullptr;
@@ -228,8 +229,15 @@ void uiClockDate(int wday, int mday, int mon, const Weather &w) {
     if (uiLayout) {
       tBox(F_M, s, 14, 160, 28, AL_LEFT, COL_GREY, BG);
       gFill(14, 34, 160, 18, BG);
-      tFit(F_S, nx, sizeof nx, 160);
-      tBox(F_S, nx, 14, 160, 48, AL_LEFT, COL_TEAL, BG);
+      int tx = 14;
+      if (uiNextMusic) {
+        gCircle(18, 46, 3, COL_TEAL);
+        gFill(20, 35, 2, 11, COL_TEAL);
+        gFill(20, 35, 6, 2, COL_TEAL);
+        tx = 30;
+      }
+      tFit(F_S, nx, sizeof nx, 174 - tx);
+      tBox(F_S, nx, tx, 174 - tx, 48, AL_LEFT, COL_TEAL, BG);
     } else {
       tBox(F_M, s, 14, 130, 32, AL_LEFT, COL_GREY, BG);
       tFit(F_S, nx, sizeof nx, 82);
@@ -515,6 +523,14 @@ void uiReactionCard(const char *from, bool partner, int idx, const char *when) {
 static const char COLOR_NAMES[] PROGMEM = "orange\0green\0red\0blue\0purple\0pink\0yellow\0white\0";
 static const uint8_t COLOR_RGB[] PROGMEM = {255, 140, 66, 110, 200, 120, 240, 90, 80, 100, 160, 255,
                                             180, 130, 255, 255, 150, 172, 255, 208, 62, 255, 255, 255};
+
+void uiDrawFooter(const char *s) {
+  char t[64];
+  strncpy(t, s, sizeof t - 1); t[sizeof t - 1] = 0;
+  tFit(F_S, t, sizeof t, 224);
+  gFill(0, SCR_H - 24, SCR_W, 24, 0);
+  tBox(F_S, t, 0, SCR_W, SCR_H - 6, AL_CENTER, COL_TEAL, 0);
+}
 
 uint16_t uiColor(const char *s) {
   if (!s || !s[0]) return COL_TEAL;

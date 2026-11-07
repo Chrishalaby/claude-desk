@@ -8,6 +8,7 @@ import type { Config } from "./config.js";
 import { kvGet, kvSet, openDb } from "./db.js";
 import { registerRoutes } from "./routes.js";
 import { Apps } from "./apps.js";
+import { Doodles } from "./doodles.js";
 import { Service } from "./service.js";
 import { loadTls, type TlsMaterial } from "./tls.js";
 import { randomHex } from "./util.js";
@@ -20,6 +21,7 @@ export interface Hub {
   broker: Broker;
   tick(): void;
   apps: Apps;
+  doodles: Doodles;
   close(): Promise<void>;
 }
 
@@ -52,16 +54,18 @@ export async function startHub(cfg: Config): Promise<Hub> {
   svc.broker = broker;
   svc.republishAll();
   const apps = new Apps(db, svc, cfg, log);
+  const doodles = new Doodles(db, svc, () => Math.floor(cfg.now()));
 
   const app = Fastify({ logger: false, trustProxy: true, bodyLimit: 16 * 1024 });
   await app.register(cookie, { secret: sessionSecret });
-  registerRoutes(app, svc, db, cfg, apps);
+  registerRoutes(app, svc, db, cfg, apps, doodles);
   await app.listen({ port: cfg.httpPort, host: cfg.httpHost });
   const httpPort = (app.server.address() as AddressInfo).port;
 
   const timers = [
     setInterval(() => { try { svc.tick(); } catch (e) { log("tick failed", (e as Error).message); } }, 1000),
     setInterval(() => { apps.tick().catch((e) => log("apps tick failed", (e as Error).message)); }, 5000),
+    setInterval(() => { try { doodles.tick(); } catch (e) { log("doodles tick failed", (e as Error).message); } }, 5000),
     setInterval(() => { try { svc.housekeeping(); } catch (e) { log("housekeeping failed", (e as Error).message); } }, 3600_000),
   ];
   for (const t of timers) t.unref();
@@ -84,6 +88,7 @@ export async function startHub(cfg: Config): Promise<Hub> {
     broker,
     tick: () => svc.tick(),
     apps,
+    doodles,
     async close() {
       for (const t of timers) clearInterval(t);
       await app.close();

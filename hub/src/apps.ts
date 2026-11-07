@@ -1,7 +1,10 @@
+import crypto from "node:crypto";
+import dns from "node:dns";
 import ical from "node-ical";
+import { ImapFlow } from "imapflow";
 import type { Config } from "./config.js";
 import type { DB } from "./db.js";
-import { FetchError, normalizeUrl, safeFetch } from "./net.js";
+import { FetchError, isPrivateAddress, normalizeUrl, safeFetch } from "./net.js";
 import { HttpError, type NextUp, type Service } from "./service.js";
 import { hhmm, isValidTz, oneLine, trunc } from "./util.js";
 
@@ -26,6 +29,47 @@ interface GithubState { since: number; lastModified: string | null; seen: string
 interface StockItem { symbol: string; above: number | null; below: number | null; move: number | null }
 interface StocksConfig { items: StockItem[] }
 interface Quote { price: number; prev: number; currency: string; at: number }
+interface MusicConfig { clock: boolean; cards: boolean }
+interface SpotifyConfig extends MusicConfig { refresh: string; access: string; exp: number; name: string }
+interface LastfmConfig extends MusicConfig { user: string }
+interface Status { ok: boolean; error: string | null; at: number }
+interface Playing { title: string; artist: string; src: string; at: number }
+interface RainState extends Status { alertedUntil: number }
+interface EmailConfig { host: string; user: string; pass: string; subjects: boolean }
+interface EmailState extends Status { uidNext: number; uidValidity: string; unseen: number }
+interface SlackConfig { token: string; userId: string; team: string }
+interface SlackState extends Status { lastTs: string }
+interface ReminderRow { id: number; user_id: number; label: string; kind: string; every_min: number | null; start_min: number | null;
+  end_min: number | null; at_min: number | null; days: number; last_fired: number }
+export const REMINDER_EVERY = [15, 30, 45, 60, 90, 120, 180, 240];
+const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+function localParts(t: number, tz: string) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: isValidTz(tz) ? tz : "UTC", hourCycle: "h23", hour: "2-digit", minute: "2-digit", weekday: "short" })
+    .formatToParts(new Date(t * 1000));
+  const g = (k: string) => parts.find((p) => p.type === k)?.value ?? "";
+  return { min: Number(g("hour")) * 60 + Number(g("minute")), wday: WEEKDAYS.indexOf(g("weekday")) };
+}
+
+export function slackText(t: string): string {
+  return oneLine(String(t ?? "")
+    .replace(/<@[A-Z0-9]+\|([^>]+)>/g, "@$1").replace(/<@[A-Z0-9]+>/g, "@someone")
+    .replace(/<#[A-Z0-9]+\|([^>]+)>/g, "#$1").replace(/<!(here|channel|everyone)>/g, "@$1")
+    .replace(/<([^>|]+)\|([^>]+)>/g, "$2").replace(/<([^>]+)>/g, "$1")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
+}
+
+async function callJson(url: string, init: RequestInit = {}): Promise<{ status: number; body: any }> {
+  let res: Response;
+  try { res = await fetch(url, { ...init, signal: AbortSignal.timeout(15000) }); } catch { throw new FetchError("unreachable"); }
+  const text = await res.text();
+  let body: any = null;
+  try { body = text ? JSON.parse(text) : null; } catch { body = null; }
+  return { status: res.status, body };
+}
+
+const form = (o: Record<string, string>) => ({ method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(o).toString() });
+
 type StocksState = Record<string, { price?: number; pct?: number; aboveSide?: string; belowSide?: string; movedDay?: string; error?: string | null; at?: number }>;
 
 const errCode = (e: unknown) => (e instanceof FetchError ? e.code : e instanceof HttpError ? e.code : "failed");
@@ -96,6 +140,8 @@ export class Apps {
   private events = new Map<number, CalEvent[]>();
   private quotes = new Map<string, Quote>();
   private nextUsers = new Set<number>();
+  private oauth = new Map<string, { userId: number; kind: string; verifier: string; exp: number }>();
+  private playing = new Map<number, Playing>();
 
   constructor(private db: DB, private svc: Service, private cfg: Config, private log: (...a: unknown[]) => void = () => {}) {}
 
@@ -147,7 +193,364 @@ export class Apps {
         items: st?.config.items ?? [],
         quotes: Object.fromEntries(Object.entries(st?.state ?? {}).map(([k, s]) => [k, { price: s.price ?? null, pct: s.pct ?? null, error: s.error ?? null, at: s.at ?? null }])),
       },
+      ...this.moreView(userId),
     };
+  }
+
+  private moreView(userId: number) {
+    const sp = this.get<SpotifyConfig, Status>(userId, "spotify");
+    const lf = this.get<LastfmConfig, Status>(userId, "lastfm");
+    const rain = this.get<{ on: boolean }, RainState>(userId, "rain");
+    const em = this.get<EmailConfig, EmailState>(userId, "email");
+    const sl = this.get<SlackConfig, SlackState>(userId, "slack");
+    const st = (x: { state: Status } | null) => (x ? { ok: x.state.ok ?? null, error: x.state.error ?? null, at: x.state.at ?? null } : {});
+    const p = this.playing.get(userId);
+    return {
+      music: {
+        playing: p ? { title: p.title, artist: p.artist, src: p.src } : null,
+        spotify: { configured: !!this.cfg.spotifyClientId, connected: !!sp, name: sp?.config.name ?? null, clock: sp?.config.clock ?? true, cards: sp?.config.cards ?? false, ...st(sp) },
+        lastfm: { configured: !!this.cfg.lastfmKey, connected: !!lf, user: lf?.config.user ?? null, clock: lf?.config.clock ?? true, cards: lf?.config.cards ?? false, ...st(lf) },
+      },
+      reminders: this.listReminders(userId),
+      rain: { on: !!rain, hasLocation: !!this.location(userId), ...st(rain) },
+      email: em ? { connected: true, host: em.config.host, user: em.config.user, subjects: em.config.subjects, unseen: em.state.unseen ?? null, ...st(em) } : { connected: false },
+      slack: { configured: !!(this.cfg.slackClientId && this.cfg.slackClientSecret), connected: !!sl, team: sl?.config.team ?? null, ...st(sl) },
+    };
+  }
+
+  private hasOnlineDesk(userId: number) { return this.svc.devicesOf(userId).some((d) => this.svc.broker?.isOnline(d.chip)); }
+
+  disconnect(userId: number, kind: string) {
+    if (!["spotify", "lastfm", "rain", "email", "slack"].includes(kind)) throw new HttpError(404, "not_found");
+    this.remove(userId, kind);
+    if ((kind === "spotify" || kind === "lastfm") && this.playing.get(userId)?.src === kind) this.playing.delete(userId);
+    this.updateNext(userId);
+  }
+
+  oauthStart(userId: number, kind: "spotify" | "slack", redirectUri: string): string {
+    const now = this.now();
+    for (const [k, v] of this.oauth) if (v.exp < now) this.oauth.delete(k);
+    if (kind === "spotify" && !this.cfg.spotifyClientId) throw new HttpError(409, "spotify_not_configured");
+    if (kind === "slack" && !(this.cfg.slackClientId && this.cfg.slackClientSecret)) throw new HttpError(409, "slack_not_configured");
+    const state = crypto.randomBytes(16).toString("hex");
+    const verifier = crypto.randomBytes(48).toString("base64url");
+    this.oauth.set(state, { userId, kind, verifier, exp: now + 600 });
+    if (kind === "spotify") {
+      return `${this.cfg.spotifyAccounts}/authorize?` + new URLSearchParams({
+        response_type: "code", client_id: this.cfg.spotifyClientId!, scope: "user-read-currently-playing user-read-playback-state",
+        redirect_uri: redirectUri, code_challenge_method: "S256", code_challenge: crypto.createHash("sha256").update(verifier).digest("base64url"), state,
+      });
+    }
+    return "https://slack.com/oauth/v2/authorize?" + new URLSearchParams({ client_id: this.cfg.slackClientId!, user_scope: "search:read", redirect_uri: redirectUri, state });
+  }
+
+  private takeState(userId: number, kind: string, state: string) {
+    const o = this.oauth.get(state);
+    this.oauth.delete(state);
+    if (!o || o.userId !== userId || o.kind !== kind || o.exp < this.now()) throw new HttpError(400, "oauth_state");
+    return o;
+  }
+
+  async spotifyCallback(userId: number, code: string, state: string, redirectUri: string) {
+    const o = this.takeState(userId, "spotify", state);
+    const tok = await callJson(`${this.cfg.spotifyAccounts}/api/token`, form({
+      grant_type: "authorization_code", code, redirect_uri: redirectUri, client_id: this.cfg.spotifyClientId!, code_verifier: o.verifier,
+    }));
+    if (tok.status !== 200 || !tok.body?.access_token || !tok.body?.refresh_token) throw new HttpError(400, "spotify_denied");
+    const me = await callJson(`${this.cfg.spotifyApi}/v1/me`, { headers: { Authorization: `Bearer ${tok.body.access_token}` } }).catch(() => ({ status: 0, body: null }));
+    const prev = this.get<SpotifyConfig, Status>(userId, "spotify");
+    const now = this.now();
+    this.put(userId, "spotify", {
+      refresh: tok.body.refresh_token, access: tok.body.access_token, exp: now + (Number(tok.body.expires_in) || 3600),
+      name: String(me.body?.display_name || me.body?.id || "Spotify"), clock: prev?.config.clock ?? true, cards: prev?.config.cards ?? false,
+    }, { ok: true, error: null, at: now });
+    this.due.set(`spotify:${userId}`, now);
+  }
+
+  async connectLastfm(userId: number, raw: unknown) {
+    if (!this.cfg.lastfmKey) throw new HttpError(409, "lastfm_not_configured");
+    const user = typeof raw === "string" ? raw.trim() : "";
+    if (!/^[A-Za-z0-9_.-]{2,40}$/.test(user)) throw new HttpError(400, "lastfm_user");
+    const r = await callJson(`${this.cfg.lastfmApi}/2.0/?` + new URLSearchParams({ method: "user.getinfo", user, api_key: this.cfg.lastfmKey, format: "json" }))
+      .catch(() => { throw new HttpError(400, "lastfm_unreachable"); });
+    if (r.status !== 200 || r.body?.error || !r.body?.user) throw new HttpError(400, "lastfm_user");
+    const prev = this.get<LastfmConfig, Status>(userId, "lastfm");
+    this.put(userId, "lastfm", { user: String(r.body.user.name || user), clock: prev?.config.clock ?? true, cards: prev?.config.cards ?? false }, { ok: true, error: null, at: this.now() });
+    this.due.set(`lastfm:${userId}`, this.now());
+  }
+
+  setMusicOptions(userId: number, kind: unknown, b: { clock?: unknown; cards?: unknown }) {
+    if (kind !== "spotify" && kind !== "lastfm") throw new HttpError(404, "not_found");
+    const cur = this.get<MusicConfig, Status>(userId, kind);
+    if (!cur) throw new HttpError(404, "not_found");
+    if (b.clock !== undefined) cur.config.clock = !!b.clock;
+    if (b.cards !== undefined) cur.config.cards = !!b.cards;
+    this.put(userId, kind, cur.config, cur.state);
+    this.updateNext(userId);
+  }
+
+  private setPlaying(userId: number, src: string, p: { title: string; artist: string } | null) {
+    const cur = this.playing.get(userId);
+    if (!p) { if (cur?.src === src) { this.playing.delete(userId); this.updateNext(userId); } return; }
+    if (cur && cur.src === "spotify" && src !== "spotify" && this.now() - cur.at < 90) return;
+    const changed = !cur || cur.title !== p.title || cur.artist !== p.artist;
+    this.playing.set(userId, { title: trunc(oneLine(p.title), 60), artist: trunc(oneLine(p.artist), 60), src, at: this.now() });
+    if (changed) {
+      if (this.get<MusicConfig, Status>(userId, src)?.config.cards) {
+        this.svc.sendCard(userId, { src: "Now playing", title: p.title, text: p.artist, color: "green", secs: 8 });
+      }
+      this.updateNext(userId);
+    }
+  }
+
+  private async pollSpotify(userId: number) {
+    const cur = this.get<SpotifyConfig, Status>(userId, "spotify");
+    if (!cur) return;
+    const c = cur.config, s = cur.state;
+    let wait = 30;
+    try {
+      if (c.exp - 60 < this.now()) {
+        const r = await callJson(`${this.cfg.spotifyAccounts}/api/token`, form({ grant_type: "refresh_token", refresh_token: c.refresh, client_id: this.cfg.spotifyClientId ?? "" }));
+        if (r.status !== 200 || !r.body?.access_token) {
+          Object.assign(s, { ok: false, error: r.status === 400 ? "reconnect" : `http_${r.status}`, at: this.now() });
+          this.setPlaying(userId, "spotify", null);
+          this.put(userId, "spotify", c, s);
+          this.due.set(`spotify:${userId}`, this.now() + 300);
+          return;
+        }
+        c.access = r.body.access_token;
+        c.exp = this.now() + (Number(r.body.expires_in) || 3600);
+        if (r.body.refresh_token) c.refresh = r.body.refresh_token;
+      }
+      const r = await callJson(`${this.cfg.spotifyApi}/v1/me/player/currently-playing?additional_types=episode`, { headers: { Authorization: `Bearer ${c.access}` } });
+      if (r.status === 401) { c.exp = 0; wait = 5; }
+      else if (r.status === 429) wait = 120;
+      else if (r.status === 204 || r.status === 200) {
+        const it = r.body?.item;
+        if (r.status === 200 && r.body?.is_playing && it) {
+          this.setPlaying(userId, "spotify", { title: String(it.name ?? ""), artist: (it.artists ?? []).map((a: any) => a.name).join(", ") || String(it.show?.name ?? "") });
+          wait = 15;
+        } else this.setPlaying(userId, "spotify", null);
+        Object.assign(s, { ok: true, error: null });
+      } else Object.assign(s, { ok: false, error: `http_${r.status}` });
+    } catch (e) { Object.assign(s, { ok: false, error: errCode(e) }); }
+    s.at = this.now();
+    this.put(userId, "spotify", c, s);
+    this.due.set(`spotify:${userId}`, this.now() + wait);
+  }
+
+  private async pollLastfm(userId: number) {
+    const cur = this.get<LastfmConfig, Status>(userId, "lastfm");
+    if (!cur || !this.cfg.lastfmKey) return;
+    const s = cur.state;
+    try {
+      const r = await callJson(`${this.cfg.lastfmApi}/2.0/?` + new URLSearchParams({ method: "user.getrecenttracks", user: cur.config.user, api_key: this.cfg.lastfmKey, format: "json", limit: "1" }));
+      if (r.status !== 200 || r.body?.error) Object.assign(s, { ok: false, error: r.body?.error === 6 ? "lastfm_user" : `http_${r.status}` });
+      else {
+        const tr = r.body?.recenttracks?.track;
+        const t = Array.isArray(tr) ? tr[0] : tr;
+        if (t && t["@attr"]?.nowplaying === "true") this.setPlaying(userId, "lastfm", { title: String(t.name ?? ""), artist: String(t.artist?.["#text"] ?? t.artist?.name ?? "") });
+        else this.setPlaying(userId, "lastfm", null);
+        Object.assign(s, { ok: true, error: null });
+      }
+    } catch (e) { Object.assign(s, { ok: false, error: errCode(e) }); }
+    s.at = this.now();
+    this.putState(userId, "lastfm", s);
+    this.due.set(`lastfm:${userId}`, this.now() + 30);
+  }
+
+  listReminders(userId: number) {
+    return (this.db.prepare("SELECT * FROM reminders WHERE user_id = ? ORDER BY id").all(userId) as ReminderRow[]).map((r) => ({
+      id: r.id, label: r.label, kind: r.kind, every: r.every_min, start: r.start_min, end: r.end_min, at: r.at_min, days: r.days,
+    }));
+  }
+
+  addReminder(userId: number, b: Record<string, unknown>) {
+    const label = trunc(oneLine(typeof b.label === "string" ? b.label : ""), 24);
+    if (!label) throw new HttpError(400, "label");
+    const days = Number(b.days);
+    if (!Number.isInteger(days) || days < 1 || days > 127) throw new HttpError(400, "days");
+    const minOk = (v: unknown) => Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) < 1440;
+    if (this.listReminders(userId).length >= 20) throw new HttpError(400, "too_many");
+    const now = this.now();
+    if (b.kind === "at") {
+      if (!minOk(b.at)) throw new HttpError(400, "time");
+      this.db.prepare("INSERT INTO reminders (user_id, label, kind, at_min, days, created) VALUES (?, ?, 'at', ?, ?, ?)").run(userId, label, Number(b.at), days, now);
+    } else if (b.kind === "every") {
+      const every = Number(b.every);
+      if (!REMINDER_EVERY.includes(every)) throw new HttpError(400, "every");
+      if (!minOk(b.start) || !minOk(b.end) || Number(b.start) >= Number(b.end)) throw new HttpError(400, "time");
+      this.db.prepare("INSERT INTO reminders (user_id, label, kind, every_min, start_min, end_min, days, created) VALUES (?, ?, 'every', ?, ?, ?, ?, ?)")
+        .run(userId, label, every, Number(b.start), Number(b.end), days, now);
+    } else throw new HttpError(400, "kind");
+    return this.listReminders(userId);
+  }
+
+  removeReminder(userId: number, id: number) {
+    if (!this.db.prepare("DELETE FROM reminders WHERE id = ? AND user_id = ?").run(id, userId).changes) throw new HttpError(404, "not_found");
+  }
+
+  private fireReminders(now: number) {
+    for (const r of this.db.prepare("SELECT * FROM reminders WHERE last_fired < ?").all(now - 90) as ReminderRow[]) {
+      const tz = this.tz(r.user_id);
+      const { min, wday } = localParts(now, tz);
+      if (wday < 0 || !(r.days & (1 << wday))) continue;
+      const hit = r.kind === "at" ? min === r.at_min
+        : r.start_min !== null && r.end_min !== null && r.every_min && min >= r.start_min && min <= r.end_min && (min - r.start_min) % r.every_min === 0;
+      if (!hit) continue;
+      this.db.prepare("UPDATE reminders SET last_fired = ? WHERE id = ?").run(now, r.id);
+      this.svc.sendCard(r.user_id, { src: "Reminder", title: r.label, text: hhmm(now, tz), color: "yellow", secs: 60 });
+    }
+  }
+
+  private location(userId: number): { lat: number; lon: number } | null {
+    for (const d of this.svc.devicesOf(userId)) {
+      for (const raw of [d.reported, d.settings]) {
+        try {
+          const j = raw ? JSON.parse(raw) : null;
+          const lat = Number(j?.lat), lon = Number(j?.lon);
+          if (Number.isFinite(lat) && Number.isFinite(lon) && (lat || lon)) return { lat, lon };
+        } catch { continue; }
+      }
+    }
+    return null;
+  }
+
+  setRain(userId: number, on: unknown) {
+    if (!on) { this.remove(userId, "rain"); return; }
+    if (!this.location(userId)) throw new HttpError(400, "no_location");
+    this.put(userId, "rain", { on: true }, { ok: true, error: null, at: this.now(), alertedUntil: 0 });
+    this.due.set(`rain:${userId}`, this.now());
+  }
+
+  private async pollRain(userId: number) {
+    const cur = this.get<{ on: boolean }, RainState>(userId, "rain");
+    const loc = this.location(userId);
+    if (!cur) return;
+    const s = cur.state;
+    try {
+      if (!loc) throw new FetchError("no_location");
+      const r = await callJson(`${this.cfg.weatherApi}/v1/forecast?` + new URLSearchParams({
+        latitude: loc.lat.toFixed(3), longitude: loc.lon.toFixed(3), minutely_15: "precipitation", forecast_minutely_15: "8", timezone: "GMT",
+      }));
+      const m = r.body?.minutely_15;
+      if (r.status !== 200 || !Array.isArray(m?.time) || !Array.isArray(m?.precipitation)) throw new FetchError(`http_${r.status}`);
+      const now = this.now();
+      const slots = (m.time as string[]).map((t, i) => ({ t: Math.floor(Date.parse(t.endsWith("Z") ? t : t + "Z") / 1000), p: Number(m.precipitation[i]) || 0 }));
+      const i0 = Math.max(0, slots.findIndex((x) => x.t + 900 > now));
+      const raining = slots[i0]?.p >= 0.1;
+      const soon = slots.slice(i0 + 1, i0 + 3).find((x) => x.p >= 0.2);
+      if (raining) s.alertedUntil = Math.max(s.alertedUntil ?? 0, now + 3600);
+      else if (soon && (s.alertedUntil ?? 0) < now) {
+        const total = slots.slice(i0 + 1, i0 + 5).reduce((a, x) => a + x.p, 0);
+        this.svc.sendCard(userId, { src: "Weather", title: "Rain soon", color: "blue", secs: 60,
+          text: `in about ${Math.max(5, Math.round((soon.t - now) / 60 / 5) * 5)} min · ${total.toFixed(1)} mm in the next hour` });
+        s.alertedUntil = now + 3 * 3600;
+      }
+      Object.assign(s, { ok: true, error: null });
+    } catch (e) { Object.assign(s, { ok: false, error: errCode(e) }); }
+    s.at = this.now();
+    this.putState(userId, "rain", s);
+    this.due.set(`rain:${userId}`, this.now() + 15 * 60);
+  }
+
+  private async imapHost(host: string) {
+    if (!/^[a-z0-9.-]{3,100}$/i.test(host) || !host.includes(".")) throw new HttpError(400, "email_host");
+    if (this.cfg.allowPrivateFetch) return;
+    let addrs: dns.LookupAddress[];
+    try { addrs = await dns.promises.lookup(host, { all: true }); } catch { throw new HttpError(400, "email_host"); }
+    if (!addrs.length || addrs.some((a) => isPrivateAddress(a.address))) throw new HttpError(400, "email_host");
+  }
+
+  private async imapStatus(c: { host: string; user: string; pass: string }, since: number | null) {
+    const client = new ImapFlow({ host: c.host, port: 993, secure: true, auth: { user: c.user, pass: c.pass }, logger: false,
+      connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000 });
+    client.on("error", () => {});
+    try { await client.connect(); } catch (e: any) { throw new HttpError(400, e?.authenticationFailed ? "email_login" : "email_unreachable"); }
+    try {
+      const st = await client.status("INBOX", { uidNext: true, unseen: true, uidValidity: true });
+      const fresh: { from: string; subject: string }[] = [];
+      if (since !== null && st.uidNext && st.uidNext > since) {
+        const lock = await client.getMailboxLock("INBOX");
+        try {
+          for await (const m of client.fetch(`${since}:${st.uidNext - 1}`, { envelope: true, flags: true }, { uid: true })) {
+            if (m.flags?.has("\\Seen")) continue;
+            const f = m.envelope?.from?.[0];
+            fresh.push({ from: String(f?.name || f?.address || "Someone"), subject: String(m.envelope?.subject || "") });
+          }
+        } finally { lock.release(); }
+      }
+      return { uidNext: st.uidNext ?? 0, uidValidity: String(st.uidValidity ?? ""), unseen: st.unseen ?? 0, fresh };
+    } finally { await client.logout().catch(() => {}); }
+  }
+
+  async connectEmail(userId: number, b: Record<string, unknown>) {
+    const host = String(b.host ?? "").trim().toLowerCase(), user = String(b.user ?? "").trim(), pass = String(b.pass ?? "");
+    if (!user || user.length > 200 || !pass || pass.length > 200) throw new HttpError(400, "email_login");
+    await this.imapHost(host);
+    const st = await this.imapStatus({ host, user, pass }, null);
+    this.put(userId, "email", { host, user, pass, subjects: b.subjects !== false }, { uidNext: st.uidNext, uidValidity: st.uidValidity, unseen: st.unseen, ok: true, error: null, at: this.now() });
+    this.due.set(`email:${userId}`, this.now() + 180);
+  }
+
+  setEmailOptions(userId: number, b: { subjects?: unknown }) {
+    const cur = this.get<EmailConfig, EmailState>(userId, "email");
+    if (!cur) throw new HttpError(404, "not_found");
+    if (b.subjects !== undefined) cur.config.subjects = !!b.subjects;
+    this.put(userId, "email", cur.config, cur.state);
+  }
+
+  private async pollEmail(userId: number) {
+    const cur = this.get<EmailConfig, EmailState>(userId, "email");
+    if (!cur) return;
+    const s = cur.state;
+    try {
+      const st = await this.imapStatus(cur.config, s.uidValidity && s.uidNext ? s.uidNext : null);
+      if (st.uidValidity !== s.uidValidity) st.fresh = [];
+      const list = st.fresh.slice(-3).reverse();
+      for (const m of list) this.svc.sendCard(userId, { src: "Email", title: m.from, text: cur.config.subjects ? m.subject || "(no subject)" : "New email", color: "orange", secs: 30 });
+      if (st.fresh.length > 3) this.svc.sendCard(userId, { src: "Email", title: `${st.fresh.length - 3} more`, text: "new emails", color: "orange" });
+      Object.assign(s, { uidNext: st.uidNext, uidValidity: st.uidValidity, unseen: st.unseen, ok: true, error: null });
+    } catch (e) { Object.assign(s, { ok: false, error: errCode(e) }); }
+    s.at = this.now();
+    this.putState(userId, "email", s);
+    this.due.set(`email:${userId}`, this.now() + 180);
+  }
+
+  async slackCallback(userId: number, code: string, state: string, redirectUri: string) {
+    this.takeState(userId, "slack", state);
+    const r = await callJson(`${this.cfg.slackApi}/oauth.v2.access`, form({
+      client_id: this.cfg.slackClientId ?? "", client_secret: this.cfg.slackClientSecret ?? "", code, redirect_uri: redirectUri,
+    }));
+    const u = r.body?.authed_user;
+    if (!r.body?.ok || !u?.access_token || !u?.id) throw new HttpError(400, "slack_denied");
+    this.put(userId, "slack", { token: u.access_token, userId: u.id, team: String(r.body.team?.name ?? "") },
+      { lastTs: String(this.now()), ok: true, error: null, at: this.now() });
+    this.due.set(`slack:${userId}`, this.now() + 60);
+  }
+
+  private async pollSlack(userId: number) {
+    const cur = this.get<SlackConfig, SlackState>(userId, "slack");
+    if (!cur) return;
+    const s = cur.state;
+    try {
+      const r = await callJson(`${this.cfg.slackApi}/search.messages?` + new URLSearchParams({ query: `<@${cur.config.userId}>`, sort: "timestamp", sort_dir: "desc", count: "10" }),
+        { headers: { Authorization: `Bearer ${cur.config.token}` } });
+      if (!r.body?.ok) Object.assign(s, { ok: false, error: ["invalid_auth", "token_revoked", "account_inactive", "not_authed"].includes(r.body?.error) ? "reconnect" : String(r.body?.error ?? `http_${r.status}`) });
+      else {
+        const fresh = ((r.body.messages?.matches ?? []) as any[]).filter((m) => Number(m.ts) > Number(s.lastTs) && m.user !== cur.config.userId)
+          .sort((a, b) => Number(a.ts) - Number(b.ts));
+        for (const m of fresh.slice(-3)) {
+          this.svc.sendCard(userId, { src: "Slack", title: `${m.username || "Someone"} in #${m.channel?.name || "a channel"}`, text: slackText(m.text), color: "purple", secs: 30 });
+        }
+        if (fresh.length > 3) this.svc.sendCard(userId, { src: "Slack", title: `${fresh.length - 3} more`, text: "mentions on Slack", color: "purple" });
+        if (fresh.length) s.lastTs = fresh[fresh.length - 1].ts;
+        Object.assign(s, { ok: true, error: null });
+      }
+    } catch (e) { Object.assign(s, { ok: false, error: errCode(e) }); }
+    s.at = this.now();
+    this.putState(userId, "slack", s);
+    this.due.set(`slack:${userId}`, this.now() + 60);
   }
 
   listTimers(userId: number) {
@@ -423,10 +826,11 @@ export class Apps {
       { label: string; ends: number } | undefined;
     if (t) return { text: t.label, at: t.ends, left: true };
     const cal = this.get<CalendarConfig, CalendarState>(userId, "calendar");
-    if (cal?.config.showNext) {
-      const e = (this.events.get(userId) ?? []).find((x) => x.start > now && x.start - now <= 12 * 3600);
-      if (e) return { text: e.title, at: e.start };
-    }
+    const e = cal?.config.showNext ? (this.events.get(userId) ?? []).find((x) => x.start > now && x.start - now <= 12 * 3600) : undefined;
+    if (e && e.start - now <= 15 * 60) return { text: e.title, at: e.start };
+    const p = this.playing.get(userId);
+    if (p && this.get<MusicConfig, Status>(userId, p.src)?.config.clock) return { text: p.artist ? `${p.title} · ${p.artist}` : p.title, at: now, kind: "music" };
+    if (e) return { text: e.title, at: e.start };
     return null;
   }
 
@@ -445,6 +849,7 @@ export class Apps {
   async tick(): Promise<void> {
     const now = this.now();
     this.fireTimers(now);
+    this.fireReminders(now);
     const rows = this.db.prepare("SELECT user_id, kind FROM apps").all() as { user_id: number; kind: string }[];
     const jobs: Promise<void>[] = [];
     for (const r of rows) {
@@ -453,6 +858,13 @@ export class Apps {
       if (r.kind === "calendar") jobs.push(this.run(key, () => this.refreshCalendar(r.user_id)));
       else if (r.kind === "github") jobs.push(this.run(key, () => this.pollGithub(r.user_id)));
       else if (r.kind === "stocks") jobs.push(this.run(key, () => this.pollStocks(r.user_id)));
+      else if (r.kind === "rain") jobs.push(this.run(key, () => this.pollRain(r.user_id)));
+      else if (r.kind === "email") jobs.push(this.run(key, () => this.pollEmail(r.user_id)));
+      else if (r.kind === "slack") jobs.push(this.run(key, () => this.pollSlack(r.user_id)));
+      else if (r.kind === "spotify" || r.kind === "lastfm") {
+        if (!this.hasOnlineDesk(r.user_id)) { this.setPlaying(r.user_id, r.kind, null); this.due.set(key, now + 60); continue; }
+        jobs.push(this.run(key, () => (r.kind === "spotify" ? this.pollSpotify(r.user_id) : this.pollLastfm(r.user_id))));
+      }
     }
     await Promise.all(jobs);
     const users = new Set<number>([...this.nextUsers, ...rows.map((r) => r.user_id),

@@ -10,8 +10,12 @@ One Node/TypeScript process that does everything server-side for claude-desk (se
   and **firmware updates** (`/firmware/latest.json`, `/firmware/claude-desk.bin` from `../firmware/dist/`, `cmd` topic).
 * **First-install guide** `/#/install` (public, phone-first): downloads `/firmware/claude-desk.bin.gz` (or the loader +
   full image), links to the desk's `http://<ip>/update`, and one tap on `http://<ip>/set?hub=<this hub>` connects it.
-* **Apps** `/#/apps`: Claude Code install, timers, calendar reminders (private iCal links), GitHub notifications,
-  stock/crypto alerts and a personal webhook (`POST /api/notify/<token>`), delivered as `card` / `next` (PROTOCOL.md §3.5, §3.6, §11).
+* **Apps** `/#/apps`: Claude Code install, timers, repeating reminders, rain alerts, calendar reminders (private iCal
+  links), GitHub notifications, stock/crypto alerts, now playing (Spotify, or Last.fm for YouTube Music etc.), email
+  (IMAP), Slack mentions and a personal webhook (`POST /api/notify/<token>`), delivered as `card` / `next`
+  (PROTOCOL.md §3.5, §3.6, §11).
+* **Drawings**: draw on your own desk, or with a friend on both desks at once, live (binary `draw` topic and
+  Server-Sent Events to the browsers; PROTOCOL.md §3.8, §12).
 * **Wi-Fi management** for each desk: saved networks, scan, add/remove relayed to the desk (passwords not stored).
 
 Storage is one SQLite file in `$DATA_DIR`, next to the session secret and the broker's TLS cert. Runs as a single instance.
@@ -80,6 +84,9 @@ Alternative without Docker: Root Directory `hub` works with Railway's Node build
 | `PACKS_DIR` | `./packs` | `<id>.bin`, `<id>.png`, `index.json` (names/licenses; size/md5 recomputed from the files) |
 | `HOST` | `0.0.0.0` | bind address |
 | `HUB_QUIET` | – | `1` silences the startup log |
+| `SPOTIFY_CLIENT_ID` | – | enables Spotify now playing. Create an app at developer.spotify.com (Web API), redirect URI `<hub>/api/apps/spotify/callback`. In development mode only users you add on the app's dashboard (up to 25) can connect. |
+| `LASTFM_API_KEY` | – | enables Last.fm now playing (last.fm/api/account/create) |
+| `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` | – | enables Slack mentions. Create an app at api.slack.com/apps, add the **user** scope `search:read` and the redirect URL `<hub>/api/apps/slack/callback` |
 
 ## API (web app)
 
@@ -112,6 +119,9 @@ src/db.ts        SQLite schema
 src/state.ts     Claude Code state machine (port of cdesk.py State/view)
 src/service.ts   devices/pairing, status publishing, friends, messages
 src/routes.ts    HTTP routes, sessions, rate limits, installers, static files
+src/apps.ts      hub-side integrations (timers, reminders, calendar, GitHub, markets, music, rain, email, Slack)
+src/doodles.ts   live drawings (sessions, stroke validation/chunking, SSE listeners)
+src/net.ts       safeFetch for user-supplied URLs (public https only)
 src/broker.ts    aedes on a Node TLS server, auth + ACL
 src/tls.ts       cert load/generate, fingerprints, cipher list
 src/files.ts     firmware image + pack index (md5/size), file cache

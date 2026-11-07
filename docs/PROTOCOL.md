@@ -147,8 +147,14 @@ offline. The hub limits cards to 30 per minute per user.
 ```
 One line under the clock's date (layout A: in the top-right corner). `left: false` → "Standup 10:00" (desk-local time of
 `at`); `left: true` → a countdown, "Focus · 12 min" / "Focus · 1h 05m". The desk hides it once `at` has passed. Empty
-payload clears it. A friend's unread message takes the same spot and wins while it's there. The hub sends the most
-urgent of: the user's next running timer, else (if enabled) the next calendar event within 12 hours.
+payload clears it. A friend's unread message takes the same spot and wins while it's there.
+
+`{ "text": "Blinding Lights · The Weeknd", "at": 0, "left": false, "k": "music" }` (firmware ≥ 1.4.6) is what's playing
+now: the text is shown as-is after a note icon and never expires; the hub clears it when playback stops. Older firmware
+ignores `k` and, with `at: 0`, shows nothing.
+
+The hub sends the most urgent of: the next running timer, a calendar event within 15 min, what's playing (if the music
+app's "show on the clock" is on), a calendar event within 12 h (if enabled).
 
 ### 3.7 Wi-Fi, managed through the hub (firmware ≥ 1.4.5)
 `desk/<chip>/cmd` (not retained) carries `{ "cmd": "wifi_scan" }`, `{ "cmd": "wifi_add", "ssid": "...", "pass": "..." }`
@@ -164,6 +170,20 @@ password; `wifi_add` is relayed and forgotten) for `GET /api/devices/<chip>/wifi
 Switching networks (firmware ≥ 1.4.5): after 8 s without Wi-Fi the desk scans (async), joins the strongest saved
 network that is actually visible and gives it 15 s, rescanning every 20 s; the screen and web pages keep working.
 1.4.4 and older used ESP8266WiFiMulti with a 3 s join limit, which failed on routers slower than a phone hotspot.
+
+### 3.8 `desk/<chip>/draw` — binary, not retained, hub → device (firmware ≥ 1.4.6)
+Live drawings (section 12). Every frame starts with `op` and a 16-bit drawing id (big-endian):
+
+| op | rest | desk |
+|---|---|---|
+| 1 start | name length (1 byte) + UTF-8 name (≤ 40 bytes) | clears the screen to black and shows the drawing (not over NEEDS YOU, the pairing screen or a friend's message) |
+| 2 strokes | stroke data, ≤ 700 bytes | draws it |
+| 3 end | seconds to keep it, 16-bit (10–3600) | "from <name>" footer, back to the clock after that time |
+| 4 clear | — | clears the canvas |
+
+Stroke data: `0xFF, colour (0–11), width (1–24)` starts a stroke, then `x, y` byte pairs (0–239) are its points, joined
+by lines. Colours: white, black (eraser), red, orange, yellow, green, teal, blue, purple, pink, brown, grey. The hub
+splits long strokes so each frame starts with a stroke header and a continued stroke repeats its last point.
 
 ## 4. Claude Code hooks
 
@@ -204,7 +224,8 @@ Hub publishes the view to `desk/<chip>/claude` for **every device owned by that 
 
 * `POST /api/messages {to: "<username>", kind: "text"|"reaction", text?, reaction?}` — sender must be friends with `to`.
   Rate limit: 10/min per sender. Stored with id, delivered by publishing retained `desk/<chip>/msg` to each of the recipient's devices.
-* `GET /api/messages?with=<username>` — conversation history (newest first, 50).
+* `GET /api/messages?with=<username>` — conversation history (newest first, 50). A finished shared drawing appears as
+  `kind: "doodle"` with `doodle` = its stroke data in base64 (section 12).
 
 ## 6. Friends
 
@@ -316,8 +337,53 @@ per integration. Web app: the **Apps** tab (`#/apps`). All endpoints are per sig
   `BTC-USD`, `EURUSD=X`, `^GSPC`). Every 5 min the hub reads `query1.finance.yahoo.com/v8/finance/chart/<symbol>`
   (unofficial, delayed). A `Markets` card when the price crosses `above` upwards or `below` downwards (the first reading
   only records the side), and once per day when the day's move is at least `move` percent.
+* **Music** — what's playing becomes the next-up line (3.6, `k: "music"`) and, optionally, a short `Now playing` card
+  per song. Spotify: `GET /api/apps/spotify/connect` (signed in; redirects to Spotify's OAuth with PKCE, scopes
+  `user-read-currently-playing user-read-playback-state`), Spotify returns to `GET /api/apps/spotify/callback`, which
+  redirects to `/#/apps?ok=spotify` or `?err=<code>`; the hub polls `currently-playing` every 15 s while something plays,
+  30 s otherwise, and refreshes the token itself. Last.fm (YouTube Music, Apple Music, Deezer, Tidal… through their
+  scrobbling): `PUT /api/apps/lastfm {user}` (checked with `user.getinfo`), polled every 30 s with
+  `user.getrecenttracks`. `PATCH /api/apps/music/<spotify|lastfm> {clock?, cards?}`. Spotify wins when both play.
+  Music is only polled while one of the user's desks is online. Needs `SPOTIFY_CLIENT_ID` / `LASTFM_API_KEY`.
+* **Reminders** — `GET/POST /api/reminders`, `DELETE /api/reminders/<id>`; at most 20. `{kind: "every", label ≤ 24,
+  every: 15|30|45|60|90|120|180|240 (min), start, end (minutes after midnight), days}` repeats between start and end;
+  `{kind: "at", label, at, days}` fires once a day. `days` is a bitmask, Monday = bit 0 (31 = weekdays, 127 = every
+  day). Times are in the user's time zone. Each one is a yellow `Reminder` card (60 s).
+* **Rain alerts** — `PUT /api/apps/rain {on}` (400 `no_location` until a desk has a location). Every 15 min the hub
+  reads Open-Meteo's 15-minute precipitation for the desk's location; when it isn't raining and ≥ 0.2 mm is due in the
+  next 30 min, a blue `Weather` card ("Rain soon · in about 20 min · 1.8 mm in the next hour"), then nothing for 3 h
+  (or until an hour after it stops raining).
+* **Email** — IMAP with an app password: `PUT /api/apps/email {host, user, pass, subjects?}` (port 993 TLS; the host
+  must resolve to a public address; checked by logging in), `PATCH /api/apps/email {subjects}`. Every 3 min the hub
+  reads INBOX `STATUS` and the envelopes of new messages: an orange `Email` card per new mail (sender + subject, or
+  "New email"), at most 3 (+ "N more"). Errors: `email_host`, `email_login`, `email_unreachable`. Outlook.com/Microsoft
+  365 no longer allow app passwords for IMAP, so they don't work.
+* **Slack** — `GET /api/apps/slack/connect` → Slack OAuth v2 with the user scope `search:read` → `GET
+  /api/apps/slack/callback`. Every 60 s the hub searches `<@you>` and sends a purple `Slack` card ("sam in #general")
+  per new mention by someone else, at most 3 (+ "N more"). Needs `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET`.
+* `DELETE /api/apps/<spotify|lastfm|rain|email|slack>` disconnects one. Tokens and passwords are stored on the hub and
+  never returned by the API; an OAuth `state` is single-use and expires after 10 min.
 * `GET /api/apps` returns all of it for the page (webhook URL, timers, calendar status and the next 3 events, GitHub
-  login + status, last prices); `POST /api/apps/test` sends a test card.
+  login + status, last prices, music/email/Slack/rain status); `POST /api/apps/test` sends a test card.
 * Outgoing fetches of user-supplied URLs (calendars) only go to public addresses: https only, private/loopback/
   link-local/CGNAT and `*.internal`/`*.local` hosts are refused, redirects are re-checked, 3 MB / 15 s limits.
-  `GITHUB_API`, `QUOTES_API` and `ALLOW_PRIVATE_FETCH=1` exist for tests only.
+  `GITHUB_API`, `QUOTES_API`, `WEATHER_API`, `SPOTIFY_ACCOUNTS`, `SPOTIFY_API`, `LASTFM_API`, `SLACK_API` and
+  `ALLOW_PRIVATE_FETCH=1` exist for tests only.
+
+## 12. Drawings
+
+Draw in the web app; every stroke shows up on the desk as you draw (3.8).
+
+* `POST /api/doodles {to?}` → `{id, joined}`. With `to` (a friend's username) it's a shared drawing on both people's
+  desks; if one is already open between you, you join it (`joined: true`). Without `to` it's your own canvas, only on
+  your desk. 403 `not_friends`, 30 new drawings per hour.
+* `GET /api/doodles/active` → open drawings you're part of (`{id, with, withName, startedByMe}`); the web app shows a
+  "join" banner for them. `GET /api/doodles/<id>` → `{id, with, open, data (base64), started, ended}`.
+* `POST /api/doodles/<id>/strokes {s}` (base64 stroke data, ≤ 8 KB per call; whole drawing ≤ 48 KB, 413 `too_big`;
+  400 `strokes` when malformed), `POST .../clear`, `POST .../end {secs}` (how long the desks keep showing it; a shared
+  drawing is then saved in your chat with each other), `DELETE /api/doodles/<id>` (own canvas only).
+* `GET /api/doodles/<id>/events` — Server-Sent Events: `init {data}`, `strokes {by, s}`, `clear {by}`, `end`; a ping
+  comment every 20 s. Both browsers draw from this, so you see each other's lines live.
+* `GET /api/doodles/mine` → your last 20 own-canvas drawings; `POST /api/doodles/<id>/show {secs}` puts one back on
+  your desks.
+* A drawing nobody touched for 5 min is ended by the hub (shown for 60 s). Strokes are limited to 1200 calls/min.

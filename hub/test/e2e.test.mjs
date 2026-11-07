@@ -12,7 +12,8 @@ import mqtt from "mqtt";
 import { startHub } from "../dist/hub.js";
 import { configFromEnv } from "../dist/config.js";
 import { deskHostBase } from "../dist/service.js";
-import { eventsFromIcs } from "../dist/apps.js";
+import { eventsFromIcs, slackText } from "../dist/apps.js";
+import { chunkStrokes, validStrokes } from "../dist/doodles.js";
 import { isPrivateAddress } from "../dist/net.js";
 import http from "node:http";
 
@@ -40,16 +41,54 @@ let clock = Math.floor(Date.now() / 1000);
 
 const GH_TOKEN = "ghp_" + "a".repeat(36);
 const GH_LAST_MODIFIED = "Sat, 07 Nov 2026 10:00:00 GMT";
-let fxPrice = 240, fxGhUpdated = 0;
+let fxPrice = 240, fxGhUpdated = 0, fxPlaying = null, fxSlackTs = "0";
+const readBody = (req) => new Promise((r) => { let b = ""; req.on("data", (c) => { b += c; }); req.on("end", () => r(b)); });
 const icsTime = (t) => new Date(t * 1000).toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
 const icsFor = (now) => ["BEGIN:VCALENDAR", "VERSION:2.0",
   "BEGIN:VEVENT", "UID:standup", `DTSTART:${icsTime(now + 300)}`, `DTEND:${icsTime(now + 1200)}`, "SUMMARY:Standup", "LOCATION:Room 4", "END:VEVENT",
   "BEGIN:VEVENT", "UID:later", `DTSTART:${icsTime(now + 3 * 3600)}`, `DTEND:${icsTime(now + 4 * 3600)}`, "SUMMARY:Later thing", "END:VEVENT",
   "BEGIN:VEVENT", "UID:allday", "DTSTART;VALUE=DATE:20261107", "SUMMARY:Holiday", "END:VEVENT",
   "END:VCALENDAR"].join("\r\n");
-const fixtures = http.createServer((req, res) => {
+const fixtures = http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://fixtures");
   const json = (code, body) => { res.statusCode = code; res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); };
+  if (u.pathname === "/sa/api/token") {
+    const f = new URLSearchParams(await readBody(req));
+    if (f.get("client_id") !== "spotify-test") return json(400, { error: "invalid_client" });
+    if (f.get("grant_type") === "authorization_code") return f.get("code") === "good" && f.get("code_verifier")?.length >= 43
+      ? json(200, { access_token: "acc1", refresh_token: "ref1", expires_in: 3600 }) : json(400, { error: "invalid_grant" });
+    if (f.get("grant_type") === "refresh_token") return json(200, { access_token: "acc2", expires_in: 3600 });
+    return json(400, {});
+  }
+  if (u.pathname === "/sp/v1/me") return json(200, { display_name: "Erin S" });
+  if (u.pathname === "/sp/v1/me/player/currently-playing") {
+    if (!/^Bearer acc/.test(req.headers.authorization ?? "")) return json(401, {});
+    if (!fxPlaying) { res.statusCode = 204; return res.end(); }
+    return json(200, { is_playing: true, item: { name: fxPlaying, artists: [{ name: "The Weeknd" }] } });
+  }
+  if (u.pathname === "/lf/2.0/") {
+    if (u.searchParams.get("api_key") !== "lastfm-test") return json(403, { error: 10 });
+    if (u.searchParams.get("user") === "nobody") return json(200, { error: 6, message: "User not found" });
+    if (u.searchParams.get("method") === "user.getinfo") return json(200, { user: { name: u.searchParams.get("user") } });
+    return json(200, { recenttracks: { track: [{ name: "Ocean Eyes", artist: { "#text": "Billie Eilish" }, "@attr": { nowplaying: "true" } }] } });
+  }
+  if (u.pathname === "/w/v1/forecast") {
+    const slot = Math.floor(clock / 900) * 900;
+    const time = Array.from({ length: 8 }, (_, i) => new Date((slot + i * 900) * 1000).toISOString().slice(0, 16));
+    return json(200, { minutely_15: { time, precipitation: [0, 0, 0.6, 0.8, 0.4, 0, 0, 0] } });
+  }
+  if (u.pathname === "/sl/oauth.v2.access") {
+    const f = new URLSearchParams(await readBody(req));
+    return f.get("code") === "good" && f.get("client_secret") === "slack-secret"
+      ? json(200, { ok: true, authed_user: { id: "U1", access_token: "xoxp-1" }, team: { name: "Acme" } }) : json(200, { ok: false, error: "invalid_code" });
+  }
+  if (u.pathname === "/sl/search.messages") {
+    if (req.headers.authorization !== "Bearer xoxp-1") return json(200, { ok: false, error: "invalid_auth" });
+    return json(200, { ok: true, messages: { matches: [
+      { ts: fxSlackTs, user: "U2", username: "sam", channel: { name: "general" }, text: "hey <@U1|erin> can you look at <https://x.io/pr|the PR>?" },
+      { ts: fxSlackTs, user: "U1", username: "erin", channel: { name: "general" }, text: "my own message" },
+    ] } });
+  }
   if (u.pathname === "/cal.ics") { res.setHeader("content-type", "text/calendar"); return res.end(icsFor(clock)); }
   if (u.pathname === "/not-ics") return res.end("hello");
   if (u.pathname === "/gh/user") return req.headers.authorization === `Bearer ${GH_TOKEN}` ? json(200, { login: "dora-gh" }) : json(401, {});
@@ -84,7 +123,9 @@ function makeConfig() {
     inviteCode: "letmein", sessionSecret: null, tlsCert: null, tlsKey: null,
     clientDir: path.join(here, "..", "..", "client"),
     firmwareDir: fwDir, packsDir,
-    githubApi: fx + "/gh", quotesApi: fx + "/q", allowPrivateFetch: true,
+    githubApi: fx + "/gh", quotesApi: fx + "/q", allowPrivateFetch: true, weatherApi: fx + "/w",
+    spotifyClientId: "spotify-test", spotifyAccounts: fx + "/sa", spotifyApi: fx + "/sp", lastfmKey: "lastfm-test", lastfmApi: fx + "/lf",
+    slackClientId: "slack-test", slackClientSecret: "slack-secret", slackApi: fx + "/sl",
     now: () => clock, log: false,
   };
 }
@@ -121,7 +162,8 @@ function user() {
     try { json = JSON.parse(text); } catch { json = text; }
     return { status: res.status, body: json, text };
   };
-  return { call };
+  const cookie = () => Object.entries(jar).map(([k, v]) => `${k}=${v}`).join("; ");
+  return { call, jar, cookie };
 }
 const anon = user();
 
@@ -135,7 +177,9 @@ async function device(chip, secret, opts = {}) {
   const got = [];
   c.on("message", (topic, payload, packet) => {
     assert.ok(payload.length <= 768, `payload on ${topic} is ${payload.length} bytes`);
-    got.push({ topic, raw: payload.toString(), json: payload.length ? JSON.parse(payload.toString()) : null, retain: packet.retain });
+    let json = null;
+    try { json = payload.length ? JSON.parse(payload.toString()) : null; } catch { json = null; }
+    got.push({ topic, raw: payload.toString(), buf: Buffer.from(payload), json, retain: packet.retain });
   });
   c.got = got;
   c.waitFor = async (pred, what = "message", ms = 3000) => {
@@ -549,20 +593,20 @@ test("remote settings: PUT -> retained set with increasing rev, up/settings repo
   assert.equal(r.body.firmware.version, "1.4.0");
 
   r = await alice.call("PUT", url, { layout: 0, soft: 1, casper: 0, pack: "testpack", bday: 60, bnight: 5, nstart: 23, nend: 6,
-    lat: 33.97123456, lon: 35.62, place: "Naccache, Lebanon" });
+    lat: 45.76123456, lon: 4.83, place: "Lyon, France" });
   assert.equal(r.status, 200, r.text);
   let m = await a.waitFor((x) => x.topic === `desk/${devA.chip}/set`, "set");
   const rev1 = m.json.rev;
   assert.ok(rev1 >= clock);
   assert.deepEqual(m.json, { rev: rev1, layout: 0, soft: 1, casper: 0, pack: "testpack", bday: 60, bnight: 5, nstart: 23, nend: 6,
-    lat: 33.9712, lon: 35.62, packUrl: `${base}/packs/testpack.bin`, packMd5: md5(PACK_BIN) });
+    lat: 45.7612, lon: 4.83, packUrl: `${base}/packs/testpack.bin`, packMd5: md5(PACK_BIN) });
   assert.equal(m.json.place, undefined, "place stays on the hub");
 
   // partial update, same second: rev still increases, other keys kept, pixel has no packUrl
   r = await alice.call("PUT", url, { bday: 70, pack: "pixel" });
   m = await a.waitFor((x) => x.topic === `desk/${devA.chip}/set`, "set 2");
   assert.ok(m.json.rev > rev1);
-  assert.deepEqual([m.json.bday, m.json.layout, m.json.pack, m.json.packUrl, m.json.lat], [70, 0, "pixel", undefined, 33.9712]);
+  assert.deepEqual([m.json.bday, m.json.layout, m.json.pack, m.json.packUrl, m.json.lat], [70, 0, "pixel", undefined, 45.7612]);
   devA.rev = m.json.rev;
 
   for (const bad of [{ bday: 101 }, { nstart: 24 }, { layout: "x" }, { pack: "nope" }, { lat: 95, lon: 0 }, { lat: 1 }, {}]) {
@@ -573,10 +617,10 @@ test("remote settings: PUT -> retained set with increasing rev, up/settings repo
 
   // the desk reports what it runs
   await a.publishAsync(`desk/${devA.chip}/up/settings`, JSON.stringify({ rev: devA.rev, layout: 0, soft: 1, casper: 0, pack: "pixel",
-    bday: 70, bnight: 5, nstart: 23, nend: 6, lat: 33.9712, lon: 35.62, packs: ["pixel", "testpack"], junk: "x".repeat(50) }), { qos: 1 });
+    bday: 70, bnight: 5, nstart: 23, nend: 6, lat: 45.7612, lon: 4.83, packs: ["pixel", "testpack"], junk: "x".repeat(50) }), { qos: 1 });
   await sleep(100);
   r = await alice.call("GET", url);
-  assert.equal(r.body.place, "Naccache, Lebanon");
+  assert.equal(r.body.place, "Lyon, France");
   assert.equal(r.body.settings.rev, devA.rev);
   assert.deepEqual(r.body.reported.packs, ["pixel", "testpack"]);
   assert.equal(r.body.reported.rev, devA.rev);
@@ -960,4 +1004,209 @@ test("apps: webhook, timer, calendar, GitHub and markets reach the desk; Wi-Fi i
   await sleep(100);
   r = await dora.call("POST", "/api/devices/esp-d0a001/ota");
   assert.deepEqual([r.status, r.body.error], [409, "downgrade"], "the hub has 1.4.0, the desk runs 1.4.5");
+});
+
+test("drawing data: validation and chunking for the desk's 768-byte messages", () => {
+  assert.equal(validStrokes(Buffer.from([0xff, 6, 7, 10, 10, 50, 50])), true);
+  assert.equal(validStrokes(Buffer.from([10, 10])), false, "must start with a stroke header");
+  assert.equal(validStrokes(Buffer.from([0xff, 12, 7, 10, 10])), false, "unknown colour");
+  assert.equal(validStrokes(Buffer.from([0xff, 1, 0, 10, 10])), false, "zero width");
+  assert.equal(validStrokes(Buffer.from([0xff, 1, 3, 240, 10])), false, "off the 240x240 canvas");
+  assert.equal(validStrokes(Buffer.from([0xff, 1, 3, 10])), false, "half a point");
+  const long = [0xff, 3, 5];
+  for (let i = 0; i < 900; i++) long.push(i % 240, (i * 7) % 240);
+  const parts = chunkStrokes(Buffer.from(long), 700);
+  assert.ok(parts.length >= 3);
+  for (const p of parts) {
+    assert.ok(p.length <= 700, `chunk ${p.length}`);
+    assert.equal(p[0], 0xff, "every chunk starts with a stroke header so it draws on its own");
+    assert.equal(validStrokes(p), true);
+  }
+  assert.deepEqual([...parts[1].subarray(3, 5)], [...parts[0].subarray(parts[0].length - 2)], "a continued stroke repeats its last point");
+  assert.equal(slackText("hi <@U1|erin>, <!here> see <https://a.b|link> &amp; <#C1|dev>"), "hi @erin, @here see link & #dev");
+});
+
+test("shared drawings live on both desks and both browsers; own canvas; music, reminders, rain, Slack, email", async () => {
+  const erin = user(), fred = user();
+  let r = await erin.call("POST", "/api/register", { username: "erin", displayName: "Erin", password: "password-e", invite: "letmein", tz: "UTC" });
+  assert.equal(r.status, 200, r.text);
+  r = await fred.call("POST", "/api/register", { username: "fred", displayName: "Fred", password: "password-f", invite: "letmein", tz: "UTC" });
+  assert.equal(r.status, 200, r.text);
+  await erin.call("POST", "/api/friends", { username: "fred" });
+  await fred.call("POST", "/api/friends", { username: "erin" });
+  const desk = async (who, chip) => {
+    const hl = await anon.call("POST", "/api/device/hello", { chip, fw: "1.4.6", secret: "" });
+    assert.equal((await who.call("POST", "/api/devices/pair", { code: hl.body.pairCode, name: "Desk" })).status, 200);
+    const c = await device(chip, hl.body.secret);
+    await c.subscribeAsync(`desk/${chip}/#`, { qos: 1 });
+    return c;
+  };
+  const de = await desk(erin, "esp-e0e001"), df = await desk(fred, "esp-f0f001");
+  const frames = (c, chip, op) => c.got.filter((m) => m.topic === `desk/${chip}/draw` && m.buf[0] === op);
+  const waitOp = (c, chip, op, n = 1) => c.waitFor(() => frames(c, chip, op).length >= n, `draw op ${op} on ${chip}`);
+  const sse = async (who, id) => {
+    const res = await fetch(`${base}/api/doodles/${id}/events`, { headers: { cookie: who.cookie() } });
+    assert.equal(res.headers.get("content-type"), "text/event-stream");
+    const events = [];
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    (async () => {
+      for (;;) {
+        const { done, value } = await reader.read().catch(() => ({ done: true }));
+        if (done) return;
+        buf += dec.decode(value);
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const block = buf.slice(0, i); buf = buf.slice(i + 2);
+          const ev = /^event: (.+)$/m.exec(block)?.[1], data = /^data: (.+)$/m.exec(block)?.[1];
+          if (ev) events.push({ ev, data: JSON.parse(data) });
+        }
+      }
+    })();
+    events.until = async (pred, what) => {
+      for (let t = 0; t < 100; t++) { const e = events.find(pred); if (e) return e; await sleep(30); }
+      throw new Error("timeout waiting for " + what + " " + JSON.stringify(events.map((e) => e.ev)));
+    };
+    events.stop = () => reader.cancel().catch(() => {});
+    return events;
+  };
+
+  assert.equal((await erin.call("POST", "/api/doodles", { to: "alice" })).status, 403, "only friends");
+  r = await erin.call("POST", "/api/doodles", { to: "fred" });
+  assert.equal(r.status, 200, r.text);
+  const id = r.body.id;
+  assert.equal((await fred.call("POST", "/api/doodles", { to: "erin" })).body.id, id, "the friend joins the open drawing");
+  await waitOp(de, "esp-e0e001", 1);
+  await waitOp(df, "esp-f0f001", 1);
+  assert.equal(frames(df, "esp-f0f001", 1)[0].buf.subarray(4).toString(), "Erin", "Fred's desk names Erin");
+  const live = (await fred.call("GET", "/api/doodles/active")).body;
+  assert.deepEqual(live.map((d) => [d.id, d.with, d.startedByMe]), [[id, "erin", false]]);
+  const evE = await sse(erin, id);
+  await evE.until((e) => e.ev === "init", "init");
+  const stroke = Buffer.from([0xff, 6, 7, 10, 10, 50, 50, 90, 30]);
+  assert.equal((await fred.call("POST", `/api/doodles/${id}/strokes`, { s: stroke.toString("base64") })).status, 200);
+  const got = await evE.until((e) => e.ev === "strokes", "fred's strokes in erin's browser");
+  assert.deepEqual([got.data.by, got.data.s], ["fred", stroke.toString("base64")]);
+  await waitOp(de, "esp-e0e001", 2);
+  await waitOp(df, "esp-f0f001", 2);
+  assert.deepEqual([...frames(de, "esp-e0e001", 2)[0].buf.subarray(3)], [...stroke], "binary strokes reach the desk as-is");
+  assert.equal((await fred.call("POST", `/api/doodles/${id}/strokes`, { s: Buffer.from([1, 2, 3]).toString("base64") })).body.error, "strokes");
+  assert.equal((await anon.call("POST", `/api/doodles/${id}/strokes`, { s: "" })).status, 401);
+  assert.equal((await erin.call("POST", `/api/doodles/${id}/clear`)).status, 200);
+  await waitOp(df, "esp-f0f001", 4);
+  await erin.call("POST", `/api/doodles/${id}/strokes`, { s: stroke.toString("base64") });
+  assert.equal((await erin.call("POST", `/api/doodles/${id}/end`, { secs: 120 })).status, 200);
+  await evE.until((e) => e.ev === "end", "end");
+  evE.stop();
+  await waitOp(df, "esp-f0f001", 3);
+  const endF = frames(df, "esp-f0f001", 3)[0].buf;
+  assert.equal((endF[3] << 8) | endF[4], 120);
+  r = await fred.call("GET", "/api/messages?with=erin");
+  const dm = r.body.find((m) => m.kind === "doodle");
+  assert.ok(dm, "the finished drawing is in the chat");
+  assert.equal(dm.doodle, stroke.toString("base64"));
+  assert.deepEqual((await fred.call("GET", "/api/doodles/active")).body, []);
+
+  r = await erin.call("POST", "/api/doodles", {});
+  const own = r.body.id;
+  const before = df.got.length;
+  await erin.call("POST", `/api/doodles/${own}/strokes`, { s: stroke.toString("base64") });
+  await erin.call("POST", `/api/doodles/${own}/end`, { secs: 600 });
+  await waitOp(de, "esp-e0e001", 3, 2);
+  assert.equal(df.got.slice(before).filter((m) => m.topic.endsWith("/draw")).length, 0, "your own canvas stays on your desk");
+  assert.deepEqual((await erin.call("GET", "/api/doodles/mine")).body.map((d) => d.id), [own]);
+  assert.equal((await erin.call("POST", `/api/doodles/${own}/show`, { secs: 3600 })).status, 200);
+  await waitOp(de, "esp-e0e001", 3, 3);
+  assert.equal((await fred.call("POST", `/api/doodles/${own}/show`, {})).status, 404);
+
+  const conn = await fetch(`${base}/api/apps/spotify/connect`, { headers: { cookie: erin.cookie() }, redirect: "manual" });
+  assert.equal(conn.status, 302);
+  const auth = new URL(conn.headers.get("location"));
+  assert.equal(auth.origin + auth.pathname, `${fx}/sa/authorize`);
+  assert.deepEqual([auth.searchParams.get("client_id"), auth.searchParams.get("code_challenge_method"), auth.searchParams.get("redirect_uri")],
+    ["spotify-test", "S256", `${base}/api/apps/spotify/callback`]);
+  const bad = await fetch(`${base}/api/apps/spotify/callback?code=good&state=forged`, { headers: { cookie: erin.cookie() }, redirect: "manual" });
+  assert.equal(bad.headers.get("location"), "/#/apps?err=oauth_state");
+  const cb = await fetch(`${base}/api/apps/spotify/callback?code=good&state=${auth.searchParams.get("state")}`, { headers: { cookie: erin.cookie() }, redirect: "manual" });
+  assert.equal(cb.headers.get("location"), "/#/apps?ok=spotify");
+  r = await erin.call("GET", "/api/apps");
+  assert.deepEqual([r.body.music.spotify.connected, r.body.music.spotify.name], [true, "Erin S"]);
+  assert.ok(!r.text.includes("ref1") && !r.text.includes("acc1"), "Spotify tokens never leave the hub");
+  fxPlaying = "Blinding Lights";
+  await hub.apps.tick();
+  let n = await de.waitFor((m) => m.topic === "desk/esp-e0e001/next" && m.json?.k === "music", "now playing line");
+  assert.deepEqual(n.json, { text: "Blinding Lights · The Weeknd", at: 0, left: false, k: "music" });
+  assert.equal((await erin.call("PATCH", "/api/apps/music/spotify", { cards: true })).status, 200);
+  fxPlaying = "Save Your Tears";
+  clock += 16;
+  await hub.apps.tick();
+  let m = await de.waitFor((x) => x.topic === "desk/esp-e0e001/card" && x.json?.src === "NOW PLAYING", "song change card");
+  assert.deepEqual([m.json.title, m.json.text], ["Save Your Tears", "The Weeknd"]);
+  fxPlaying = null;
+  clock += 16;
+  await hub.apps.tick();
+  await de.waitFor((x) => x.topic === "desk/esp-e0e001/next" && x.raw === "", "now playing cleared");
+
+  assert.equal((await erin.call("PUT", "/api/apps/lastfm", { user: "nobody" })).body.error, "lastfm_user");
+  r = await erin.call("PUT", "/api/apps/lastfm", { user: "erin_listens" });
+  assert.equal(r.status, 200, r.text);
+  clock += 31;
+  await hub.apps.tick();
+  n = await de.waitFor((x) => x.topic === "desk/esp-e0e001/next" && x.json?.text?.startsWith("Ocean Eyes"), "last.fm now playing");
+  assert.equal(n.json.text, "Ocean Eyes · Billie Eilish");
+  await erin.call("DELETE", "/api/apps/lastfm");
+  await de.waitFor((x) => x.topic === "desk/esp-e0e001/next" && x.raw === "", "cleared after disconnect");
+
+  const nowMin = Math.floor((clock % 86400) / 60);
+  const nextMin = (nowMin + 1) % 1440;
+  assert.equal((await erin.call("POST", "/api/reminders", { kind: "at", label: "Meds", at: nextMin, days: 0 })).body.error, "days");
+  assert.equal((await erin.call("POST", "/api/reminders", { kind: "every", label: "Water", every: 7, start: 0, end: 600, days: 127 })).body.error, "every");
+  r = await erin.call("POST", "/api/reminders", { kind: "at", label: "Meds", at: nextMin, days: 127 });
+  assert.equal(r.status, 200, r.text);
+  await hub.apps.tick();
+  await de.quiet(80);
+  assert.equal(de.got.filter((x) => x.topic.endsWith("/card") && x.json?.src === "REMINDER").length, 0, "not yet");
+  clock = Math.floor(clock / 60) * 60 + 60 + 5;
+  await hub.apps.tick();
+  m = await de.waitFor((x) => x.topic === "desk/esp-e0e001/card" && x.json?.src === "REMINDER", "reminder card");
+  assert.equal(m.json.title, "Meds");
+  clock += 30;
+  await hub.apps.tick();
+  await de.quiet(80);
+  assert.equal(de.got.filter((x) => x.topic.endsWith("/card") && x.json?.src === "REMINDER").length, 1, "once per occurrence");
+
+  assert.equal((await erin.call("PUT", "/api/apps/rain", { on: true })).body.error, "no_location");
+  await de.publishAsync("desk/esp-e0e001/up/settings", JSON.stringify({ rev: 0, lat: 45.76, lon: 4.83, packs: ["pixel"] }), { qos: 1 });
+  await sleep(100);
+  r = await erin.call("PUT", "/api/apps/rain", { on: true });
+  assert.equal(r.status, 200, r.text);
+  await hub.apps.tick();
+  m = await de.waitFor((x) => x.topic === "desk/esp-e0e001/card" && x.json?.src === "WEATHER", "rain card");
+  assert.equal(m.json.title, "Rain soon");
+  assert.match(m.json.text, /^in about \d+ min · 1\.8 mm in the next hour$/);
+  clock += 15 * 60 + 1;
+  await hub.apps.tick();
+  await de.quiet(80);
+  assert.equal(de.got.filter((x) => x.topic.endsWith("/card") && x.json?.src === "WEATHER").length, 1, "one alert per rain spell");
+
+  const sc = await fetch(`${base}/api/apps/slack/connect`, { headers: { cookie: erin.cookie() }, redirect: "manual" });
+  const sauth = new URL(sc.headers.get("location"));
+  assert.equal(sauth.origin + sauth.pathname, "https://slack.com/oauth/v2/authorize");
+  assert.equal(sauth.searchParams.get("user_scope"), "search:read");
+  const scb = await fetch(`${base}/api/apps/slack/callback?code=good&state=${sauth.searchParams.get("state")}`, { headers: { cookie: erin.cookie() }, redirect: "manual" });
+  assert.equal(scb.headers.get("location"), "/#/apps?ok=slack");
+  fxSlackTs = String(clock + 20) + ".000100";
+  clock += 61;
+  await hub.apps.tick();
+  m = await de.waitFor((x) => x.topic === "desk/esp-e0e001/card" && x.json?.src === "SLACK", "slack card");
+  assert.deepEqual([m.json.title, m.json.text], ["sam in #general", "hey @erin can you look at the PR?"]);
+  clock += 61;
+  await hub.apps.tick();
+  await de.quiet(80);
+  assert.equal(de.got.filter((x) => x.topic.endsWith("/card") && x.json?.src === "SLACK").length, 1, "no repeats, own messages ignored");
+
+  assert.equal((await erin.call("PUT", "/api/apps/email", { host: "bad host!", user: "e@x.io", pass: "p" })).body.error, "email_host");
+  assert.equal((await erin.call("PUT", "/api/apps/email", { host: "127.0.0.1", user: "e@x.io", pass: "app-pass" })).body.error, "email_unreachable");
+  assert.equal((await erin.call("DELETE", "/api/apps/nope")).status, 404);
 });

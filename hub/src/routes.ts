@@ -5,6 +5,7 @@ import type { Config } from "./config.js";
 import type { DB, UserRow } from "./db.js";
 import { CHIP_RE } from "./broker.js";
 import type { Apps } from "./apps.js";
+import type { Doodles } from "./doodles.js";
 import { HttpError, type Service } from "./service.js";
 import { firmwareInfo, PACK_ID_RE, readBlob } from "./files.js";
 import { charLen, hashPassword, isValidTz, oneLine, randomHex, RateLimiter, safeEqual, sha256, trunc, verifyPassword } from "./util.js";
@@ -19,7 +20,7 @@ declare module "fastify" {
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 
-export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: Config, apps: Apps) {
+export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: Config, apps: Apps, doodles: Doodles) {
   const nowMs = () => cfg.now() * 1000;
   const loginIp = new RateLimiter(20, 60_000, nowMs);
   const loginUser = new RateLimiter(10, 60_000, nowMs);
@@ -319,6 +320,63 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     return apps.view(req.user!.id, hubUrl(req)).stocks;
   });
 
+  const oauthKind = (req: FastifyRequest) => {
+    const k = (req.params as { kind: string }).kind;
+    if (k !== "spotify" && k !== "slack") throw new HttpError(404, "not_found");
+    return k;
+  };
+  const oauthRedirect = (req: FastifyRequest, kind: string) => `${hubUrl(req)}/api/apps/${kind}/callback`;
+  app.get("/api/apps/:kind/connect", { preHandler: auth }, async (req, reply) => {
+    const kind = oauthKind(req);
+    try { return reply.redirect(apps.oauthStart(req.user!.id, kind, oauthRedirect(req, kind))); }
+    catch (e) { if (e instanceof HttpError) return reply.redirect(`/#/apps?err=${e.code}`); throw e; }
+  });
+  app.get("/api/apps/:kind/callback", async (req, reply) => {
+    const kind = oauthKind(req);
+    const u = sessionUser(req);
+    if (!u) return reply.redirect("/#/login");
+    const q = (req.query ?? {}) as Record<string, string>;
+    if (q.error || !q.code || !q.state) return reply.redirect(`/#/apps?err=${kind}_denied`);
+    try {
+      if (kind === "spotify") await apps.spotifyCallback(u.id, q.code, q.state, oauthRedirect(req, kind));
+      else await apps.slackCallback(u.id, q.code, q.state, oauthRedirect(req, kind));
+      return reply.redirect(`/#/apps?ok=${kind}`);
+    } catch (e) {
+      return reply.redirect(`/#/apps?err=${e instanceof HttpError ? e.code : kind + "_failed"}`);
+    }
+  });
+  app.put("/api/apps/lastfm", { preHandler: appsLimit }, async (req) => {
+    await apps.connectLastfm(req.user!.id, body(req).user);
+    return apps.view(req.user!.id, hubUrl(req)).music;
+  });
+  app.patch("/api/apps/music/:kind", { preHandler: appsLimit }, async (req) => {
+    apps.setMusicOptions(req.user!.id, (req.params as { kind: string }).kind, body(req));
+    return apps.view(req.user!.id, hubUrl(req)).music;
+  });
+  app.get("/api/reminders", { preHandler: auth }, async (req) => apps.listReminders(req.user!.id));
+  app.post("/api/reminders", { preHandler: appsLimit }, async (req) => apps.addReminder(req.user!.id, body(req)));
+  app.delete("/api/reminders/:id", { preHandler: appsLimit }, async (req) => {
+    apps.removeReminder(req.user!.id, Number((req.params as { id: string }).id));
+    return { ok: true };
+  });
+  app.put("/api/apps/rain", { preHandler: appsLimit }, async (req) => {
+    apps.setRain(req.user!.id, body(req).on);
+    return apps.view(req.user!.id, hubUrl(req)).rain;
+  });
+  app.put("/api/apps/email", { preHandler: appsLimit }, async (req) => {
+    if (!feedUser.take(String(req.user!.id))) throw new HttpError(429, "rate_limited");
+    await apps.connectEmail(req.user!.id, body(req));
+    return apps.view(req.user!.id, hubUrl(req)).email;
+  });
+  app.patch("/api/apps/email", { preHandler: appsLimit }, async (req) => {
+    apps.setEmailOptions(req.user!.id, body(req));
+    return apps.view(req.user!.id, hubUrl(req)).email;
+  });
+  app.delete("/api/apps/:kind", { preHandler: appsLimit }, async (req) => {
+    apps.disconnect(req.user!.id, (req.params as { kind: string }).kind);
+    return { ok: true };
+  });
+
   const wifiChip = (req: FastifyRequest) => {
     const chip = (req.params as { chip: string }).chip;
     if (!CHIP_RE.test(chip)) throw new HttpError(404, "not_found");
@@ -338,6 +396,47 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   app.post("/api/devices/:chip/wifi/remove", { preHandler: appsLimit }, async (req) => {
     svc.wifiCommand(req.user!.id, wifiChip(req), "wifi_del", str(((req.body ?? {}) as Record<string, unknown>).ssid));
     return { ok: true };
+  });
+
+  const doodleId = (req: FastifyRequest) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id) || id <= 0) throw new HttpError(404, "not_found");
+    return id;
+  };
+  const body = (req: FastifyRequest) => (req.body ?? {}) as Record<string, unknown>;
+  app.post("/api/doodles", { preHandler: auth }, async (req) => doodles.start(req.user!.id, str(body(req).to).trim() || null));
+  app.get("/api/doodles/active", { preHandler: auth }, async (req) => doodles.active(req.user!.id));
+  app.get("/api/doodles/mine", { preHandler: auth }, async (req) => doodles.mine(req.user!.id));
+  app.get("/api/doodles/:id", { preHandler: auth }, async (req) => doodles.view(req.user!.id, doodleId(req)));
+  app.post("/api/doodles/:id/strokes", { preHandler: auth, bodyLimit: 16384 }, async (req) => {
+    doodles.addStrokes(req.user!.id, doodleId(req), body(req).s);
+    return { ok: true };
+  });
+  app.post("/api/doodles/:id/clear", { preHandler: auth }, async (req) => { doodles.clear(req.user!.id, doodleId(req)); return { ok: true }; });
+  app.post("/api/doodles/:id/end", { preHandler: auth }, async (req) => {
+    doodles.end(req.user!.id, doodleId(req), Number(body(req).secs) || 60);
+    return { ok: true };
+  });
+  app.post("/api/doodles/:id/show", { preHandler: auth }, async (req) => {
+    doodles.show(req.user!.id, doodleId(req), Number(body(req).secs) || 60);
+    return { ok: true };
+  });
+  app.delete("/api/doodles/:id", { preHandler: auth }, async (req) => { doodles.remove(req.user!.id, doodleId(req)); return { ok: true }; });
+  app.get("/api/doodles/:id/events", { preHandler: auth }, async (req, reply) => {
+    const me = req.user!.id, id = doodleId(req);
+    const first = doodles.view(me, id);
+    const send = (event: string, data: unknown) => reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    const unsub = doodles.subscribe(me, id, (event, data) => {
+      send(event, data);
+      if (event === "end") setTimeout(() => reply.raw.end(), 50);
+    });
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no",
+    });
+    send("init", first);
+    const ping = setInterval(() => reply.raw.write(": ping\n\n"), 20000);
+    req.raw.on("close", () => { clearInterval(ping); unsub(); });
   });
 
   // ---------------------------------------------------------------- friends

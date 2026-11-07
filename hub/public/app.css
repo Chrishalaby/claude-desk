@@ -180,3 +180,18 @@ details.more input { margin-top: 8px; }
 .mkt .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
 .row.picked { background: var(--accent-dim); }
 form > input[type=password] { margin-top: 8px; }
+.draw-overlay { position: fixed; inset: 0; z-index: 30; background: #0b0b0a; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: calc(14px + env(safe-area-inset-top)) 16px calc(18px + env(safe-area-inset-bottom)); overflow-y: auto; }
+.draw-head { width: min(92vw, 440px); display: flex; flex-direction: column; gap: 2px; }
+.draw-canvas { width: min(92vw, 440px); height: min(92vw, 440px); background: #000; border: 1px solid var(--line); border-radius: 12px; touch-action: none; cursor: crosshair; flex: none; }
+.swatches { display: flex; gap: 4px; justify-content: space-between; width: min(92vw, 440px); }
+.sw { flex: 1 1 0; min-width: 0; max-width: 34px; height: auto; aspect-ratio: 1; border-radius: 50%; border: 2px solid var(--line); cursor: pointer; color: #fff; font-size: 14px; display: grid; place-items: center; padding: 0; }
+.sw.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.reacts .draw-btn { background: var(--accent-dim); border-color: var(--accent); }
+.bubble canvas.thumb { display: block; border-radius: 10px; border: 1px solid var(--line); }
+.thumbs { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 10px; }
+.thumb-card { display: flex; flex-direction: column; align-items: center; }
+.thumb-card canvas { border-radius: 10px; border: 1px solid var(--line); background: #000; }
+.days { display: flex; flex-wrap: wrap; gap: 6px; }
+.day { display: flex; align-items: center; gap: 4px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 99px; font-size: 13px; cursor: pointer; }
+.day input { margin: 0; }
+input[type=time] { width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-height: 44px; color: var(--text); }
