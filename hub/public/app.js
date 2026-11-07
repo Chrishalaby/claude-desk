@@ -104,9 +104,10 @@ function shell(title, content, opts = {}) {
   const top = h("header", { class: "top" },
     opts.back ? h("button", { class: "back", "aria-label": "Back", onclick: () => go(opts.back) }, "‹") : h("span", { class: "brand-dot" }),
     h("h1", {}, title),
+    opts.action ? h("button", { class: "hdr-btn", type: "button", "aria-label": opts.action.label, title: opts.action.label, onclick: opts.action.onclick }, opts.action.icon) : null,
     claudePill());
   const nav = h("nav", { class: "tabs" }, h("div", { class: "inner" }, TABS.map(([href, ic, label]) =>
-    h("a", { href, class: state.route.startsWith(href.slice(1)) || (href === "#/home" && state.route.startsWith("/chat")) ? "on" : "" },
+    h("a", { href, class: state.route.startsWith(href.slice(1)) || (href === "#/home" && state.route.startsWith("/chat")) || (href === "#/devices" && state.route.startsWith("/device/")) ? "on" : "" },
       h("span", { class: "ic" }, ic), label,
       href === "#/friends" && incoming ? h("span", { class: "badge" }, incoming) : null))));
   const main = h("main", { class: opts.chat ? "chat" : "" }, content);
@@ -381,49 +382,57 @@ function friendMenu(f) {
 }
 
 // ------------------------------------------------------------------ devices
+const addDeskAction = { icon: "+", label: "Add a desk", onclick: () => go("#/devices/add") };
+
 async function viewDevices() {
-  const main = shell("Devices", h("div", { class: "empty" }, "Loading…"));
+  shell("Devices", h("div", { class: "empty" }, "Loading…"));
   state.devices = await api("GET", "/api/devices");
+  if (state.devices.length === 1) return await viewDevice(state.devices[0].chip);
+  if (!state.devices.length) return viewAddDevice();
+  shell("Your desks", h("div", { class: "list" }, state.devices.map((d) => h("div", { class: "row tap", onclick: () => go("#/device/" + d.chip) },
+    h("div", { class: "grow" },
+      h("div", { class: "title" }, h("span", { class: "dot" + (d.online ? " on" : "") }), d.name || "Desk"),
+      h("div", { class: "sub" }, [d.online ? "online" : "last seen " + ago(d.lastSeen), d.host ? d.host + ".local" : null, d.fw ? "fw " + d.fw : null].filter(Boolean).join(" · "))),
+    h("span", { class: "chev" }, "›")))), { action: addDeskAction });
+}
+
+function viewAddDevice() {
+  const first = !state.devices.length;
   const code = h("input", { inputmode: "numeric", pattern: "[0-9 ]*", maxlength: 7, placeholder: "482913", autocomplete: "one-time-code" });
-  const name = h("input", { maxlength: 20, placeholder: "Desk", value: state.devices.length ? "" : "Desk" });
+  const name = h("input", { maxlength: 20, placeholder: "Desk", value: first ? "Desk" : "" });
   const pair = h("form", {
     class: "card", onsubmit: async (e) => {
       e.preventDefault();
       try {
-        const d = await api("POST", "/api/devices/pair", { code: code.value.replace(/\s/g, ""), name: name.value.trim() || "Desk" });
-        toast("Paired! Your desk will switch over in a moment."); go("#/device/" + d.chip);
+        await api("POST", "/api/devices/pair", { code: code.value.replace(/\s/g, ""), name: name.value.trim() || "Desk" });
+        toast("Paired! Your desk will switch over in a moment."); go("#/devices");
       } catch (ex) { fail(ex); }
     },
   }, h("label", { class: "f", style: "margin-top:0" }, "Pair code shown on the device"), code,
     h("label", { class: "f" }, "Name"), name, h("button", { class: "btn primary block", type: "submit" }, "Pair device"));
-
-  const list = state.devices.length
-    ? h("div", { class: "list" }, state.devices.map((d) => h("div", { class: "row tap", onclick: () => go("#/device/" + d.chip) },
-        h("div", { class: "grow" },
-          h("div", { class: "title" }, h("span", { class: "dot" + (d.online ? " on" : "") }), d.name || "Desk"),
-          h("div", { class: "sub" }, [d.online ? "online" : "last seen " + ago(d.lastSeen), d.host ? d.host + ".local" : null, d.fw ? "fw " + d.fw : null].filter(Boolean).join(" · "))),
-        h("span", { class: "chev" }, "›"))))
-    : h("div", { class: "card empty" }, "No devices yet.");
-  const pairBlock = [h("h2", {}, "Pair a desk"), pair,
+  shell(first ? "Pair your desk" : "Add a desk", [pair,
     h("p", { class: "hint" }, "Power on your GeekMagic with the claude-desk firmware. It shows a 6-digit code until it's paired. New desk? ",
-      h("a", { href: "#/install" }, "Install guide"), ".")];
-  fill(main, state.devices.length ? [h("h2", {}, "Your desks"), list, pairBlock] : [pairBlock, h("h2", {}, "Your desks"), list]);
+      h("a", { href: "#/install" }, "Install guide"), ".")], first ? {} : { back: "#/devices" });
 }
 
 // ------------------------------------------------------------------ one desk: status + remote settings
 const DEFAULT_SETTINGS = { layout: 1, soft: 0, casper: 1, pack: "pixel", bday: 25, bnight: 10, nstart: 22, nend: 7 };
+const LOW_HEAP = 8 * 1024;
+const CRASH_RE = /exception|watchdog|wdt/i;
 const hourLabel = (n) => String(n).padStart(2, "0") + ":00";
 
 async function viewDevice(chip) {
   const enc = encodeURIComponent(chip);
-  shell("Desk", h("div", { class: "empty" }, "Loading…"), { back: "#/devices" });
+  if (state.devices.length !== 1 || state.devices[0].chip !== chip) state.devices = await api("GET", "/api/devices");
+  const nav = state.devices.length === 1 ? { action: addDeskAction } : { back: "#/devices" };
+  shell("Desk", h("div", { class: "empty" }, "Loading…"), nav);
   let data;
   try { data = await api("GET", `/api/devices/${enc}/settings`); }
   catch (e) { if (e.status === 404) { toast("That desk isn't yours (or was forgotten).", true); return go("#/devices"); } throw e; }
 
   const v = { ...DEFAULT_SETTINGS, ...(data.reported || {}), ...(data.settings || {}) };
   let place = data.place || null, locChanged = false;
-  const main = shell(data.device.name || "Desk", [], { back: "#/devices" });
+  const main = shell(data.device.name || "Desk", [], nav);
 
   // ---- status card (refreshed by polling, form below is left alone)
   const status = h("div", { class: "card" });
@@ -442,6 +451,9 @@ async function viewDevice(chip) {
         d.host ? ["local", h("b", {}, h("a", { href: `http://${d.host}.local`, target: "_blank", rel: "noopener" }, `${d.host}.local`))] : null,
         d.ip ? ["ip", h("b", {}, d.ip)] : null,
         d.rssi != null ? ["wi-fi", h("b", {}, d.rssi + " dBm")] : null,
+        d.heap != null ? ["memory", h("b", { class: d.heap < LOW_HEAP ? "warn" : "" },
+          `${(d.heap / 1024).toFixed(1)} KB free` + (d.heap < LOW_HEAP ? " · low" : ""))] : null,
+        d.reset && CRASH_RE.test(d.reset) ? ["last restart", h("b", { class: "warn" }, d.reset)] : null,
         "chip", h("b", {}, d.chip),
         rep && rep.packs ? ["packs", h("b", {}, rep.packs.join(", "))] : null),
       sync ? h("p", { class: "hint", style: "margin:10px 0 0" }, sync) : null,
@@ -561,7 +573,13 @@ async function viewDevice(chip) {
       results),
     save);
 
-  fill(main, h("h2", {}, "Status"), status, form);
+  const deskAddr = data.device.host ? data.device.host + ".local" : data.device.ip;
+  const wifi = deskAddr ? [h("h2", {}, "Wi-Fi networks"), h("div", { class: "card" },
+    h("p", { style: "margin:0" }, "The desk remembers up to 4 networks (home, hotspot, office…) and joins whichever is in range."),
+    h("a", { class: "btn block", href: `http://${deskAddr}/wifi`, target: "_blank", rel: "noopener" }, "Manage Wi-Fi networks"),
+    h("p", { class: "hint", style: "margin:10px 0 0" }, "Opens the desk's own page, so your phone has to be on the same Wi-Fi as the desk. Passwords stay on the desk."))] : null;
+
+  fill(main, h("h2", {}, "Status"), status, form, wifi);
   state.poll = setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 5000);
 }
 
@@ -660,6 +678,7 @@ async function render() {
     switch (hash) {
       case "#/friends": return await viewFriends();
       case "#/devices": return await viewDevices();
+      case "#/devices/add": state.devices = await api("GET", "/api/devices"); return viewAddDevice();
       case "#/claude": return await viewClaude();
       case "#/settings": return await viewSettings();
       default: return await viewHome();

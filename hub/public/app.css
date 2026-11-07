@@ -26,6 +26,7 @@ header.top {
   border-bottom: 1px solid var(--line);
 }
 header.top h1 { font-size: 18px; margin: 0; font-weight: 600; letter-spacing: 0.2px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+header.top .hdr-btn { width: 32px; height: 32px; flex: none; border-radius: 50%; border: 1px solid var(--line); background: var(--panel-2); color: var(--accent); font-size: 21px; line-height: 1; display: grid; place-items: center; cursor: pointer; padding: 0 0 2px; }
 header.top .back { background: none; border: 0; padding: 4px 8px 4px 0; font-size: 22px; line-height: 1; color: var(--accent); cursor: pointer; }
 .brand { display: flex; align-items: center; gap: 8px; }
 .brand-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
@@ -139,6 +140,7 @@ a.btn.off { opacity: 0.4; pointer-events: none; }
 .dot.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; color: var(--muted); margin-top: 6px; }
 .kv b { font-weight: 500; color: var(--text); }
+.kv b.warn { color: #d9c39a; }
 .tag { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--panel-2); color: var(--muted); margin-left: 6px; vertical-align: 1px; }
 .tag.partner { background: var(--accent-dim); color: var(--accent); }
 

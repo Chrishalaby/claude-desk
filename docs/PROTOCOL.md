@@ -123,9 +123,12 @@ The device ignores a `host` that isn't 1–32 chars of `[a-z0-9-]` (no leading/t
 
 ### 3.4 `desk/<chip>/up/status` — device → hub (on connect, then every 10 min)
 ```json
-{ "fw": "1.3.0", "ip": "192.168.1.107", "rssi": -40, "heap": 23000, "up": 3600 }
+{ "fw": "1.4.4", "ip": "192.168.1.107", "rssi": -40, "heap": 23000, "maxblk": 15000, "reset": "Software/System restart", "up": 3600 }
 ```
-Hub stores it (last seen, fw, ip) for the web app.
+Hub stores it (last seen, fw, ip, heap, maxblk, reset) for the web app. `heap` = free heap, `maxblk` = largest free
+block (what a new TLS session or JSON document actually needs), `reset` = `ESP.getResetReason()` of the current boot.
+The web app flags `heap` < 8 KB and resets that mention Exception/Watchdog. The device's own `/info` has the same
+fields. Firmware ≥ 1.4.4 restarts itself if `maxblk` stays under 3 KB for 2 minutes (at most once per 30 min uptime).
 
 ## 4. Claude Code hooks
 

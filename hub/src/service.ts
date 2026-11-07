@@ -224,8 +224,9 @@ export class Service {
     if (!j || typeof j !== "object") return;
     const int = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v) : null);
     const s = (v: unknown, n: number) => (typeof v === "string" ? trunc(oneLine(v), n) || null : null);
-    this.db.prepare(`UPDATE devices SET fw = COALESCE(?, fw), ip = COALESCE(?, ip), rssi = ?, heap = ?, up = ?, last_seen = ?
-      WHERE chip = ?`).run(s(j.fw, 16), s(j.ip, 45), int(j.rssi), int(j.heap), int(j.up), this.now(), chip);
+    this.db.prepare(`UPDATE devices SET fw = COALESCE(?, fw), ip = COALESCE(?, ip), rssi = ?, heap = ?, maxblk = ?, up = ?,
+      reset = COALESCE(?, reset), last_seen = ? WHERE chip = ?`)
+      .run(s(j.fw, 16), s(j.ip, 45), int(j.rssi), int(j.heap), int(j.maxblk), int(j.up), s(j.reset, 40), this.now(), chip);
     const ota = s(j.ota, 80);
     if (ota) this.db.prepare("UPDATE devices SET ota = ?, ota_at = ? WHERE chip = ?").run(ota, this.now(), chip);
   }
@@ -339,7 +340,8 @@ export class Service {
 
   deviceView(d: DeviceRow) {
     return {
-      chip: d.chip, name: d.name, host: this.hostOf(d), fw: d.fw, ip: d.ip, rssi: d.rssi, heap: d.heap, up: d.up,
+      chip: d.chip, name: d.name, host: this.hostOf(d), fw: d.fw, ip: d.ip, rssi: d.rssi, heap: d.heap, maxblk: d.maxblk,
+      reset: d.reset, up: d.up,
       lastSeen: d.last_seen, online: this.broker?.isOnline(d.chip) ?? false, ota: d.ota, otaAt: d.ota_at,
     };
   }

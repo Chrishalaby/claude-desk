@@ -81,7 +81,7 @@ static void robotGrid(int dy, Eyes eyes, int look, uint16_t bulb, uint16_t bg) {
 }
 
 static void blitGrid(int x, int y, int s) {
-  static uint16_t row[SCR_W];
+  uint16_t *row = gRowBuf;
   for (int gy = 0; gy < 20; gy++) {
     for (int gx = 0; gx < 20; gx++)
       for (int k = 0; k < s; k++) row[gx * s + k] = grid[gy * 20 + gx];
@@ -152,7 +152,7 @@ void uiSceneClear() {
 }
 
 void uiCasper(int frame, int x, int y, bool flip, int padL, int padR, int clipR) {
-  static uint16_t row[SCR_W];
+  uint16_t *row = gRowBuf;
   const uint8_t *spr = CASPER_FR[frame % 6];
   int x0 = x - padL, x1 = x + CASPER_W * 2 + padR;
   if (x0 < 0) x0 = 0;
@@ -251,7 +251,7 @@ void uiClockDate(int wday, int mday, int mon, const Weather &w) {
 
 // --------------------------------------------------------------- icons ---
 static void blitIcon(const Icon &ic, int x, int y) {
-  static uint16_t row[SCR_W];
+  uint16_t *row = gRowBuf;
   for (int r = 0; r < ic.h; r++) {
     for (int c = 0; c < ic.w; c++) {
       uint32_t i = (uint32_t)r * ic.w + c;
@@ -423,7 +423,7 @@ static int wrap(const AAFont &f, const char *text, char lines[][64], int maxLine
 // draw a reaction image (pack from storage, or built-in pixel set from flash).
 // pad = extra border painted black (erases motion trails); flip = mirror horizontally
 static void blitE(int idx, bool small, int x, int y, int pad, bool flip = false) {
-  static uint16_t row[SCR_W];
+  uint16_t *row = gRowBuf;
   static uint8_t line[48];
   EmojiHdr h;
   const uint8_t *pgm = nullptr;

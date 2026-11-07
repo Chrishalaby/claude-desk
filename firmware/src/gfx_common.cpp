@@ -1,7 +1,7 @@
 #include "gfx.h"
 #include <string.h>
 
-static uint16_t rowbuf[SCR_W];
+uint16_t gRowBuf[SCR_W];
 uint8_t gSharp = 1;
 // alpha remap: soft = linear, sharp = steep curve (fewer grey edge pixels -> less blur)
 static const uint8_t SHARP[16] = {0, 0, 0, 1, 2, 4, 6, 8, 10, 12, 14, 15, 15, 15, 15, 15};
@@ -60,7 +60,7 @@ void tBox(const AAFont &f, const char *s, int bx, int bw, int baseline, Align al
   int top = baseline - f.ascent, bottom = top + f.height;
   for (int y = top; y < bottom; y++) {
     if (y < 0 || y >= SCR_H) continue;
-    for (int i = 0; i < bw; i++) rowbuf[i] = bg;
+    for (int i = 0; i < bw; i++) gRowBuf[i] = bg;
     for (int k = 0; k < n; k++) {
       const AAGlyph &g = gs[k].g;
       int gy = y - (baseline + g.yo);
@@ -79,10 +79,10 @@ void tBox(const AAFont &f, const char *s, int bx, int bw, int baseline, Align al
         uint8_t b = pgm_read_byte(f.bmp + g.off + idx / 2);
         uint8_t a = (idx & 1) ? (b & 0x0F) : (b >> 4);
         if (gSharp) a = SHARP[a];
-        if (a) rowbuf[sx] = pal[a];
+        if (a) gRowBuf[sx] = pal[a];
       }
     }
-    gRow(bx, y, bw, rowbuf);
+    gRow(bx, y, bw, gRowBuf);
   }
 }
 

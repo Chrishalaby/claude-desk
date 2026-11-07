@@ -243,6 +243,34 @@ static const char HEAD[] PROGMEM =
     "button{background:#d97757;color:#141413;border:0;padding:10px 16px;border-radius:6px;font-weight:600}"
     ".m{color:#888}</style>";
 
+void out(const String &s) { if (s.length()) server.sendContent(s); }
+
+void pageStart() {
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.send(200, "text/html", "");
+  server.sendContent_P(HEAD);
+}
+
+void sendTpl(PGM_P t, String (*val)(const char *)) {
+  size_t start = 0, i = 0;
+  char c;
+  while ((c = pgm_read_byte(t + i))) {
+    if (c != '~') { i++; continue; }
+    if (i > start) server.sendContent_P(t + start, i - start);
+    char key[12];
+    size_t k = 0;
+    i++;
+    while ((c = pgm_read_byte(t + i)) && c != '~') { if (k < sizeof key - 1) key[k++] = c; i++; }
+    key[k] = 0;
+    if (c) i++;
+    out(val(key));
+    start = i;
+  }
+  if (i > start) server.sendContent_P(t + start, i - start);
+}
+
+void sendPage(PGM_P t, String (*val)(const char *)) { pageStart(); sendTpl(t, val); }
+
 String htmlEsc(const String &s) {
   String o; o.reserve(s.length());
   for (char c : s) {
@@ -261,44 +289,68 @@ void infoCommon(String &j) {
   j += "\"fw\":\"" FW_VERSION "\",\"mode\":\"";
   j += mode == M_NORMAL ? "normal" : mode == M_SAFE ? "safe" : "setup";
   j += "\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"local\":\"" + hostName + ".local\",\"rssi\":" + String(WiFi.RSSI());
-  j += ",\"heap\":" + String(ESP.getFreeHeap()) + ",\"uptime\":" + String(millis() / 1000);
+  j += ",\"heap\":" + String(ESP.getFreeHeap()) + ",\"maxblk\":" + String(ESP.getMaxFreeBlockSize()) +
+       ",\"reset\":\"" + ESP.getResetReason() + "\",\"uptime\":" + String(millis() / 1000);
 }
 
 // ----------------------------------------------------------- web: setup AP ---
+static const char SETUP_PAGE[] PROGMEM =
+    "<h2>claude-desk setup</h2><form action=/save method=post><label>Wi-Fi network</label><select name=ssid>~nets~</select>"
+    "<label>Password</label><input name=pass type=password><button>Connect</button></form>"
+    "<p class=m>Or type a hidden network name:</p><form action=/save method=post>"
+    "<input name=ssid placeholder='network name'><input name=pass type=password placeholder=password>"
+    "<button>Connect</button></form><p><a href=/update>Firmware update</a></p>";
+
 void handleSetupRoot() {
-  int n = WiFi.scanNetworks();
-  String h = FPSTR(HEAD);
-  h += "<h2>claude-desk setup</h2><form action=/save method=post><label>Wi-Fi network</label><select name=ssid>";
-  for (int i = 0; i < n; i++) {
-    String s = htmlEsc(WiFi.SSID(i));
-    h += "<option value='" + s + "'>" + s + " (" + String(WiFi.RSSI(i)) + " dBm)</option>";
-  }
-  h += "</select><label>Password</label><input name=pass type=password><button>Connect</button></form>"
-       "<p class=m>Or type a hidden network name:</p><form action=/save method=post>"
-       "<input name=ssid placeholder='network name'><input name=pass type=password placeholder=password>"
-       "<button>Connect</button></form><p><a href=/update>Firmware update</a></p>";
-  server.send(200, "text/html", h);
+  WiFi.scanNetworks();
+  sendPage(SETUP_PAGE, [](const char *) {
+    String o;
+    for (int i = 0, n = WiFi.scanComplete(); i < n; i++) {
+      String s = htmlEsc(WiFi.SSID(i));
+      o += "<option value='" + s + "'>" + s + " (" + String(WiFi.RSSI(i)) + " dBm)</option>";
+    }
+    return o;
+  });
 }
+
+static const char SAVED_PAGE[] PROGMEM =
+    "<h2>Saved</h2><p>Connecting to ~ssid~. The screen will show the new IP in a few seconds.</p>";
 
 void handleSave() {
   String ssid = server.arg("ssid"), pass = server.arg("pass");
   if (!ssid.length()) { server.send(400, "text/plain", "missing ssid"); return; }
-  server.send(200, "text/html", String(FPSTR(HEAD)) + "<h2>Saved</h2><p>Connecting to " + htmlEsc(ssid) +
-                                    ". The screen will show the new IP in a few seconds.</p>");
+  sendPage(SAVED_PAGE, [](const char *) { return htmlEsc(server.arg("ssid")); });
   addNet(ssid, pass);                        // added to the saved list, nothing else is forgotten
   restartAt = millis() + 1500;
 }
 
 // ------------------------------------------------------- web: safe/loader ---
-void handleSafeRoot() {
-  String h = FPSTR(HEAD);
+static const char SAFE_PAGE[] PROGMEM =
 #ifdef LOADER
-  h += "<h2>claude-desk loader</h2><p>Upload the full firmware:</p>";
+    "<h2>claude-desk loader</h2><p>Upload the full firmware:</p>"
 #else
-  h += "<h2>claude-desk safe mode</h2><p>The firmware crashed several times in a row. Upload a fixed build:</p>";
+    "<h2>claude-desk safe mode</h2><p>The firmware crashed several times in a row. Upload a fixed build:</p>"
 #endif
-  h += "<p><a href=/update>Firmware update</a> &middot; <a href=/reboot>Reboot</a></p><p class=m>fw " FW_VERSION "</p>";
-  server.send(200, "text/html", h);
+    "<p><a href=/update>Firmware update</a> &middot; <a href=/reboot>Reboot</a></p><p class=m>fw " FW_VERSION "</p>";
+
+void handleSafeRoot() {
+  sendPage(SAFE_PAGE, [](const char *) { return String(); });
+}
+
+static const char WIFI_PAGE[] PROGMEM =
+    "<h2>Wi-Fi networks</h2><p class=m>Connected to <b>~ssid~</b> as ~ip~ &middot; also <b>~host~.local</b></p>"
+    "<p>The device joins whichever saved network is in range.</p><ul>~nets~</ul>"
+    "<form action=/wifi method=post><label>Add network (name)</label><input name=ssid>"
+    "<label>Password</label><input name=pass type=password><button>Add</button></form><p><a href=/>Back</a></p>";
+
+String wifiVal(const char *k) {
+  if (!strcmp(k, "ssid")) return htmlEsc(WiFi.SSID());
+  if (!strcmp(k, "ip")) return WiFi.localIP().toString();
+  if (!strcmp(k, "host")) return hostName;
+  String o;
+  for (int i = 0; i < NET_MAX; i++)
+    if (NS.n[i].ssid[0]) o += "<li>" + htmlEsc(NS.n[i].ssid) + " &middot; <a href='/wifi?del=" + String(i) + "'>remove</a></li>";
+  return o;
 }
 
 void handleWifi() {
@@ -308,14 +360,7 @@ void handleWifi() {
     wifiMulti.addAP(server.arg("ssid").c_str(), server.arg("pass").c_str());
     server.sendHeader("Location", "/wifi"); server.send(303); return;
   }
-  String h = FPSTR(HEAD);
-  h += "<h2>Wi-Fi networks</h2><p class=m>Connected to <b>" + htmlEsc(WiFi.SSID()) + "</b> as " + WiFi.localIP().toString() +
-       " &middot; also <b>" + hostName + ".local</b></p><p>The device joins whichever saved network is in range.</p><ul>";
-  for (int i = 0; i < NET_MAX; i++)
-    if (NS.n[i].ssid[0]) h += "<li>" + htmlEsc(NS.n[i].ssid) + " &middot; <a href='/wifi?del=" + String(i) + "'>remove</a></li>";
-  h += "</ul><form action=/wifi method=post><label>Add network (name)</label><input name=ssid>"
-       "<label>Password</label><input name=pass type=password><button>Add</button></form><p><a href=/>Back</a></p>";
-  server.send(200, "text/html", h);
+  sendPage(WIFI_PAGE, wifiVal);
 }
 
 void handleInfoBasic() {
@@ -420,11 +465,11 @@ void handleCasper() {   // manual trigger for testing: /casper?do=walk|nap|night
 bool fetchWeather() {
   if (!X.locSet) return false;
   char url[320];
-  snprintf(url, sizeof url,
-           "http://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
-           "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,is_day"
-           "&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1",
-           S.lat, S.lon);
+  snprintf_P(url, sizeof url,
+             PSTR("http://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
+                  "&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,is_day"
+                  "&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1"),
+             S.lat, S.lon);
   WiFiClient client;
   HTTPClient http;
   http.setTimeout(6000);
@@ -766,10 +811,11 @@ void runPendingDownload() {
 }
 
 void hubStatus() {
-  char b[240];
-  snprintf(b, sizeof b, "{\"fw\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"heap\":%u,\"up\":%lu%s%s%s}", FW_VERSION,
-           WiFi.localIP().toString().c_str(), WiFi.RSSI(), ESP.getFreeHeap(), millis() / 1000,
-           otaResult.length() ? ",\"ota\":\"" : "", otaResult.c_str(), otaResult.length() ? "\"" : "");
+  char b[320];
+  snprintf_P(b, sizeof b, PSTR("{\"fw\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"heap\":%u,\"maxblk\":%u,\"reset\":\"%s\",\"up\":%lu%s%s%s}"),
+             FW_VERSION, WiFi.localIP().toString().c_str(), WiFi.RSSI(), ESP.getFreeHeap(), ESP.getMaxFreeBlockSize(),
+             ESP.getResetReason().c_str(), millis() / 1000,
+             otaResult.length() ? ",\"ota\":\"" : "", otaResult.c_str(), otaResult.length() ? "\"" : "");
   mqtt.publish((String("desk/") + chipId + "/up/status").c_str(), b);
 }
 
@@ -842,35 +888,54 @@ const char *hubStateText() {
   }
 }
 
-void handleRoot() {
-  String h = FPSTR(HEAD);
-  h += "<h2>claude-desk</h2><p class=m>fw " FW_VERSION " &middot; " + String(hostName) + ".local &middot; " + WiFi.localIP().toString() + " &middot; ";
-  h += W.ok ? String(W.temp, 1) + "&deg;C" : String("weather pending");
-  h += "</p><h3>Location</h3><input id=q placeholder='Search a city'><div id=r class=m></div>"
-       "<form action=/set><label>Latitude</label><input id=lat name=lat value='" + String(S.lat, 4) +
-       "'><label>Longitude</label><input id=lon name=lon value='" + String(S.lon, 4) +
-       "'><label>Brightness, day (%)</label><input name=bday type=number min=0 max=100 value=" + String(S.bday) +
-       "><label>Brightness, night (%)</label><input name=bnight type=number min=0 max=100 value=" + String(S.bnight) +
-       "><label>Night starts (hour)</label><input name=ns type=number min=0 max=23 value=" + String(S.nstart) +
-       "><label>Night ends (hour)</label><input name=ne type=number min=0 max=23 value=" + String(S.nend) +
-       "><label>Layout</label><select name=layout><option value=1" + String(S.layout ? " selected" : "") +
-       ">B: tall clock</option><option value=0" + String(S.layout ? "" : " selected") + ">A: clean</option></select>"
-       "<label>Colours</label><select name=soft><option value=1" + String(S.soft ? " selected" : "") +
-       ">Soft</option><option value=0" + String(S.soft ? "" : " selected") + ">Vivid</option></select>"
-       "<label><input type=checkbox name=casper value=1 style='width:auto'" + String(X.casper ? " checked" : "") +
-       "> Casper the dog visits</label><input type=hidden name=casper0 value=1>"
-       "<p class=m>Reaction style: <b>" + htmlEsc(X.pack) + "</b> (change it in the hub app)</p>"
-       "<h3>Friends hub</h3><label>Hub address</label><input name=hub placeholder='your-hub.up.railway.app' value='" +
-       htmlEsc(X.host) + "'><p class=m>Status: " + htmlEsc(hubStateText()) + (hubOwner.length() ? " &middot; owner " + htmlEsc(hubOwner) : String("")) +
-       " &middot; id " + chipId + "</p>"
-       "<button>Save</button></form><p><a href=/wifi>Wi-Fi networks</a> &middot; <a href=/update>Firmware update</a> &middot; <a href=/reboot>Reboot</a> &middot; <a href=/info>Info</a></p>"
-       "<script>let t;q.oninput=()=>{clearTimeout(t);t=setTimeout(async()=>{if(q.value.length<2)return;"
-       "let j=await(await fetch('https://geocoding-api.open-meteo.com/v1/search?count=5&name='+encodeURIComponent(q.value))).json();"
-       "r.innerHTML='';(j.results||[]).forEach(c=>{let a=document.createElement('a');a.href='#';a.style.display='block';"
-       "a.textContent=c.name+', '+(c.admin1||'')+' '+(c.country||'');a.onclick=e=>{e.preventDefault();lat.value=c.latitude.toFixed(4);"
-       "lon.value=c.longitude.toFixed(4);r.textContent='Picked '+a.textContent+' - press Save';};r.appendChild(a);});},400);};</script>";
-  server.send(200, "text/html", h);
+static const char ROOT_PAGE[] PROGMEM =
+    "<h2>claude-desk</h2><p class=m>fw " FW_VERSION " &middot; ~host~.local &middot; ~ip~ &middot; ~temp~</p>"
+    "<h3>Location</h3><input id=q placeholder='Search a city'><div id=r class=m></div>"
+    "<form action=/set><label>Latitude</label><input id=lat name=lat value='~lat~'>"
+    "<label>Longitude</label><input id=lon name=lon value='~lon~'>"
+    "<label>Brightness, day (%)</label><input name=bday type=number min=0 max=100 value=~bday~>"
+    "<label>Brightness, night (%)</label><input name=bnight type=number min=0 max=100 value=~bnight~>"
+    "<label>Night starts (hour)</label><input name=ns type=number min=0 max=23 value=~ns~>"
+    "<label>Night ends (hour)</label><input name=ne type=number min=0 max=23 value=~ne~>"
+    "<label>Layout</label><select name=layout><option value=1~layB~>B: tall clock</option><option value=0~layA~>A: clean</option></select>"
+    "<label>Colours</label><select name=soft><option value=1~soft1~>Soft</option><option value=0~soft0~>Vivid</option></select>"
+    "<label><input type=checkbox name=casper value=1 style='width:auto'~casper~> Casper the dog visits</label>"
+    "<input type=hidden name=casper0 value=1>"
+    "<p class=m>Reaction style: <b>~pack~</b> (change it in the hub app)</p>"
+    "<h3>Friends hub</h3><label>Hub address</label><input name=hub placeholder='your-hub.up.railway.app' value='~hub~'>"
+    "<p class=m>Status: ~status~ &middot; id ~chip~</p>"
+    "<button>Save</button></form><p><a href=/wifi>Wi-Fi networks</a> &middot; <a href=/update>Firmware update</a> &middot; "
+    "<a href=/reboot>Reboot</a> &middot; <a href=/info>Info</a></p>"
+    "<script>let t;q.oninput=()=>{clearTimeout(t);t=setTimeout(async()=>{if(q.value.length<2)return;"
+    "let j=await(await fetch('https://geocoding-api.open-meteo.com/v1/search?count=5&name='+encodeURIComponent(q.value))).json();"
+    "r.innerHTML='';(j.results||[]).forEach(c=>{let a=document.createElement('a');a.href='#';a.style.display='block';"
+    "a.textContent=c.name+', '+(c.admin1||'')+' '+(c.country||'');a.onclick=e=>{e.preventDefault();lat.value=c.latitude.toFixed(4);"
+    "lon.value=c.longitude.toFixed(4);r.textContent='Picked '+a.textContent+' - press Save';};r.appendChild(a);});},400);};</script>";
+
+String rootVal(const char *k) {
+  const char *sel = " selected";
+  if (!strcmp(k, "host")) return hostName;
+  if (!strcmp(k, "ip")) return WiFi.localIP().toString();
+  if (!strcmp(k, "temp")) return W.ok ? String(W.temp, 1) + "&deg;C" : String("weather pending");
+  if (!strcmp(k, "lat")) return String(S.lat, 4);
+  if (!strcmp(k, "lon")) return String(S.lon, 4);
+  if (!strcmp(k, "bday")) return String(S.bday);
+  if (!strcmp(k, "bnight")) return String(S.bnight);
+  if (!strcmp(k, "ns")) return String(S.nstart);
+  if (!strcmp(k, "ne")) return String(S.nend);
+  if (!strcmp(k, "layB")) return S.layout ? sel : "";
+  if (!strcmp(k, "layA")) return S.layout ? "" : sel;
+  if (!strcmp(k, "soft1")) return S.soft ? sel : "";
+  if (!strcmp(k, "soft0")) return S.soft ? "" : sel;
+  if (!strcmp(k, "casper")) return X.casper ? " checked" : "";
+  if (!strcmp(k, "pack")) return htmlEsc(X.pack);
+  if (!strcmp(k, "hub")) return htmlEsc(X.host);
+  if (!strcmp(k, "status")) return htmlEsc(hubStateText()) + (hubOwner.length() ? " &middot; owner " + htmlEsc(hubOwner) : String());
+  if (!strcmp(k, "chip")) return chipId;
+  return String();
 }
+
+void handleRoot() { sendPage(ROOT_PAGE, rootVal); }
 
 void handleSet() {
   if (server.hasArg("lat")) S.lat = server.arg("lat").toFloat();
@@ -931,10 +996,24 @@ bool nowTm(struct tm &t) {
   return true;
 }
 
+#define LOW_MEM_BLOCK 3000
+#define LOW_MEM_FOR_MS (2UL * 60 * 1000)
+#define LOW_MEM_MIN_UPTIME_MS (30UL * 60 * 1000)
+
+void lowMemoryGuard() {
+  static uint32_t lowSince = 0, nextCheck = 0;
+  if ((int32_t)(millis() - nextCheck) < 0) return;
+  nextCheck = millis() + 10000;
+  if (ESP.getMaxFreeBlockSize() >= LOW_MEM_BLOCK) { lowSince = 0; return; }
+  if (!lowSince) lowSince = millis() | 1;
+  if (millis() - lowSince > LOW_MEM_FOR_MS && millis() > LOW_MEM_MIN_UPTIME_MS && !restartAt) restartAt = millis() + 100;
+}
+
 void loopNormal() {
   struct tm t;
   bool tv = nowTm(t);
   if (tv != timeValid) { timeValid = tv; dirty = true; }
+  lowMemoryGuard();
   hubLoop();
   if (uiUnread[0] && (int32_t)(millis() - unreadUntil) >= 0) { uiUnread[0] = 0; if (view == V_CLOCK) dirty = true; }
   if (view == V_MSG && (int32_t)(millis() - msgUntil) >= 0) { view = V_CLOCK; dirty = true; }

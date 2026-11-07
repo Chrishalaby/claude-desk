@@ -28,7 +28,16 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 - Pins: MOSI 13, SCLK 14, DC 0, RST 2, CS none; backlight GPIO5 PWM **active-low**; `invertDisplay(true)`.
 - Panel looks best with gamma preset 2 (`gtab=2`), sharp text on, vivid colours, ~25% day brightness; cards must be
   pure black (dark greys tint green in RGB565).
-- RAM is the constraint (~80 KB total; ~41 KB static). One BearSSL TLS session ≈ 25 KB → the firmware never holds two:
+- RAM is the constraint (~80 KB total; static RAM 37.7 KB on 1.4.4, was 42.9 KB). Memory rules:
+  - **String literals live in RAM on the ESP8266.** Web pages are PROGMEM templates (`~key~` placeholders, streamed
+    by `sendPage`/`sendTpl`, never built as one big String); use `PSTR()`/`F()`/`snprintf_P` for anything long.
+  - Drawing code shares one row buffer (`gRowBuf`); don't add per-function `static` pixel buffers.
+  - `firmware/tools/ram_budget.py` fails the build if static RAM (.data+.rodata+.bss) passes the budget (main 38000,
+    loader 32000). Raise it only on purpose, with the reason in the commit message.
+  - Release check on the real desk, connected to the hub: `/info` `heap` ≥ 12 KB and `maxblk` ≥ 8 KB, weather loads,
+    the desk's page opens. The hub's desk page shows memory and flags crashes (`reset` = Exception/Watchdog).
+  - Safety net (1.4.4): `maxblk` < 3 KB for 2 min → the desk restarts itself (only after 30 min uptime, no loops).
+- One BearSSL TLS session ≈ 25 KB → the firmware never holds two:
   hello (HTTPS) runs before MQTT; pack downloads/OTA stop MQTT first. Measured on the real desk (1.4.1, default 16 KB
   BearSSL RX buffer): ~32 KB free before the hub link, **~2.7 KB free while MQTT/TLS is up** — weather fetches failed.
   1.4.2 uses a 2 KB RX buffer for MQTT (hub caps TLS records at 2 KB, PROTOCOL.md §3): **~17 KB free while

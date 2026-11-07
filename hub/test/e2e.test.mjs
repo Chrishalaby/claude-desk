@@ -317,12 +317,13 @@ test("ACL: own namespace only; status is stored", async () => {
   assert.equal(await sub(a, "$SYS/#"), 128);
   assert.equal(await sub(a, `desk/${devA.chip}/msg`), 1);
 
-  await a.publishAsync(`desk/${devA.chip}/up/status`, JSON.stringify({ fw: "1.3.2", ip: "192.168.1.107", rssi: -40, heap: 23000, up: 3600 }), { qos: 1 });
+  await a.publishAsync(`desk/${devA.chip}/up/status`, JSON.stringify({ fw: "1.3.2", ip: "192.168.1.107", rssi: -40, heap: 23000, maxblk: 15000, reset: "Exception", up: 3600 }), { qos: 1 });
   await sleep(100);
   assert.equal(a.got.filter((m) => m.topic.includes("/up/")).length, 0, "up/ messages are not echoed to the device");
   const r = await alice.call("GET", "/api/devices");
   assert.equal(r.body.length, 1);
   assert.deepEqual([r.body[0].fw, r.body[0].ip, r.body[0].rssi, r.body[0].online], ["1.3.2", "192.168.1.107", -40, true]);
+  assert.deepEqual([r.body[0].heap, r.body[0].maxblk, r.body[0].reset], [23000, 15000, "Exception"]);
 
   // a device that publishes outside desk/<own>/up/# is disconnected, and nothing reaches the victim
   const before = devB.client.got.length;
