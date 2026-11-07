@@ -32,7 +32,6 @@
 #define FW_VERSION "1.0.1"
 #endif
 #define PIN_BL 5
-#define HOSTNAME "claude-desk"
 #define AP_SSID "claude-desk-setup"
 
 void gfxInit();
@@ -111,6 +110,53 @@ void loadExt() {
 }
 #endif
 
+// ------------------------------------------------------------ local name ---
+#define NAME_ADDR 768
+#define NAME_MAGIC 0x484F5354
+struct NameStore { uint32_t magic; char host[33]; };
+char hostName[33];
+
+bool validHost(const char *h) {
+  size_t n = strlen(h);
+  if (!n || n > 32 || h[0] == '-' || h[n - 1] == '-') return false;
+  for (size_t i = 0; i < n; i++)
+    if (!((h[i] >= 'a' && h[i] <= 'z') || (h[i] >= '0' && h[i] <= '9') || h[i] == '-')) return false;
+  return true;
+}
+
+void defaultHostName(char *out) { snprintf(out, 33, "claude-desk-%06x", ESP.getChipId()); }
+
+void loadHostName() {
+  NameStore ns;
+  EEPROM.get(NAME_ADDR, ns);
+  ns.host[32] = 0;
+  if (ns.magic == NAME_MAGIC && validHost(ns.host)) strcpy(hostName, ns.host);
+  else defaultHostName(hostName);
+}
+
+void startMdns() {
+  MDNS.begin(hostName);
+  MDNS.addService("http", "tcp", 80);
+}
+
+#ifndef LOADER
+void setHostName(const char *h) {
+  bool custom = h && validHost(h);
+  char want[33];
+  if (custom) strcpy(want, h); else defaultHostName(want);
+  if (!strcmp(want, hostName)) return;
+  NameStore ns;
+  memset(&ns, 0, sizeof ns);
+  if (custom) { ns.magic = NAME_MAGIC; strcpy(ns.host, want); }
+  EEPROM.put(NAME_ADDR, ns);
+  EEPROM.commit();
+  strcpy(hostName, want);
+  WiFi.hostname(hostName);
+  MDNS.end();
+  startMdns();
+}
+#endif
+
 // ------------------------------------------------------- saved networks ---
 // Up to 4 Wi-Fi networks, stored after the settings block. The device joins whichever is in range.
 #define NET_MAX 4
@@ -169,7 +215,7 @@ void setBrightness(int pct) {   // panel backlight is active-low
 bool connectWifi(uint32_t timeoutMs) {
   WiFi.persistent(false);                // our own list in EEPROM is the source of truth
   WiFi.mode(WIFI_STA);
-  WiFi.hostname(HOSTNAME);
+  WiFi.hostname(hostName);
   loadNets();
   if (!netCount()) return false;
   char l2[40];
@@ -214,7 +260,7 @@ void handleReboot() {
 void infoCommon(String &j) {
   j += "\"fw\":\"" FW_VERSION "\",\"mode\":\"";
   j += mode == M_NORMAL ? "normal" : mode == M_SAFE ? "safe" : "setup";
-  j += "\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"rssi\":" + String(WiFi.RSSI());
+  j += "\",\"ip\":\"" + WiFi.localIP().toString() + "\",\"local\":\"" + hostName + ".local\",\"rssi\":" + String(WiFi.RSSI());
   j += ",\"heap\":" + String(ESP.getFreeHeap()) + ",\"uptime\":" + String(millis() / 1000);
 }
 
@@ -264,7 +310,7 @@ void handleWifi() {
   }
   String h = FPSTR(HEAD);
   h += "<h2>Wi-Fi networks</h2><p class=m>Connected to <b>" + htmlEsc(WiFi.SSID()) + "</b> as " + WiFi.localIP().toString() +
-       " &middot; also <b>" HOSTNAME ".local</b></p><p>The device joins whichever saved network is in range.</p><ul>";
+       " &middot; also <b>" + hostName + ".local</b></p><p>The device joins whichever saved network is in range.</p><ul>";
   for (int i = 0; i < NET_MAX; i++)
     if (NS.n[i].ssid[0]) h += "<li>" + htmlEsc(NS.n[i].ssid) + " &middot; <a href='/wifi?del=" + String(i) + "'>remove</a></li>";
   h += "</ul><form action=/wifi method=post><label>Add network (name)</label><input name=ssid>"
@@ -515,6 +561,9 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
     bool was = hubPaired;
     hubPaired = d["paired"] | false;
     hubOwner = (const char *)(d["owner"] | "");
+    const char *hn = d["host"] | "";
+    if (!hubPaired) setHostName(nullptr);
+    else if (hn[0]) setHostName(hn);
     String code = (const char *)(d["pairCode"] | "");
     if (!hubPaired && code.length() && (code != pairCode || view != V_PAIR)) {
       pairCode = code;
@@ -760,7 +809,7 @@ const char *hubStateText() {
 
 void handleRoot() {
   String h = FPSTR(HEAD);
-  h += "<h2>claude-desk</h2><p class=m>fw " FW_VERSION " &middot; " + WiFi.localIP().toString() + " &middot; ";
+  h += "<h2>claude-desk</h2><p class=m>fw " FW_VERSION " &middot; " + String(hostName) + ".local &middot; " + WiFi.localIP().toString() + " &middot; ";
   h += W.ok ? String(W.temp, 1) + "&deg;C" : String("weather pending");
   h += "</p><h3>Location</h3><input id=q placeholder='Search a city'><div id=r class=m></div>"
        "<form action=/set><label>Latitude</label><input id=lat name=lat value='" + String(S.lat, 4) +
@@ -880,7 +929,7 @@ void loopNormal() {
   if (view == V_CLOCK) {
     if (!timeValid) {
       if (dirty) {
-        uiMessage("CLAUDE DESK", WiFi.localIP().toString().c_str(), "syncing time...", "", COL_TEAL);
+        uiMessage("CLAUDE DESK", WiFi.localIP().toString().c_str(), "syncing time...", (String(hostName) + ".local").c_str(), COL_TEAL);
         dirty = false;
       }
       return;
@@ -954,6 +1003,7 @@ void setup() {
   analogWriteFreq(1000);
   setBrightness(0);
   EEPROM.begin(1024);
+  loadHostName();
   gfxInit();
 
 #ifdef LOADER
@@ -1023,10 +1073,7 @@ void setup() {
     dirty = true;
   }
 #endif
-  if (mode != M_SETUP) {
-    MDNS.begin(HOSTNAME);
-    MDNS.addService("http", "tcp", 80);
-  }
+  if (mode != M_SETUP) startMdns();
   server.begin();
 }
 
@@ -1050,7 +1097,7 @@ void loop() {
     if (WiFi.status() != WL_CONNECTED && (int32_t)(millis() - nextTry) >= 0) {
       wifiMulti.run(3000);
       nextTry = millis() + 15000;
-      if (WiFi.status() == WL_CONNECTED) { MDNS.end(); MDNS.begin(HOSTNAME); MDNS.addService("http", "tcp", 80); }
+      if (WiFi.status() == WL_CONNECTED) { MDNS.end(); startMdns(); }
     }
   }
   if (!bootCleared && millis() > 60000) bootOk();

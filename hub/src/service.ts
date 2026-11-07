@@ -43,6 +43,10 @@ export function fitPayload<T extends Record<string, unknown>>(obj: T, fields: (k
   return out;
 }
 
+export function deskHostBase(username: string): string {
+  return (username.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "user") + "-desk";
+}
+
 interface ClaudeEntry { sessions: Sessions; view: View; key: string }
 
 export class Service {
@@ -165,9 +169,28 @@ export class Service {
     ).get(code, code, now) as DeviceRow | undefined;
     if (!d) throw new HttpError(404, "invalid_code");
     this.db.prepare(`UPDATE devices SET owner_id = ?, name = ?, pair_code = NULL, pair_code_at = NULL, prev_code = NULL,
-      prev_code_until = NULL, last_msg_id = NULL, settings = NULL, place = NULL WHERE chip = ?`).run(userId, name, d.chip);
+      prev_code_until = NULL, last_msg_id = NULL, settings = NULL, place = NULL, host = ? WHERE chip = ?`)
+      .run(userId, name, this.freeHost(userId, d.chip), d.chip);
     this.republishDevice(d.chip);
     return this.device(d.chip)!;
+  }
+
+  private freeHost(userId: number, chip: string): string {
+    const owner = this.userById(userId)!;
+    const base = deskHostBase(owner.username);
+    const taken = new Set((this.db.prepare("SELECT host FROM devices WHERE owner_id = ? AND chip != ? AND host IS NOT NULL")
+      .all(userId, chip) as { host: string }[]).map((r) => r.host));
+    let host = base;
+    for (let n = 2; taken.has(host); n++) host = `${base}-${n}`;
+    return host;
+  }
+
+  private hostOf(d: DeviceRow): string | null {
+    if (!d.owner_id) return null;
+    if (d.host) return d.host;
+    const host = this.freeHost(d.owner_id, d.chip);
+    this.db.prepare("UPDATE devices SET host = ? WHERE chip = ?").run(host, d.chip);
+    return host;
   }
 
   ownedDevice(userId: number, chip: string) {
@@ -316,7 +339,7 @@ export class Service {
 
   deviceView(d: DeviceRow) {
     return {
-      chip: d.chip, name: d.name, fw: d.fw, ip: d.ip, rssi: d.rssi, heap: d.heap, up: d.up,
+      chip: d.chip, name: d.name, host: this.hostOf(d), fw: d.fw, ip: d.ip, rssi: d.rssi, heap: d.heap, up: d.up,
       lastSeen: d.last_seen, online: this.broker?.isOnline(d.chip) ?? false, ota: d.ota, otaAt: d.ota_at,
     };
   }
@@ -342,7 +365,7 @@ export class Service {
     const owner = d.owner_id ? this.userById(d.owner_id) : undefined;
     const hub = this.hubUrl();
     if (owner) {
-      return fitPayload({ paired: true, owner: owner.username, name: d.name ?? "Desk", hub }, ["name"]);
+      return fitPayload({ paired: true, owner: owner.username, name: d.name ?? "Desk", host: this.hostOf(d), hub }, ["name"]);
     }
     return { paired: false, pairCode: d.pair_code, hub };
   }

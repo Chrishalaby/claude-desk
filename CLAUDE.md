@@ -12,10 +12,15 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
     downloadable packs → `hub/packs/`). Host previews: `firmware/tools/preview/*.cpp` + `gfx_host.cpp` (g++, writes PPM).
   - Flash layout `eagle.flash.4m1m.ld`: ~3 MB OTA space after the first install, LittleFS 1 MB (packs live in `/packs`).
   - EEPROM map: settings @0 (`Settings`, magic `0xDE5C0005`), Wi-Fi list @128 (`NetStore`), hub/ext @600 (`Ext`, magic
-    `0x48554233`). Changing a struct = bump its magic (resets that block) or add a new block.
+    `0x48554233`), local name @768 (`NameStore`, magic `0x484F5354`). Changing a struct = bump its magic (resets that
+    block) or add a new block.
+  - Local name (mDNS + DHCP): `claude-desk-<chip hex>` until paired, then the hub's `cfg.host` (`<username>-desk`,
+    `-2`, … per owner), stored in `NameStore`. See PROTOCOL.md 3.3.
 - `hub/` Node ≥22 TypeScript: fastify + aedes (MQTT/TLS) + better-sqlite3. `npm test` = full e2e (must stay green).
-  Deploys on Railway from the **repo root** with `hub/Dockerfile` (config `/hub/railway.json`), volume at `/data`,
-  `DATA_DIR=/data`, `HUB_INVITE_CODE`, TCP Proxy → 8883. Docker build has not been run yet (no daemon where it was written).
+  Deploys on Railway from the **repo root** with `hub/Dockerfile`, volume at `/data`, `DATA_DIR=/data`,
+  `HUB_INVITE_CODE`, `PORT=8080` (domain targets 8080), TCP Proxy → 8883. Build/deploy settings live on the Railway
+  service (new services can't use `hub/railway.json`; it is no longer read). The Dockerfile installs python3/make/g++
+  because better-sqlite3 13 compiles from source.
 - `client/` hook (`hook.py` macOS/Linux, `hook.ps1` Windows) + installers; the hub serves them with `__HUB_URL__` replaced
   (first occurrence only — keep the placeholder's first occurrence as the value).
 
@@ -35,14 +40,15 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
   home Wi-Fi is down. 1.0.4 only knows one network; to move it to his phone hotspot: power-cycle → `claude-desk-setup`
   AP → 192.168.4.1 → pick hotspot (this replaces the home network; re-add it later at `/wifi` on ≥1.2).
   Then upload `firmware/dist/claude-desk.bin` to `http://<ip>/update` (OTA from 1.0.x accepts the full image).
-  Home LAN IP was 192.168.1.107; mDNS name `claude-desk.local` (≥1.0).
+  Home LAN IP was 192.168.1.107; mDNS name `claude-desk.local` (1.0–1.4.0; per-desk names from 1.4.1).
 - His Mac still has the **old local tracker** from before the hub (`~/Claude/geekmagic/claude-desk/`, launchd
   `com.chris.claude-desk`, hooks pointing at `.../claude-desk/hook.sh`). Running the hub's `install.sh` removes both.
   Note: macOS blocks LAN access for launchd services (Local Network privacy) — that's why hooks now go to the hub.
-- Hub not deployed yet → next: Railway deploy, then register (invite code), flash desk to 1.4.0, set hub address on
-  the desk, pair, install hooks with the token, test: needs/done cards, a message + reaction between two accounts,
-  remote settings, pack download (Fluent/Twemoji/Noto), OTA button.
-- Untested so far: Docker image, Windows `install.ps1`/`hook.ps1` (written carefully, never executed), TLS on device,
+- Hub is live at `https://claude-desk.up.railway.app` (Railway project `claude-desk`; MQTT via the TCP proxy, the hub
+  hands the endpoint to devices). Next: register (invite code), flash desk to 1.4.1, set hub address on the desk, pair,
+  install hooks with the token, test: needs/done cards, a message + reaction between two accounts, remote settings,
+  pack download (Fluent/Twemoji/Noto), OTA button.
+- Untested so far: Windows `install.ps1`/`hook.ps1` (written carefully, never executed), TLS on device,
   pack download and OTA on device (host-tested pack format only).
 
 ## Conventions

@@ -37,12 +37,15 @@ Steps:
    - If it shows **SETUP** instead: join the Wi-Fi `claude-desk-setup` with your phone, open `192.168.4.1`, pick your
      network and enter the password.
 
-From now on the desk is reachable at **`http://claude-desk.local`** (or its IP). Firmware updates go through
-`http://claude-desk.local/update` with `claude-desk.bin`.
+From now on the desk has its own local address, shown on its screen while it starts (under the IP):
+**`http://claude-desk-<id>.local`**, where `<id>` is the end of its chip id (e.g. `claude-desk-1a2b3c.local`). Once
+it's paired with a hub it is renamed after your hub username: **`http://<username>-desk.local`** (a second desk on
+the same account becomes `<username>-desk-2.local`). The IP always works too, and with several desks on one Wi-Fi each
+keeps its own name. Firmware updates go through `http://<desk address>/update` with `claude-desk.bin`.
 
 ## 3. Desk settings — 👤 you (browser)
 
-Open `http://claude-desk.local`:
+Open the desk's address (`http://claude-desk-<id>.local` or its IP):
 1. **Location** — type your city in the search box, pick it, press **Save**. Weather and timezone (incl. daylight saving)
    follow the location automatically.
 2. **Friends hub** — paste the hub address (e.g. `our-desks.up.railway.app`), press **Save**. The desk reboots and shows
@@ -53,7 +56,8 @@ Open `http://claude-desk.local`:
 ## 4. Hub account + pairing — 👤 you (phone or browser)
 
 1. Open the hub address, **register** (invite code from whoever runs the hub), sign in.
-2. **Devices → Pair**: enter the 6-digit code from the desk and give it a name. The desk switches back to the clock.
+2. **Devices → Pair**: enter the 6-digit code from the desk and give it a name. The desk switches back to the clock and
+   takes its new local address, `http://<username>-desk.local` (shown on the desk's page in the hub).
 3. **Friends → Add**: enter a friend's username and choose **friend** or **partner**. They accept on their side.
 4. Pick a friend on **Home** to send a message (≤100 characters) or a reaction. It pops up on their desk within a second.
 
@@ -94,6 +98,6 @@ the `~/.claude-desk` folder.
 | Desk shows **SAFE MODE** | The firmware crashed repeatedly. Open `http://<ip>/update` and upload `claude-desk.bin` again. |
 | Settings page: *this desk was removed on the hub* | Clear the hub address, save, set it again, re-pair. |
 | Weather says *Set your location* | Use the city search on the settings page and press Save. |
-| `claude-desk.local` doesn't resolve (some Windows/Android setups) | Use the IP shown on the hub's Devices page. |
+| The desk's `.local` address doesn't resolve (some Windows/Android setups) | Use the IP shown on the desk's screen at start-up or on the hub's Devices page. |
 | Claude status doesn't show | Re-run the installer, restart Claude Code, check the hub's Devices page shows the desk as online. |
 | Factory update page refuses the file | Use the two-step loader route in section 2. |

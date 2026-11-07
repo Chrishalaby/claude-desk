@@ -36,15 +36,18 @@ The hub serves the client installers from `../client`, so it is built from the *
 The image contains `client/`, `hub/packs/` and `firmware/dist/` — commit new firmware builds/packs and Railway redeploys.
 
 1. **New service → GitHub repo** (this repo). Leave *Root Directory* empty.
-2. *Settings → Config-as-code → Railway config file*: `/hub/railway.json`
-   (Dockerfile builder with `hub/Dockerfile`, one replica, health check `/healthz`, redeploys on `hub/**` or `client/**` changes).
+2. *Settings → Build / Deploy* (new Railway services can't use a `railway.json` config file any more, so set these by
+   hand): Dockerfile path `hub/Dockerfile`, watch paths `hub/**`, `client/**`, `firmware/dist/**`, health check
+   `/healthz` (timeout 60 s), restart policy *on failure* (10 retries), one replica.
 3. **Add a volume** mounted at `/data`.
 4. **Variables**:
    * `DATA_DIR=/data` (the Dockerfile sets it too)
    * `HUB_INVITE_CODE=<something friends will type once>`
+   * `PORT=8080`: without it Railway picks the Dockerfile's `EXPOSE 8883` for HTTP and the web server collides with the
+     MQTT listener (`EADDRINUSE`)
    * optional `PUBLIC_URL=https://<your domain>` if you use a custom domain (default: `https://$RAILWAY_PUBLIC_DOMAIN`)
 5. *Settings → Networking*:
-   * **Generate Domain** (HTTP). Railway routes it to `$PORT`.
+   * **Generate Domain** (HTTP) with target port **8080**. You can rename it (e.g. `<name>.up.railway.app`).
    * **TCP Proxy** → target port **8883**. Railway then sets `RAILWAY_TCP_PROXY_DOMAIN` / `RAILWAY_TCP_PROXY_PORT`, which the hub hands to devices
      (override with `MQTT_PUBLIC_HOST` / `MQTT_PUBLIC_PORT`). Redeploy once after enabling it so the variables are picked up.
 6. Deploy. The log shows the URL, the MQTT host:port and the cert fingerprints. Open the domain, create your account with the invite code.

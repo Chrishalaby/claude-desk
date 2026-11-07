@@ -102,7 +102,7 @@ of the Stop (done), of the activity that made it `working`, or when it went idle
 ### 3.3 `desk/<chip>/cfg` — retained, hub → device
 Paired:
 ```json
-{ "paired": true, "owner": "chris", "name": "Desk", "hub": "https://<public hub url>" }
+{ "paired": true, "owner": "chris", "name": "Desk", "host": "chris-desk", "hub": "https://<public hub url>" }
 ```
 Unpaired (re-published whenever the code rotates):
 ```json
@@ -110,6 +110,13 @@ Unpaired (re-published whenever the code rotates):
 ```
 `name` ≤ 20 chars. The hub re-publishes `cfg`, `claude` and `msg` whenever the device connects, so state survives a
 hub restart.
+
+`host` is the device's local network name (mDNS `<host>.local` and DHCP hostname), assigned by the hub when the device
+is paired and kept for as long as it stays paired: `<username>-desk` (runs of characters outside `[a-z0-9]` become
+`-`), then `<username>-desk-2`, `-3`, … for the owner's further devices (lowest free suffix). The device stores it, so
+it keeps the name across reboots and while the hub is unreachable. Unpaired devices (and devices whose hub sends no
+`host`) use `claude-desk-<6 hex chars of the chip id>`; a `cfg` with `"paired": false` switches back to that name.
+The device ignores a `host` that isn't 1–32 chars of `[a-z0-9-]` (no leading/trailing `-`).
 
 ### 3.4 `desk/<chip>/up/status` — device → hub (on connect, then every 10 min)
 ```json

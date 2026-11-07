@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import mqtt from "mqtt";
 import { startHub } from "../dist/hub.js";
 import { configFromEnv } from "../dist/config.js";
+import { deskHostBase } from "../dist/service.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cdesk-hub-"));
@@ -266,7 +267,7 @@ test("device hello rules + pairing over MQTT cfg", async () => {
   assert.equal(r.status, 200, r.text);
   assert.equal(r.body.chip, devA.chip);
   cfg = await a.waitFor((m) => m.topic === `desk/${devA.chip}/cfg` && m.json.paired, "paired cfg");
-  assert.deepEqual(cfg.json, { paired: true, owner: "alice", name: "Desk", hub: base });
+  assert.deepEqual(cfg.json, { paired: true, owner: "alice", name: "Desk", host: "alice-desk", hub: base });
   const claude = await a.waitFor((m) => m.topic === `desk/${devA.chip}/claude`, "initial claude");
   assert.equal(claude.json.s, "idle");
 
@@ -673,4 +674,23 @@ test("forget device: kicked, retained cleared, next hello re-creates it", async 
   await a2.quiet(200);
   assert.equal(a2.got.filter((m) => /\/(claude|msg|set)$/.test(m.topic)).filter((m) => m.raw).length, 0,
     "no stale claude/msg/set for an unpaired device");
+});
+
+test("desk hostnames: <username>-desk, then -2, lowest free name reused", async () => {
+  assert.equal(deskHostBase("dee_jay"), "dee-jay-desk");
+  assert.equal(deskHostBase("_x__y_"), "x-y-desk");
+  assert.equal(deskHostBase("___"), "user-desk");
+  const pairNew = async (chip) => {
+    const h = await anon.call("POST", "/api/device/hello", { chip, fw: "1.4.1", secret: "" });
+    assert.equal(h.status, 200, h.text);
+    const r = await carol.call("POST", "/api/devices/pair", { code: h.body.pairCode, name: "Desk" });
+    assert.equal(r.status, 200, r.text);
+    return r.body.host;
+  };
+  assert.equal(await pairNew("esp-c0ffe1"), "carol-desk");
+  assert.equal(await pairNew("esp-c0ffe2"), "carol-desk-2");
+  assert.equal((await carol.call("DELETE", "/api/devices/esp-c0ffe1")).status, 200);
+  assert.equal(await pairNew("esp-c0ffe3"), "carol-desk");
+  assert.deepEqual((await carol.call("GET", "/api/devices")).body.map((d) => d.host).sort(), ["carol-desk", "carol-desk-2"]);
+  for (const c of ["esp-c0ffe2", "esp-c0ffe3"]) assert.equal((await carol.call("DELETE", `/api/devices/${c}`)).status, 200);
 });

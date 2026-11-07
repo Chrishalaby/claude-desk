@@ -326,7 +326,7 @@ async function viewDevices() {
     ? h("div", { class: "list" }, state.devices.map((d) => h("div", { class: "row tap", onclick: () => go("#/device/" + d.chip) },
         h("div", { class: "grow" },
           h("div", { class: "title" }, h("span", { class: "dot" + (d.online ? " on" : "") }), d.name || "Desk"),
-          h("div", { class: "sub" }, [d.online ? "online" : "last seen " + ago(d.lastSeen), d.fw ? "fw " + d.fw : null].filter(Boolean).join(" · "))),
+          h("div", { class: "sub" }, [d.online ? "online" : "last seen " + ago(d.lastSeen), d.host ? d.host + ".local" : null, d.fw ? "fw " + d.fw : null].filter(Boolean).join(" · "))),
         h("span", { class: "chev" }, "›"))))
     : h("div", { class: "card empty" }, "No devices yet.");
   const pairBlock = [h("h2", {}, "Pair a desk"), pair,
@@ -363,6 +363,7 @@ async function viewDevice(chip) {
       h("div", { class: "title" }, h("span", { class: "dot" + (d.online ? " on" : "") }), d.online ? "Online" : "Offline · last seen " + ago(d.lastSeen)),
       h("div", { class: "kv" },
         "firmware", h("b", {}, (d.fw || "?") + (fw ? (fw.version === d.fw ? " (latest)" : ` → ${fw.version} available`) : "")),
+        d.host ? ["local", h("b", {}, h("a", { href: `http://${d.host}.local`, target: "_blank", rel: "noopener" }, `${d.host}.local`))] : null,
         d.ip ? ["ip", h("b", {}, d.ip)] : null,
         d.rssi != null ? ["wi-fi", h("b", {}, d.rssi + " dBm")] : null,
         "chip", h("b", {}, d.chip),
