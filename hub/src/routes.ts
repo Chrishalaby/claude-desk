@@ -249,16 +249,18 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     return { ok: true };
   });
 
-  const playingUser = new RateLimiter(60, 60_000, nowMs);
-  app.post("/api/nowplaying", { bodyLimit: 2048 }, async (req, reply) => {
+  const computerUser = new RateLimiter(60, 60_000, nowMs);
+  const computerReport = async (req: FastifyRequest, reply: FastifyReply) => {
     if (!hookIp.take(req.ip)) return reply.code(429).send({ error: "rate_limited" });
     const h = req.headers.authorization ?? "";
     const u = svc.userByHookToken(h.startsWith("Bearer ") ? h.slice(7).trim() : "");
     if (!u) return reply.code(401).send({ error: "token" });
-    if (!playingUser.take(String(u.id))) return reply.code(429).send({ error: "rate_limited" });
+    if (!computerUser.take(String(u.id))) return reply.code(429).send({ error: "rate_limited" });
     const b = req.body;
     return apps.reportComputer(u.id, b && typeof b === "object" && !Array.isArray(b) ? b as Record<string, unknown> : {});
-  });
+  };
+  app.post("/api/computer", { bodyLimit: 16384 }, computerReport);
+  app.post("/api/nowplaying", { bodyLimit: 16384 }, computerReport);
 
   const notifyIp = new RateLimiter(120, 60_000, nowMs);
   const appsUser = new RateLimiter(30, 60_000, nowMs);
@@ -372,6 +374,7 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     await apps.connectLastfm(req.user!.id, body(req).user);
     return apps.view(req.user!.id, hubUrl(req)).music;
   });
+  app.patch("/api/apps/computer", { preHandler: appsLimit }, async (req) => apps.setComputerOptions(req.user!.id, body(req)));
   app.patch("/api/apps/music/:kind", { preHandler: appsLimit }, async (req) => {
     apps.setMusicOptions(req.user!.id, (req.params as { kind: string }).kind, body(req));
     return apps.view(req.user!.id, hubUrl(req)).music;
@@ -463,7 +466,10 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   });
 
   // ---------------------------------------------------------------- friends
-  app.get("/api/friends", { preHandler: auth }, async (req) => svc.listFriends(req.user!.id));
+  app.get("/api/friends", { preHandler: auth }, async (req) => svc.listFriends(req.user!.id).map((f) => {
+    const id = f.rel ? svc.userByName(f.username)?.id : undefined;
+    return { ...f, presence: id ? apps.presence(id) : null };
+  }));
 
   app.post("/api/friends", { preHandler: auth }, async (req) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
@@ -511,8 +517,9 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   app.get("/install.ps1", serveClient("install.ps1", true));
   app.get("/client/hook.py", serveClient("hook.py", false));
   app.get("/client/hook.ps1", serveClient("hook.ps1", false));
-  app.get("/client/nowplaying.py", serveClient("nowplaying.py", false));
-  app.get("/client/nowplaying.ps1", serveClient("nowplaying.ps1", false));
+  app.get("/client/agent.py", serveClient("agent.py", false));
+  app.get("/client/agent.ps1", serveClient("agent.ps1", false));
+  app.get("/client/calendar.swift", serveClient("calendar.swift", false));
 
   // ---------------------------------------------------------------- web app
   const types: Record<string, string> = {

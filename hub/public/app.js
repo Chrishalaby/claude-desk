@@ -384,6 +384,12 @@ async function activeDoodlesBanner(filterUser) {
     h("span", { class: "chev" }, "›"))));
 }
 
+function presenceText(p) {
+  if (!p.away) return "at their computer";
+  const s = Math.max(0, Date.now() / 1000 - p.since);
+  return s < 3600 ? `away ${Math.max(10, Math.round(s / 60))} min` : s < 86400 ? `away ${Math.floor(s / 3600)} h` : "away";
+}
+
 async function viewHome() {
   const main = shell("claude-desk", h("div", { class: "empty" }, "Loading…"));
   await loadFriends();
@@ -391,8 +397,8 @@ async function viewHome() {
   const list = friends.length
     ? h("div", { class: "list" }, friends.map((f) => h("div", { class: "row tap", onclick: () => go("#/chat/" + f.username) },
         h("div", { class: "avatar" }, f.displayName.slice(0, 1)),
-        h("div", { class: "grow" }, h("div", { class: "title" }, f.displayName),
-          h("div", { class: "sub" }, "@" + f.username)),
+        h("div", { class: "grow" }, h("div", { class: "title" }, f.displayName, f.presence ? h("span", { class: "dot " + (f.presence.away ? "away" : "here") }) : null),
+          h("div", { class: "sub" }, "@" + f.username + (f.presence ? " · " + presenceText(f.presence) : ""))),
         h("span", { class: "chev" }, "›"))))
     : h("div", { class: "card empty" }, "No friends yet. ", h("a", { href: "#/friends" }, "Add someone"), " to send messages to their desk.");
   const live = await activeDoodlesBanner(null);
@@ -459,7 +465,7 @@ async function viewChat(username) {
 
   const liveBox = h("div", {});
   const refreshLive = async () => { const b = await activeDoodlesBanner(username); fill(liveBox, b); };
-  shell(fr ? fr.displayName : "@" + username, [liveBox, msgs, fr && fr.rel ? composer : h("div", { class: "empty" }, "You're not friends with @" + username + ".")], { back: "#/home", chat: true });
+  shell(fr ? fr.displayName : "@" + username, [fr && fr.presence ? h("p", { class: "hint", style: "margin:0 0 8px;text-align:center" }, h("span", { class: "dot " + (fr.presence.away ? "away" : "here") }), " " + presenceText(fr.presence)) : null, liveBox, msgs, fr && fr.rel ? composer : h("div", { class: "empty" }, "You're not friends with @" + username + ".")], { back: "#/home", chat: true });
   await refresh().catch(fail);
   refreshLive();
   state.poll = setInterval(() => { if (!document.hidden) { refresh().catch(() => {}); refreshLive(); } }, 4000);
@@ -863,6 +869,39 @@ function appTimers(a) {
   return el;
 }
 
+const OS_LABEL = { mac: "Mac", windows: "PC", linux: "computer" };
+function appComputer(a) {
+  const el = h("div", { class: "card" });
+  const set = (body) => async (v, cb) => {
+    try { a.computer = await api("PATCH", "/api/apps/computer", typeof body === "function" ? body(v) : { [body]: v }); paint(); } catch (e) { fail(e); cb.checked = !v; }
+  };
+  const note = (t, warn) => t ? h("p", { class: "hint" + (warn ? " warn" : ""), style: "margin:2px 0 8px 28px" }, t) : null;
+  function paint() {
+    const c = a.computer, mac = c.os === "mac";
+    const n = a.calendar.fromComputer;
+    const cal = c.cal === "ok" ? `${n} upcoming event${n === 1 ? "" : "s"} from ${c.os === "windows" ? "Outlook" : "your calendars"}.`
+      : c.cal === "pending" ? "Waiting for you to click Allow on your Mac."
+      : c.os === "windows" ? "Reads Outlook while it's open." : c.os === "linux" ? "Not available on Linux yet." : "Reads every calendar on your Mac (iCloud, Google, Outlook…).";
+    fill(el,
+      h("p", { class: "hint", style: "margin:0 0 10px" }, c.seen
+        ? `Connected to your ${OS_LABEL[c.os] || "computer"} · checked in ${ago(c.seen)}${c.presence ? (c.away ? " · you're away" : " · you're here") : ""}`
+        : "Not connected yet: run the command above on your computer."),
+      toggle("Now playing", c.music, set("music")),
+      note("Spotify, Apple Music, YouTube and more, under the clock (options under Now playing)."),
+      toggle("Calendar", c.calendar, set("calendar")),
+      c.cal === "not_allowed" ? note("macOS is blocking it: System Settings → Privacy & Security → Calendars → turn on Claude Desk Calendar.", true) : note(cal),
+      toggle("Show friends when I'm away", c.presence, set("presence")),
+      note("After 10 minutes without keyboard or mouse, or when the computer sleeps."),
+      mac || c.apps.length ? [
+        h("label", { class: "f" }, "Unread counts"),
+        c.apps.length ? c.apps.map((x) => toggle(`${x.app}${x.count ? ` · ${x.count === -1 ? "new" : x.count}` : ""}`, !x.muted, set((v) => ({ mute: { [x.app]: !v } }))))
+          : h("p", { class: "hint", style: "margin:0" }, "Apps with a red badge on the Dock show up here (Slack, Mail, Messages, WhatsApp, Discord, Teams…). Your desk gets a card when the number goes up."),
+      ] : null);
+  }
+  paint();
+  return el;
+}
+
 function appCalendar(a) {
   const el = h("div", { class: "card" });
   const url = h("input", { placeholder: "https://…/basic.ics", autocomplete: "off", autocapitalize: "none", spellcheck: "false", inputmode: "url" });
@@ -873,15 +912,9 @@ function appCalendar(a) {
     remind.addEventListener("change", () => patch({ remind: Number(remind.value) }));
     const showNext = h("input", { type: "checkbox", checked: c.showNext, style: "width:auto" });
     showNext.addEventListener("change", () => patch({ showNext: showNext.checked }));
-    fill(el,
-      c.feeds.length ? h("div", { class: "list" }, c.feeds.map((f, i) => h("div", { class: "row" },
-        h("div", { class: "grow" }, h("div", { class: "title" }, f.label),
-          h("div", { class: "sub" }, f.ok === false ? h("span", { class: "warn" }, "Can't read it: " + (FEED_ERR[f.error] || f.error)) : `${f.count} events in the next day and a half`)),
-        h("button", { class: "btn small ghost", onclick: guarded(async () => {
-          if (!confirm("Remove this calendar?")) return;
-          try { a.calendar = await api("DELETE", `/api/apps/calendar/feeds/${i}`); paint(); } catch (e) { fail(e); }
-        }) }, "Remove")))) : null,
-      h("label", { class: "f", style: c.feeds.length ? "" : "margin-top:0" }, "Add a calendar (its private iCal link)"),
+    const pcCal = c.fromComputer > 0 || a.computer.cal === "ok";
+    const linkForm = [
+      h("label", { class: "f", style: c.feeds.length || pcCal ? "" : "margin-top:0" }, "Add a calendar (its private iCal link)"),
       h("form", { class: "inline", onsubmit: guarded(async () => {
         const v = url.value.trim();
         if (!v) return;
@@ -891,8 +924,18 @@ function appCalendar(a) {
         h("ul", { class: "help" },
           h("li", {}, h("b", {}, "Google: "), "calendar settings → your calendar → Integrate calendar → Secret address in iCal format."),
           h("li", {}, h("b", {}, "Apple: "), "Calendar app → share the calendar → Public Calendar → copy the link."),
-          h("li", {}, h("b", {}, "Outlook: "), "Settings → Calendar → Shared calendars → Publish a calendar → ICS link."))),
-      c.feeds.length ? [
+          h("li", {}, h("b", {}, "Outlook: "), "Settings → Calendar → Shared calendars → Publish a calendar → ICS link.")))];
+    fill(el,
+      pcCal ? h("p", { class: "hint", style: "margin:0 0 6px" }, `From your computer: ${c.fromComputer} upcoming event${c.fromComputer === 1 ? "" : "s"}.`) : null,
+      c.feeds.length ? h("div", { class: "list" }, c.feeds.map((f, i) => h("div", { class: "row" },
+        h("div", { class: "grow" }, h("div", { class: "title" }, f.label),
+          h("div", { class: "sub" }, f.ok === false ? h("span", { class: "warn" }, "Can't read it: " + (FEED_ERR[f.error] || f.error)) : `${f.count} events in the next day and a half`)),
+        h("button", { class: "btn small ghost", onclick: guarded(async () => {
+          if (!confirm("Remove this calendar?")) return;
+          try { a.calendar = await api("DELETE", `/api/apps/calendar/feeds/${i}`); paint(); } catch (e) { fail(e); }
+        }) }, "Remove")))) : null,
+      pcCal && !c.feeds.length ? h("details", { class: "more", style: "margin-top:0" }, h("summary", {}, "Add a calendar link instead"), linkForm) : linkForm,
+      c.feeds.length || pcCal ? [
         h("label", { class: "f" }, "Remind me"), remind,
         h("label", { class: "check" }, showNext, "Show the next event under the clock"),
         c.upcoming.length ? h("p", { class: "hint", style: "margin:10px 0 0" }, "Coming up: " + c.upcoming.map((e) => `${e.title} ${clockTime(e.start)}`).join(" · ")) : null,
@@ -1037,10 +1080,10 @@ function appMusic(a) {
   const el = h("div", { class: "card" });
   const lfUser = h("input", { placeholder: "Last.fm username", autocapitalize: "none", autocomplete: "off", spellcheck: "false" });
   const opt = (kind, k) => async (v, cb) => { try { a.music = await api("PATCH", `/api/apps/music/${kind}`, { [k]: v }); } catch (e) { fail(e); cb.checked = !v; } };
-  const pcOn = async (v, cb) => { try { a.music = await api("PATCH", "/api/apps/music/computer", { on: v }); paint(); } catch (e) { fail(e); cb.checked = !v; } };
   const OS_NAME = { mac: "Mac", windows: "PC", linux: "computer" };
   function paint() {
     const m = a.music, pc = m.computer, sp = m.spotify, lf = m.lastfm;
+    pc.on = a.computer.music;
     const opts = (kind, x) => [toggle("Show what's playing under the clock", x.clock, opt(kind, "clock")), toggle("Show a card when the song changes", x.cards, opt(kind, "cards"))];
     const off = (kind) => h("button", { class: "btn small ghost danger", style: "margin-top:10px", onclick: guarded(async () => {
       if (!confirm("Disconnect?")) return;
@@ -1049,13 +1092,13 @@ function appMusic(a) {
     const sep = () => h("div", { style: "border-top:1px solid var(--line);margin:14px 0 10px" });
     const where = `your ${OS_NAME[pc.os] || "computer"}`;
     const warn = (t) => h("p", { class: "hint warn", style: "margin:8px 0 0" }, t);
-    const computer = !pc.on ? toggle("Show music from my computer", false, pcOn)
+    const computer = !pc.on ? h("p", { class: "hint", style: "margin:4px 0 0" }, "Off. Turn it on under Your computer.")
       : pc.seen ? [
         h("p", { class: "hint", style: "margin:4px 0 0" }, m.playing?.src === "computer" && pc.app ? `Playing in ${pc.app} on ${where}` : `Connected to ${where} · checked in ${ago(pc.seen)}`),
         pc.error === "not_allowed" ? warn("macOS is blocking it: open System Settings → Privacy & Security → Automation, find Python and turn on Spotify and Music.") : null,
         pc.error === "no_playerctl" ? warn("Install playerctl so it can read your player (e.g. sudo apt install playerctl).") : null,
-        opts("computer", pc), toggle("Show music from my computer", true, pcOn)]
-      : [h("p", { class: "hint", style: "margin:4px 0 8px" }, "No account needed: it comes with the one-line install under Claude Code. On a Mac it reads Spotify and Apple Music; on Windows any app or browser. Installed it before today? Run it again."),
+        opts("computer", pc)]
+      : [h("p", { class: "hint", style: "margin:4px 0 8px" }, "No account needed: it comes with the one-line setup above (Set up your computer). It reads Spotify, Apple Music and YouTube or other music in your browser. Set it up before today? Run it again."),
         h("button", { class: "btn block", onclick: () => document.getElementById("app-claude")?.scrollIntoView({ behavior: "smooth" }) }, "Show the install command")];
     const phone = lf.connected ? [h("p", { class: "hint", style: "margin:4px 0 0" }, `Following last.fm/user/${lf.user}`), statusLine(lf), opts("lastfm", lf), off("lastfm")]
       : [
@@ -1209,16 +1252,16 @@ async function viewApps() {
   const cmd = (label, text) => [h("label", { class: "f" }, label),
     h("div", { class: "codebox" }, h("div", { class: "code" }, text), h("button", { class: "btn small", onclick: () => copy(text) }, "Copy"))];
   fill(m,
-    h("nav", { class: "chips" }, [["Claude Code", "app-claude"], ["Canvas", "app-canvas"], ["Music", "app-music"], ["Timer", "app-timer"], ["Reminders", "app-reminders"], ["Rain", "app-rain"], ["Calendar", "app-calendar"], ["GitHub", "app-github"],
+    h("nav", { class: "chips" }, [["Claude Code", "app-claude"], ["Computer", "app-computer"], ["Canvas", "app-canvas"], ["Music", "app-music"], ["Timer", "app-timer"], ["Reminders", "app-reminders"], ["Rain", "app-rain"], ["Calendar", "app-calendar"], ["GitHub", "app-github"],
       ["Markets", "app-markets"], ["Email", "app-email"], ["Slack", "app-slack"], ["Webhook", "app-webhook"]].map(([l, id]) =>
       h("button", { type: "button", class: "chip", onclick: () => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" }) }, l))),
     h("h2", { id: "app-claude" }, "Claude Code"),
     h("div", { class: "card status-card" }, h("span", { class: "big" }, icons[v.s] || "•"),
       h("div", { class: "grow" }, h("div", { class: "title" }, words[v.s] || v.s),
         h("div", { class: "sub" }, [v.p, v.d].filter(Boolean).join(" — ") || "Across all your Claude Code sessions"))),
-    h("h2", {}, "Install the hook"),
+    h("h2", {}, "Set up your computer"),
     h("div", { class: "card" },
-      h("p", { class: "hint", style: "margin-top:0" }, "Run this once on each computer where you use Claude Code. It adds a tiny hook that reports status to your desk (never your code or tool output), plus the song you're playing, title and artist only (turn that off under Now playing)."),
+      h("p", { class: "hint", style: "margin-top:0" }, "Run this once on each computer you use. It connects Claude Code to your desk, and your computer starts feeding the desk: what's playing, your calendar, unread counts and when you're away. Only titles and counts leave it, never your code, messages or files. Turn each part on or off below."),
       cmd("macOS / Linux (Terminal)", unix),
       cmd("Windows (PowerShell)", win)),
     h("h2", {}, "Hook token"),
@@ -1232,6 +1275,7 @@ async function viewApps() {
           try { await api("POST", "/api/token/regenerate"); toast("New token created"); viewApps(); } catch (e) { fail(e); }
         }),
       }, "Regenerate token")),
+    h("h2", { id: "app-computer" }, "Your computer"), appComputer(a),
     h("h2", { id: "app-canvas" }, "Your canvas"), appCanvas(),
     h("h2", { id: "app-music" }, "Now playing"), appMusic(a),
     h("h2", { id: "app-timer" }, "Timer"), appTimers(a),

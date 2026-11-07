@@ -192,6 +192,9 @@ form > input[type=password] { margin-top: 8px; }
 .thumb-card { display: flex; flex-direction: column; align-items: center; }
 .thumb-card canvas { border-radius: 10px; border: 1px solid var(--line); background: #000; }
 .steps { margin: 0 0 10px; padding-left: 18px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 8px; vertical-align: middle; }
+.dot.here { background: #3fb950; }
+.dot.away { background: #d29922; }
 .steps li { margin: 3px 0; }
 .days { display: flex; flex-wrap: wrap; gap: 6px; }
 .day { display: flex; align-items: center; gap: 4px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 99px; font-size: 13px; cursor: pointer; }

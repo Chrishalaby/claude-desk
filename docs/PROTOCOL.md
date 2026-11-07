@@ -176,7 +176,7 @@ it scans while still connected and, only if another saved network is in range, d
 1.4.4 and older used ESP8266WiFiMulti with a 3 s join limit, which failed on routers slower than a phone hotspot.
 
 ### 3.8 `desk/<chip>/draw` — binary, not retained, hub → device (firmware ≥ 1.4.6)
-Live drawings (section 12). Every frame starts with `op` and a 16-bit drawing id (big-endian):
+Live drawings (section 13). Every frame starts with `op` and a 16-bit drawing id (big-endian):
 
 | op | rest | desk |
 |---|---|---|
@@ -229,7 +229,7 @@ Hub publishes the view to `desk/<chip>/claude` for **every device owned by that 
 * `POST /api/messages {to: "<username>", kind: "text"|"reaction", text?, reaction?}` — sender must be friends with `to`.
   Rate limit: 10/min per sender. Stored with id, delivered by publishing retained `desk/<chip>/msg` to each of the recipient's devices.
 * `GET /api/messages?with=<username>` — conversation history (newest first, 50). A finished shared drawing appears as
-  `kind: "doodle"` with `doodle` = its stroke data in base64 (section 12).
+  `kind: "doodle"` with `doodle` = its stroke data in base64 (section 13).
 
 ## 6. Friends
 
@@ -245,9 +245,12 @@ Hub publishes the view to `desk/<chip>/claude` for **every device owned by that 
 * Both write `~/.claude-desk/config.json` `{ "hub": "https://<hub>", "token": "<token>" }`, install the hook script into
   `~/.claude-desk/`, merge hooks into `~/.claude/settings.json` (backup first, idempotent, remove older claude-desk
   entries), and send a test event.
-* Unless `CLAUDE_DESK_NO_MUSIC=1`, they also start the now-playing helper (section 11, Music): `nowplaying.py` as a
-  LaunchAgent `com.claude-desk.nowplaying` (macOS) or the systemd user service `claude-desk-nowplaying` (Linux), or
-  `nowplaying.ps1` from a `claude-desk-nowplaying` shortcut in the Startup folder (Windows, via `conhost --headless`).
+* Unless `CLAUDE_DESK_NO_AGENT=1`, they also start the computer agent (section 12): `agent.py` as the LaunchAgent
+  `com.claude-desk.agent` (macOS) or the systemd user service `claude-desk-agent` (Linux), or `agent.ps1` from a
+  `claude-desk-agent` shortcut in the Startup folder (Windows, via `conhost --headless`). On macOS they also compile
+  `calendar.swift` into `~/.claude-desk/claude-desk-calendar` (Info.plist with the calendar usage text embedded,
+  ad-hoc signed as `com.claude-desk.calendar`) and run it every 5 min as the LaunchAgent `com.claude-desk.calendar`; it
+  writes `~/.claude-desk/calendar.json`. Older `nowplaying` agents are removed.
 
 ---
 
@@ -345,13 +348,8 @@ per integration. Web app: the **Apps** tab (`#/apps`). All endpoints are per sig
   (unofficial, delayed). A `Markets` card when the price crosses `above` upwards or `below` downwards (the first reading
   only records the side), and once per day when the day's move is at least `move` percent.
 * **Music** — what's playing becomes the next-up line (3.6, `k: "music"`) and, optionally, a short `Now playing` card
-  per song. From the computer (no account; installed with the hook, section 7): the helper checks every 5–10 s (macOS:
-  the Spotify and Music apps through AppleScript, only while they run, which needs the user to allow Python once under
-  Automation; Windows: every media session Windows knows about, browsers included; Linux: `playerctl`) and sends
-  `POST /api/nowplaying` with the hook token, `{os: "mac"|"windows"|"linux", playing, title?, artist?, app?, error?}`
-  (`error`: `not_allowed`, `no_playerctl`, `unsupported`, `script`), on every change, every 60 s while playing and every
-  10 min otherwise → `{ok, off}` (`off: true`: the user turned it off; the helper backs off for 5 min). The hub drops a
-  computer's song after 150 s without a report. `PATCH /api/apps/music/computer {on?, clock?, cards?}`. When several
+  per song. From the computer (no account; section 12); the hub drops a computer's song after 150 s without a report;
+  `PATCH /api/apps/music/computer {clock?, cards?}`. When several
   sources play, a Spotify account beats the computer, which beats Last.fm, as long as the stronger one reported in the
   last 90 s. Spotify account: `GET /api/apps/spotify/connect` (signed in; redirects to Spotify's OAuth with PKCE, scopes
   `user-read-currently-playing user-read-playback-state`), Spotify returns to `GET /api/apps/spotify/callback`, which
@@ -388,7 +386,36 @@ per integration. Web app: the **Apps** tab (`#/apps`). All endpoints are per sig
   `GITHUB_API`, `QUOTES_API`, `WEATHER_API`, `SPOTIFY_ACCOUNTS`, `SPOTIFY_API`, `LASTFM_API`, `SLACK_API` and
   `ALLOW_PRIVATE_FETCH=1` exist for tests only.
 
-## 12. Drawings
+## 12. The computer agent
+
+One agent per computer (installed with the hook, section 7) reports to `POST /api/computer` with the hook token
+(`/api/nowplaying` is an alias), on every change, every 60 s while something plays and every 120 s otherwise:
+```json
+{ "os": "mac", "playing": true, "title": "Blinding Lights", "artist": "The Weeknd", "app": "Spotify", "error": null,
+  "badges": { "Slack": 3, "Mail": 12, "WhatsApp": -1 }, "away": false, "idle": 4,
+  "calendar": "ok", "events": [{ "t": "Design review", "s": 1762412345, "e": 1762414145, "l": "Room 2" }] }
+```
+→ `{ok, off}`. Every field is optional.
+* **Music** (`playing`, `title`, `artist`, `app`, `error`: `not_allowed`, `no_playerctl`, `unsupported`, `script`):
+  macOS reads `pmset -g assertions` (coreaudiod's "Created for PID") to see which apps are playing audio, then asks
+  Spotify / Music through AppleScript, or reads the tab titles of Chrome, Arc, Edge, Brave or Safari and keeps only known
+  media sites (YouTube, YouTube Music, Spotify web, SoundCloud, Apple Music, Twitch, Netflix…; nothing else leaves the
+  computer). Windows: every media session Windows knows about. Linux: `playerctl`.
+* **Unread counts** (`badges`, macOS only, read with `lsappinfo`; `-1` = a badge without a number): a card
+  (`<App>`, "3 unread" / "Something new", 20 s) when an app's count goes up, at most one per app per minute, never on
+  the first report. Muted by default: App Store, System Settings. The hub remembers up to 30 app names for the page.
+* **Away** (`away`, `idle` seconds): idle ≥ 10 min (macOS `HIDIdleTime`, Windows `GetLastInputInfo`, Linux
+  `xprintidle`). `GET /api/friends` adds `presence: {away, since}` to accepted friends who share it: away when the flag
+  says so or when their computer hasn't reported for 5 min, `null` when they turned it off or never set up an agent.
+* **Calendar** (`calendar`: `ok`, `pending`, `not_allowed`, `stale`; `events`: up to 60, next 36 h, sent on change and
+  every 10 min): macOS from `calendar.json` (EventKit: every calendar in the Calendar app, recurring events expanded,
+  all-day and cancelled ones skipped); Windows from classic Outlook while it runs (COM, `IncludeRecurrences`). The hub
+  keeps them in memory (dropped after 6 h without a report), merges them with calendar links (same title + start =
+  one event) and uses them for reminders and the next-up line exactly like section 11's Calendar.
+* `PATCH /api/apps/computer {music?, calendar?, presence?, mute?: {"<App>": true|false}}` → the computer's view:
+  `{seen, os, music, calendar, presence, away, cal, apps: [{app, count, muted}]}` (also `computer` in `GET /api/apps`).
+
+## 13. Drawings
 
 Draw in the web app; every stroke shows up on the desk as you draw (3.8).
 

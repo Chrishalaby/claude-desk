@@ -15,7 +15,7 @@ One Node/TypeScript process that does everything server-side for claude-desk (se
   (IMAP), Slack mentions and a personal webhook (`POST /api/notify/<token>`), delivered as `card` / `next`
   (PROTOCOL.md §3.5, §3.6, §11).
 * **Drawings**: draw on your own desk, or with a friend on both desks at once, live (binary `draw` topic and
-  Server-Sent Events to the browsers; PROTOCOL.md §3.8, §12).
+  Server-Sent Events to the browsers; PROTOCOL.md §3.8, §13).
 * **Wi-Fi management** for each desk: saved networks, scan, add/remove relayed to the desk (passwords not stored).
 
 Storage is one SQLite file in `$DATA_DIR`, next to the session secret and the broker's TLS cert. Runs as a single instance.
@@ -104,7 +104,7 @@ Session cookie (`cd_sid`, httpOnly, SameSite=Lax, signed). JSON in/out, errors a
 | `POST /api/devices/:chip/ota`, `POST /api/devices/:chip/reboot` | `cmd` to the desk (409 if offline), 10/min per user |
 | `GET /api/friends`, `POST /api/friends {username, rel}`, `POST /api/friends/:u/accept`, `POST /api/friends/:u/decline`, `DELETE /api/friends/:u` | decline also cancels your own outgoing request |
 | `POST /api/messages {to, kind, text?, reaction?}`, `GET /api/messages?with=<u>` | |
-| `POST /api/device/hello`, `POST /api/hook`, `POST /api/nowplaying` | device / hook client / now-playing helper (hook token), see PROTOCOL.md |
+| `POST /api/device/hello`, `POST /api/hook`, `POST /api/computer` | device / hook client / computer agent (hook token), see PROTOCOL.md |
 
 Limits: login 20/min per IP and 10/min per username, register 10/h per IP, hello 30/min per IP, pairing 10 tries per 10 min per user,
 messages 10/min per sender, hook 600/min per user. Bodies ≤ 16 KB (hook 8 KB).

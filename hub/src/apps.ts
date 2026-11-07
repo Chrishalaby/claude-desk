@@ -32,8 +32,19 @@ interface Quote { price: number; prev: number; currency: string; at: number }
 interface MusicConfig { clock: boolean; cards: boolean }
 interface SpotifyConfig extends MusicConfig { refresh: string; access: string; exp: number; name: string }
 interface LastfmConfig extends MusicConfig { user: string }
-interface ComputerConfig extends MusicConfig { off: boolean }
-interface ComputerState { at: number; app: string; os: string; error: string | null }
+interface ComputerConfig extends MusicConfig { off: boolean; calendar?: boolean; presence?: boolean; muted?: string[] }
+interface ComputerState {
+  at: number; app: string; os: string; error: string | null;
+  badges?: Record<string, number>; known?: string[]; away?: boolean; awaySince?: number; cal?: string | null;
+}
+export const PRESENCE_STALE_SECS = 300;
+const DEFAULT_MUTED = ["App Store", "System Settings", "System Preferences"];
+const BADGE_COLOR: Record<string, string> = {
+  slack: "purple", discord: "purple", "microsoft teams": "purple", mail: "blue", "microsoft outlook": "blue", outlook: "blue",
+  telegram: "blue", signal: "blue", messages: "green", whatsapp: "green",
+};
+const newComputer = (): { config: ComputerConfig; state: ComputerState } =>
+  ({ config: { clock: true, cards: false, off: false }, state: { at: 0, app: "", os: "", error: null } });
 const MUSIC_RANK: Record<string, number> = { spotify: 3, computer: 2, lastfm: 1 };
 export const COMPUTER_STALE_SECS = 150;
 interface Status { ok: boolean; error: string | null; at: number }
@@ -146,6 +157,8 @@ export class Apps {
   private nextUsers = new Set<number>();
   private oauth = new Map<string, { userId: number; kind: string; verifier: string; exp: number }>();
   private playing = new Map<number, Playing>();
+  private pcEvents = new Map<number, { at: number; events: CalEvent[] }>();
+  private badgeCardAt = new Map<string, number>();
 
   constructor(private db: DB, private svc: Service, private cfg: Config, private log: (...a: unknown[]) => void = () => {}) {}
 
@@ -188,7 +201,8 @@ export class Apps {
         feeds: (cal?.config.feeds ?? []).map((f, i) => ({ label: maskUrl(f), ...(cal?.state.feeds?.[i] ?? { ok: null, error: null, at: null, count: 0 }) })),
         remind: cal?.config.remind ?? 10,
         showNext: cal?.config.showNext ?? true,
-        upcoming: (this.events.get(userId) ?? []).filter((e) => e.start > now).slice(0, 3).map((e) => ({ title: e.title, start: e.start })),
+        upcoming: this.calEvents(userId).filter((e) => e.start > now).slice(0, 3).map((e) => ({ title: e.title, start: e.start })),
+        fromComputer: (this.pcEvents.get(userId)?.events ?? []).filter((e) => e.start > now).length,
       },
       github: gh
         ? { connected: true, login: gh.config.login, reasons: gh.config.reasons, ok: gh.state.ok ?? null, error: gh.state.error ?? null, at: gh.state.at ?? null }
@@ -211,6 +225,7 @@ export class Apps {
     const p = this.playing.get(userId);
     const pc = this.get<ComputerConfig, ComputerState>(userId, "computer");
     return {
+      computer: this.computerView(userId),
       music: {
         playing: p ? { title: p.title, artist: p.artist, src: p.src } : null,
         computer: { on: !pc?.config.off, seen: pc?.state.at || null, app: pc?.state.app ?? "", os: pc?.state.os ?? "", error: pc?.state.error ?? null,
@@ -318,16 +333,120 @@ export class Apps {
     this.updateNext(userId);
   }
 
+  computerView(userId: number) {
+    const pc = this.get<ComputerConfig, ComputerState>(userId, "computer") ?? newComputer();
+    const muted = new Set(pc.config.muted ?? DEFAULT_MUTED);
+    const badges = pc.state.badges ?? {};
+    return {
+      seen: pc.state.at || null, os: pc.state.os, music: !pc.config.off, calendar: pc.config.calendar !== false,
+      presence: pc.config.presence !== false, away: !!pc.state.away, cal: pc.state.cal ?? null,
+      apps: (pc.state.known ?? []).map((app) => ({ app, count: badges[app] ?? 0, muted: muted.has(app) })),
+    };
+  }
+
+  setComputerOptions(userId: number, b: Record<string, unknown>) {
+    const cur = this.get<ComputerConfig, ComputerState>(userId, "computer") ?? newComputer();
+    if (b.music !== undefined) cur.config.off = !b.music;
+    if (b.calendar !== undefined) cur.config.calendar = !!b.calendar;
+    if (b.presence !== undefined) cur.config.presence = !!b.presence;
+    if (b.mute && typeof b.mute === "object" && !Array.isArray(b.mute)) {
+      const m = new Set(cur.config.muted ?? DEFAULT_MUTED);
+      for (const [k, v] of Object.entries(b.mute as Record<string, unknown>).slice(0, 30)) {
+        const name = trunc(oneLine(k), 30);
+        if (v) m.add(name); else m.delete(name);
+      }
+      cur.config.muted = [...m].slice(0, 60);
+    }
+    this.put(userId, "computer", cur.config, cur.state);
+    if (cur.config.off) this.setPlaying(userId, "computer", null);
+    this.updateNext(userId);
+    return this.computerView(userId);
+  }
+
+  presence(userId: number): { away: boolean; since: number } | null {
+    const pc = this.get<ComputerConfig, ComputerState>(userId, "computer");
+    if (!pc || pc.config.presence === false || !pc.state.at) return null;
+    const now = this.now();
+    if (now - pc.state.at > 7 * 86400) return null;
+    if (now - pc.state.at > PRESENCE_STALE_SECS) return { away: true, since: pc.state.at };
+    if (pc.state.away) return { away: true, since: pc.state.awaySince || pc.state.at };
+    return { away: false, since: 0 };
+  }
+
   reportComputer(userId: number, b: Record<string, unknown>) {
+    const now = this.now();
     const cur = this.get<ComputerConfig, ComputerState>(userId, "computer");
-    if (cur?.config.off) return { ok: true, off: true };
+    const config = cur?.config ?? newComputer().config;
+    const prev = cur?.state;
     const text = (v: unknown, n: number) => trunc(oneLine(typeof v === "string" ? v : ""), n);
-    const os = ["mac", "windows", "linux"].includes(String(b.os)) ? String(b.os) : "";
-    const error = typeof b.error === "string" && /^[a-z_]{1,30}$/.test(b.error) ? b.error : null;
-    this.put(userId, "computer", cur?.config ?? { clock: true, cards: false, off: false }, { at: this.now(), app: text(b.app, 30), os, error });
-    const title = text(b.title, 200), artist = text(b.artist, 200);
-    this.setPlaying(userId, "computer", b.playing === true && title ? { title, artist } : null);
-    return { ok: true, off: false };
+    const state: ComputerState = {
+      at: now, app: text(b.app, 30), os: ["mac", "windows", "linux"].includes(String(b.os)) ? String(b.os) : "",
+      error: typeof b.error === "string" && /^[a-z_]{1,30}$/.test(b.error) ? b.error : null,
+      badges: prev?.badges ?? {}, known: prev?.known ?? [], away: prev?.away ?? false, awaySince: prev?.awaySince ?? 0, cal: prev?.cal ?? null,
+    };
+    if (b.badges && typeof b.badges === "object" && !Array.isArray(b.badges)) {
+      state.badges = this.takeBadges(userId, config, prev?.badges ?? {}, b.badges as Record<string, unknown>, !!prev?.at);
+      state.known = [...new Set([...(state.known ?? []), ...Object.keys(state.badges)])].slice(-30);
+    }
+    if (typeof b.away === "boolean") {
+      if (b.away && !prev?.away) state.awaySince = now - Math.max(0, Math.min(86400, Math.round(Number(b.idle) || 0)));
+      state.away = b.away;
+    }
+    if (typeof b.calendar === "string" && /^[a-z_]{1,20}$/.test(b.calendar)) state.cal = b.calendar;
+    this.put(userId, "computer", config, state);
+    if (Array.isArray(b.events)) this.takeEvents(userId, b.events);
+    if (!config.off) {
+      const title = text(b.title, 200), artist = text(b.artist, 200);
+      this.setPlaying(userId, "computer", b.playing === true && title ? { title, artist } : null);
+    }
+    return { ok: true, off: !!config.off };
+  }
+
+  private takeBadges(userId: number, config: ComputerConfig, prev: Record<string, number>, raw: Record<string, unknown>, known: boolean) {
+    const next: Record<string, number> = {};
+    for (const [k, v] of Object.entries(raw).slice(0, 30)) {
+      const name = trunc(oneLine(k.replace(/[\u200e\u200f\u202a-\u202e]/g, "")), 30);
+      const n = Math.round(Number(v));
+      if (!name || !Number.isFinite(n) || n === 0 || n < -1 || n > 100000) continue;
+      next[name] = n;
+    }
+    if (!known) return next;
+    const muted = new Set(config.muted ?? DEFAULT_MUTED);
+    const now = this.now();
+    for (const [name, n] of Object.entries(next)) {
+      const before = prev[name] ?? 0;
+      if (muted.has(name) || !(n === -1 ? before === 0 : n > Math.max(0, before))) continue;
+      const key = `${userId}:${name}`;
+      if (now - (this.badgeCardAt.get(key) ?? 0) < 60) continue;
+      this.badgeCardAt.set(key, now);
+      this.svc.sendCard(userId, { src: name, title: n === -1 ? "Something new" : `${n} unread`, color: BADGE_COLOR[name.toLowerCase()] ?? "teal", secs: 20 });
+    }
+    return next;
+  }
+
+  private takeEvents(userId: number, raw: unknown[]) {
+    const now = this.now();
+    const events: CalEvent[] = [];
+    for (const x of raw.slice(0, 60)) {
+      if (!x || typeof x !== "object") continue;
+      const o = x as Record<string, unknown>;
+      const start = Math.round(Number(o.s)), end = Math.round(Number(o.e));
+      const title = trunc(oneLine(typeof o.t === "string" ? o.t : ""), 100);
+      if (!title || !Number.isFinite(start) || start < now - 86400 || start > now + 3 * 86400) continue;
+      events.push({ key: `pc:${start}:${title}`, start, end: Number.isFinite(end) && end >= start ? end : start, title,
+        location: trunc(oneLine(typeof o.l === "string" ? o.l : ""), 60) });
+    }
+    this.pcEvents.set(userId, { at: now, events: events.sort((a, b) => a.start - b.start) });
+    if (events.length && !this.get(userId, "calendar")) this.put(userId, "calendar", { feeds: [], remind: 10, showNext: true }, { feeds: [], reminded: [] });
+    this.updateNext(userId);
+  }
+
+  private calEvents(userId: number): CalEvent[] {
+    const pc = this.get<ComputerConfig, ComputerState>(userId, "computer");
+    const fromPc = pc?.config.calendar !== false ? this.pcEvents.get(userId)?.events ?? [] : [];
+    const seen = new Set<string>();
+    return [...(this.events.get(userId) ?? []), ...fromPc].sort((a, b) => a.start - b.start)
+      .filter((e) => { const k = `${e.title}|${e.start}`; return !seen.has(k) && !!seen.add(k); });
   }
 
   private setPlaying(userId: number, src: string, p: { title: string; artist: string } | null) {
@@ -651,14 +770,14 @@ export class Apps {
     if (!cur || !(index >= 0 && index < cur.config.feeds.length)) throw new HttpError(404, "not_found");
     cur.config.feeds.splice(index, 1);
     cur.state.feeds?.splice(index, 1);
-    if (!cur.config.feeds.length) { this.remove(userId, "calendar"); this.events.delete(userId); }
+    if (!cur.config.feeds.length && !this.pcEvents.get(userId)?.events.length) { this.remove(userId, "calendar"); this.events.delete(userId); }
+    else if (!cur.config.feeds.length) { this.put(userId, "calendar", cur.config, cur.state); this.events.delete(userId); }
     else { this.put(userId, "calendar", cur.config, cur.state); this.due.delete(`calendar:${userId}`); }
     this.updateNext(userId);
   }
 
   setCalendarOptions(userId: number, b: { remind?: unknown; showNext?: unknown }) {
-    const cur = this.get<CalendarConfig, CalendarState>(userId, "calendar");
-    if (!cur) throw new HttpError(404, "not_found");
+    const cur = this.get<CalendarConfig, CalendarState>(userId, "calendar") ?? { config: { feeds: [], remind: 10, showNext: true }, state: { feeds: [], reminded: [] } };
     if (b.remind !== undefined) {
       const r = Number(b.remind);
       if (![0, 5, 10, 15, 30, 60].includes(r)) throw new HttpError(400, "remind");
@@ -695,7 +814,7 @@ export class Apps {
     if (!cur || !cur.config.remind) return;
     const reminded = new Set(cur.state.reminded ?? []);
     let changed = false;
-    for (const e of this.events.get(userId) ?? []) {
+    for (const e of this.calEvents(userId)) {
       if (e.start <= now || e.start - cur.config.remind * 60 > now || reminded.has(e.key)) continue;
       const mins = Math.max(1, Math.round((e.start - now) / 60));
       this.svc.sendCard(userId, {
@@ -867,7 +986,7 @@ export class Apps {
       { label: string; ends: number } | undefined;
     if (t) return { text: t.label, at: t.ends, left: true };
     const cal = this.get<CalendarConfig, CalendarState>(userId, "calendar");
-    const e = cal?.config.showNext ? (this.events.get(userId) ?? []).find((x) => x.start > now && x.start - now <= 12 * 3600) : undefined;
+    const e = cal?.config.showNext ? this.calEvents(userId).find((x) => x.start > now && x.start - now <= 12 * 3600) : undefined;
     if (e && e.start - now <= 15 * 60) return { text: e.title, at: e.start };
     const p = this.playing.get(userId);
     if (p && this.get<MusicConfig, Status>(userId, p.src)?.config.clock) return { text: p.artist ? `${p.title} · ${p.artist}` : p.title, at: now, kind: "music" };
@@ -909,6 +1028,7 @@ export class Apps {
     }
     await Promise.all(jobs);
     for (const [u, p] of [...this.playing]) if (p.src === "computer" && now - p.at > COMPUTER_STALE_SECS) this.setPlaying(u, "computer", null);
+    for (const [u, x] of [...this.pcEvents]) if (now - x.at > 6 * 3600) { this.pcEvents.delete(u); this.nextUsers.add(u); }
     const users = new Set<number>([...this.nextUsers, ...rows.map((r) => r.user_id),
       ...(this.db.prepare("SELECT DISTINCT user_id FROM timers").all() as { user_id: number }[]).map((r) => r.user_id)]);
     for (const r of rows) if (r.kind === "calendar") this.remindCalendar(r.user_id, this.now());

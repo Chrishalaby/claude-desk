@@ -72,62 +72,101 @@ for p in "$HOME"/Library/LaunchAgents/com.*.claude-desk.plist; do
   rm -f "$p"
 done
 
-music_mac() {
-  local plist="$HOME/Library/LaunchAgents/com.claude-desk.nowplaying.plist" py
-  py="$(command -v python3)"
-  mkdir -p "$HOME/Library/LaunchAgents"
-  cat > "$plist" <<PLIST
+fetch() {
+  if [ -n "$SRC" ] && [ -f "$SRC/$1" ]; then cp "$SRC/$1" "$DIR/$1"
+  else curl -fsSL "$HUB/client/$1" -o "$DIR/$1"; fi
+}
+
+agent_plist() {
+  cat > "$1" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.claude-desk.nowplaying</string>
-  <key>ProgramArguments</key><array><string>$py</string><string>$DIR/nowplaying.py</string></array>
+  <key>Label</key><string>$2</string>
+  <key>ProgramArguments</key><array>$3</array>
+  $4
   <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>ThrottleInterval</key><integer>30</integer>
   <key>ProcessType</key><string>Background</string>
   <key>StandardOutPath</key><string>/dev/null</string>
   <key>StandardErrorPath</key><string>/dev/null</string>
 </dict>
 </plist>
 PLIST
-  launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || true
-  launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load -w "$plist" 2>/dev/null || return 1
-  say "Now playing is on: what plays in Spotify or Apple Music shows on your desk."
-  say "The first time a song plays, macOS asks to let Python control the app. Click Allow."
+  launchctl bootout "gui/$(id -u)" "$1" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$1" 2>/dev/null || launchctl load -w "$1" 2>/dev/null
 }
 
-music_linux() {
+agent_mac() {
+  local la="$HOME/Library/LaunchAgents" old="$HOME/Library/LaunchAgents/com.claude-desk.nowplaying.plist"
+  mkdir -p "$la"
+  if [ -f "$old" ]; then launchctl bootout "gui/$(id -u)" "$old" 2>/dev/null || true; rm -f "$old" "$DIR/nowplaying.py"; fi
+  agent_plist "$la/com.claude-desk.agent.plist" com.claude-desk.agent \
+    "<string>$(command -v python3)</string><string>$DIR/agent.py</string>" \
+    "<key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer>" || return 1
+  say "Your computer now feeds the desk: what's playing (Spotify, Apple Music, YouTube and more in"
+  say "Chrome, Safari, Arc, Edge, Brave), unread counts from Dock apps, and when you're away."
+  say "macOS asks once per app to let Python read it (Spotify, Music, your browser). Click Allow."
+  if xcode-select -p >/dev/null 2>&1 && xcrun --find swiftc >/dev/null 2>&1 && fetch calendar.swift; then
+    cat > "$DIR/calendar-Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.claude-desk.calendar</string>
+<key>CFBundleName</key><string>Claude Desk Calendar</string>
+<key>NSCalendarsFullAccessUsageDescription</key><string>Shows your next meeting on your desk.</string>
+<key>NSCalendarsUsageDescription</key><string>Shows your next meeting on your desk.</string>
+</dict></plist>
+PLIST
+    say "Building the calendar reader (a few seconds)"
+    if xcrun swiftc -O -swift-version 5 -o "$DIR/claude-desk-calendar" "$DIR/calendar.swift" \
+         -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist -Xlinker "$DIR/calendar-Info.plist" >/dev/null 2>&1 \
+       && codesign --force -s - --identifier com.claude-desk.calendar "$DIR/claude-desk-calendar" >/dev/null 2>&1 \
+       && agent_plist "$la/com.claude-desk.calendar.plist" com.claude-desk.calendar \
+            "<string>$DIR/claude-desk-calendar</string><string>$DIR/calendar.json</string>" \
+            "<key>StartInterval</key><integer>300</integer>"; then
+      say "Calendar: macOS asks to let Claude Desk Calendar see your calendars. Click Allow."
+    else
+      say "Couldn't build the calendar reader; your desk can still use a calendar link (Apps → Calendar)."
+    fi
+  else
+    say "Calendar from this Mac needs the command line tools (xcode-select --install), then run this again."
+  fi
+}
+
+agent_linux() {
   command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1 || return 1
-  local unit="$HOME/.config/systemd/user/claude-desk-nowplaying.service"
-  mkdir -p "$(dirname "$unit")"
-  cat > "$unit" <<UNIT
+  local units="$HOME/.config/systemd/user"
+  mkdir -p "$units"
+  if [ -f "$units/claude-desk-nowplaying.service" ]; then
+    systemctl --user disable --now claude-desk-nowplaying.service >/dev/null 2>&1 || true
+    rm -f "$units/claude-desk-nowplaying.service" "$DIR/nowplaying.py"
+  fi
+  cat > "$units/claude-desk-agent.service" <<UNIT
 [Unit]
-Description=claude-desk now playing
+Description=claude-desk computer agent
 
 [Service]
-ExecStart=$(command -v python3) $DIR/nowplaying.py
+ExecStart=$(command -v python3) $DIR/agent.py
 Restart=always
 RestartSec=30
 
 [Install]
 WantedBy=default.target
 UNIT
-  systemctl --user daemon-reload && systemctl --user enable --now claude-desk-nowplaying.service >/dev/null 2>&1 || return 1
-  systemctl --user restart claude-desk-nowplaying.service >/dev/null 2>&1 || true
-  say "Now playing is on: what plays on this computer shows on your desk."
-  command -v playerctl >/dev/null 2>&1 || say "It needs playerctl to read the player (e.g. sudo apt install playerctl)."
+  systemctl --user daemon-reload && systemctl --user enable --now claude-desk-agent.service >/dev/null 2>&1 || return 1
+  systemctl --user restart claude-desk-agent.service >/dev/null 2>&1 || true
+  say "Your computer now feeds the desk: what's playing and when you're away."
+  command -v playerctl >/dev/null 2>&1 || say "Install playerctl so it can see your player (e.g. sudo apt install playerctl)."
+  command -v xprintidle >/dev/null 2>&1 || say "Install xprintidle for the away status (e.g. sudo apt install xprintidle)."
 }
 
-if [ "${CLAUDE_DESK_NO_MUSIC:-}" != "1" ]; then
-  if [ -n "$SRC" ] && [ -f "$SRC/nowplaying.py" ]; then cp "$SRC/nowplaying.py" "$DIR/nowplaying.py"
-  else curl -fsSL "$HUB/client/nowplaying.py" -o "$DIR/nowplaying.py" || true; fi
-  if [ -f "$DIR/nowplaying.py" ]; then
-    chmod 755 "$DIR/nowplaying.py"
+if [ "${CLAUDE_DESK_NO_AGENT:-${CLAUDE_DESK_NO_MUSIC:-}}" != "1" ]; then
+  if fetch agent.py; then
+    chmod 755 "$DIR/agent.py"
     case "$(uname -s)" in
-      Darwin) music_mac || say "Couldn't start now playing (launchctl refused). The hook still works." ;;
-      Linux) music_linux || say "Now playing needs a systemd user session; skipped. The hook still works." ;;
+      Darwin) agent_mac || say "Couldn't start the computer agent (launchctl refused). The hook still works." ;;
+      Linux) agent_linux || say "The computer agent needs a systemd user session; skipped. The hook still works." ;;
     esac
   fi
 fi

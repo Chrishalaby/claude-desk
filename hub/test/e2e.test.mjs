@@ -773,12 +773,13 @@ test("installers and static files", async () => {
     baked(ps.text, "install.ps1");
     assert.equal((await anon.call("GET", "/client/hook.py")).status, 200);
     assert.equal((await anon.call("GET", "/client/hook.ps1")).status, 200);
-    for (const f of ["/client/nowplaying.py", "/client/nowplaying.ps1"]) {
+    for (const f of ["/client/agent.py", "/client/agent.ps1"]) {
       const c = await anon.call("GET", f);
       assert.equal(c.status, 200, f);
-      assert.ok(c.text.includes("/api/nowplaying"), f);
+      assert.ok(c.text.includes("/api/computer"), f);
     }
-    assert.ok(sh.text.includes("nowplaying.py") && ps.text.includes("nowplaying.ps1"), "installers set up now playing");
+    assert.ok((await anon.call("GET", "/client/calendar.swift")).text.includes("EventKit"));
+    assert.ok(sh.text.includes("agent.py") && sh.text.includes("calendar.swift") && ps.text.includes("agent.ps1"), "installers set up the computer agent");
   } else {
     assert.equal(sh.status, 404);
   }
@@ -1232,6 +1233,54 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
   await np({ os: "windows", playing: false });
   await erin.call("PATCH", "/api/apps/music/computer", { cards: false });
 
+  const pcr = (b) => fetch(`${base}/api/computer`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${hookToken}` }, body: JSON.stringify({ os: "mac", playing: false, ...b }) })
+    .then((x) => x.json());
+  const cards = (src) => de.got.filter((x) => x.topic === "desk/esp-e0e001/card" && x.json?.src === src.toUpperCase());
+  await pcr({ badges: { Slack: 2, "App Store": 1, "\u200eWhatsApp": -1 } });
+  m = await de.waitFor((x) => x.topic === "desk/esp-e0e001/card" && x.json?.src === "SLACK", "slack badge card");
+  assert.deepEqual([m.json.title, m.json.color], ["2 unread", "purple"]);
+  await de.waitFor((x) => x.topic === "desk/esp-e0e001/card" && x.json?.src === "WHATSAPP" && x.json?.title === "Something new", "whatsapp dot card");
+  await pcr({ badges: { Slack: 3, "App Store": 1, WhatsApp: -1 } });
+  await de.quiet(80);
+  assert.equal(cards("App Store").length, 0, "App Store is muted by default");
+  assert.equal(cards("Slack").length, 1, "one card a minute per app");
+  clock += 61;
+  await pcr({ badges: { Slack: 5 } });
+  await de.waitFor(() => cards("Slack").length === 2 && cards("Slack")[1].json.title === "5 unread", "next slack card");
+  await pcr({ badges: { Slack: 4 } });
+  r = await erin.call("PATCH", "/api/apps/computer", { mute: { Slack: true } });
+  assert.deepEqual(r.body.apps.find((x) => x.app === "Slack"), { app: "Slack", count: 4, muted: true });
+  assert.deepEqual(r.body.apps.map((x) => x.app).sort(), ["App Store", "Slack", "WhatsApp"]);
+  clock += 61;
+  await pcr({ badges: { Slack: 9 } });
+  await de.quiet(80);
+  assert.equal(cards("Slack").length, 2, "muted apps send no cards");
+
+  const erinFor = async () => (await fred.call("GET", "/api/friends")).body.find((f) => f.username === "erin").presence;
+  assert.deepEqual(await erinFor(), { away: false, since: 0 });
+  await pcr({ away: true, idle: 900 });
+  assert.deepEqual(await erinFor(), { away: true, since: clock - 900 });
+  await erin.call("PATCH", "/api/apps/computer", { presence: false });
+  assert.equal(await erinFor(), null, "presence can be hidden");
+  await erin.call("PATCH", "/api/apps/computer", { presence: true });
+  await pcr({ away: false });
+  clock += 301;
+  assert.deepEqual(await erinFor(), { away: true, since: clock - 301 }, "a computer that stopped reporting counts as away");
+
+  await pcr({ calendar: "ok", events: [{ t: "Design review", s: clock + 600, e: clock + 2400, l: "Room 2" }, { t: "bad", s: "x" }] });
+  r = await erin.call("GET", "/api/apps");
+  assert.equal(r.body.calendar.fromComputer, 1);
+  assert.deepEqual(r.body.calendar.upcoming, [{ title: "Design review", start: clock + 600 }]);
+  assert.equal(r.body.computer.cal, "ok");
+  await de.waitFor((x) => x.topic === "desk/esp-e0e001/next" && x.json?.text === "Design review" && x.json?.at === clock + 600, "next meeting from the computer");
+  await hub.apps.tick();
+  m = await de.waitFor((x) => x.topic === "desk/esp-e0e001/card" && x.json?.src === "CALENDAR" && x.json?.title === "Design review", "meeting reminder");
+  assert.match(m.json.text, /^in 10 min · \d\d:\d\d · Room 2$/);
+  await erin.call("PATCH", "/api/apps/computer", { calendar: false });
+  assert.deepEqual((await erin.call("GET", "/api/apps")).body.calendar.upcoming, [], "computer calendar can be turned off");
+  await erin.call("PATCH", "/api/apps/computer", { calendar: true });
+  await pcr({ calendar: "ok", events: [] });
+
   const nowMin = Math.floor((clock % 86400) / 60);
   const nextMin = (nowMin + 1) % 1440;
   assert.equal((await erin.call("POST", "/api/reminders", { kind: "at", label: "Meds", at: nextMin, days: 0 })).body.error, "days");
@@ -1273,12 +1322,12 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
   fxSlackTs = String(clock + 20) + ".000100";
   clock += 61;
   await hub.apps.tick();
-  m = await de.waitFor((x) => x.topic === "desk/esp-e0e001/card" && x.json?.src === "SLACK", "slack card");
+  m = await de.waitFor((x) => x.topic === "desk/esp-e0e001/card" && x.json?.src === "SLACK" && x.json?.title?.includes(" in #"), "slack card");
   assert.deepEqual([m.json.title, m.json.text], ["sam in #general", "hey @erin can you look at the PR?"]);
   clock += 61;
   await hub.apps.tick();
   await de.quiet(80);
-  assert.equal(de.got.filter((x) => x.topic.endsWith("/card") && x.json?.src === "SLACK").length, 1, "no repeats, own messages ignored");
+  assert.equal(de.got.filter((x) => x.topic.endsWith("/card") && x.json?.src === "SLACK" && x.json?.title?.includes(" in #")).length, 1, "no repeats, own messages ignored");
 
   assert.equal((await erin.call("PUT", "/api/apps/email", { host: "bad host!", user: "e@x.io", pass: "p" })).body.error, "email_host");
   assert.equal((await erin.call("PUT", "/api/apps/email", { host: "127.0.0.1", user: "e@x.io", pass: "app-pass" })).body.error, "email_unreachable");

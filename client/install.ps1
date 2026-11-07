@@ -53,23 +53,27 @@ foreach ($ev in $events.Keys) {
 }
 [IO.File]::WriteAllText($Settings, ($cfg | ConvertTo-Json -Depth 50), $Utf8)
 
-if ($env:CLAUDE_DESK_NO_MUSIC -ne '1') {
+$NoAgent = if ($env:CLAUDE_DESK_NO_AGENT) { $env:CLAUDE_DESK_NO_AGENT } else { $env:CLAUDE_DESK_NO_MUSIC }
+if ($NoAgent -ne '1') {
   try {
-    $NpPath = Join-Path $Dir 'nowplaying.ps1'
-    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*nowplaying.ps1*' } |
+    $AgentPath = Join-Path $Dir 'agent.ps1'
+    $Startup = [Environment]::GetFolderPath('Startup')
+    Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match 'claude-desk.(agent|nowplaying)\.ps1' } |
       ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Invoke-WebRequest -UseBasicParsing -Uri "$Hub/client/nowplaying.ps1" -OutFile $NpPath
+    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $Startup 'claude-desk-nowplaying.lnk'), (Join-Path $Dir 'nowplaying.ps1')
+    Invoke-WebRequest -UseBasicParsing -Uri "$Hub/client/agent.ps1" -OutFile $AgentPath
     $Conhost = Join-Path $env:WINDIR 'System32\conhost.exe'
-    $NpArgs = '--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $NpPath + '"'
-    $Lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path ([Environment]::GetFolderPath('Startup')) 'claude-desk-nowplaying.lnk'))
+    $AgentArgs = '--headless powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $AgentPath + '"'
+    $Lnk = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $Startup 'claude-desk-agent.lnk'))
     $Lnk.TargetPath = $Conhost
-    $Lnk.Arguments = $NpArgs
+    $Lnk.Arguments = $AgentArgs
     $Lnk.WindowStyle = 7
     $Lnk.Save()
-    Start-Process -FilePath $Conhost -ArgumentList $NpArgs -WindowStyle Hidden
-    Say 'Now playing is on: what plays on this PC (Spotify, browsers, other media apps) shows on your desk.'
+    Start-Process -FilePath $Conhost -ArgumentList $AgentArgs -WindowStyle Hidden
+    Say "Your PC now feeds the desk: what's playing (any app or browser), when you're away, and your"
+    Say 'Outlook calendar while Outlook is open.'
   } catch {
-    Say "Couldn't set up now playing ($($_.Exception.Message)). The hook still works."
+    Say "Couldn't set up the computer agent ($($_.Exception.Message)). The hook still works."
   }
 }
 

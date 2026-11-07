@@ -84,19 +84,28 @@ What the installer does (safe to re-run):
 - adds hooks for `UserPromptSubmit`, `PermissionRequest`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd` to
   `~/.claude/settings.json` (backing it up first, keeping your other hooks, replacing older claude-desk entries);
 - sends a test event — the desk shows **DONE · claude-desk** for a few seconds;
-- starts a small background helper that shows the song you're playing on the desk (title and artist only): on a Mac
-  from the Spotify and Apple Music apps (macOS asks once to let Python control them: click Allow), on Windows from any
-  app or browser, on Linux through `playerctl`. Turn it off under **Apps → Now playing**, or install with
-  `CLAUDE_DESK_NO_MUSIC=1` to skip it.
+- starts a small background agent so your computer feeds the desk (turn each part on or off under **Apps → Your
+  computer**; install with `CLAUDE_DESK_NO_AGENT=1` to skip it):
+  - **what's playing** (title and artist only): on a Mac the Spotify and Apple Music apps and YouTube, YouTube Music,
+    Spotify, SoundCloud and other media sites in Chrome, Safari, Arc, Edge or Brave (macOS asks once per app to let
+    Python read it: click Allow; Firefox isn't readable); on Windows any app or browser; on Linux through `playerctl`;
+  - **unread counts** (Mac): the red badges on Dock apps (Slack, Mail, Messages, WhatsApp, Discord, Teams…) become a
+    card when they go up; no permission needed;
+  - **calendar**: on a Mac every calendar added to the Calendar app (iCloud, Google, Outlook…), through a small reader
+    the installer compiles (needs the command line tools; macOS asks once to let *Claude Desk Calendar* see your
+    calendars); on Windows the classic Outlook calendar while Outlook is open;
+  - **away status**: after 10 minutes without keyboard or mouse (or when the computer sleeps) your friends see you're
+    away (Linux needs `xprintidle`).
 
 Then **restart open Claude Code sessions**. The hooks run asynchronously with a 2-second timeout and never print, so they
 can't slow Claude down. Only the event name, session id, project folder name, tool name and a short detail (command /
 file name, ≤60 chars) leave your machine.
 
 To remove: delete the claude-desk entries from `~/.claude/settings.json` (or restore the `.bak-claude-desk-*` backup) and
-the `~/.claude-desk` folder. Stop the helper first: macOS `launchctl bootout gui/$(id -u)
-~/Library/LaunchAgents/com.claude-desk.nowplaying.plist` and delete that file; Linux `systemctl --user disable --now
-claude-desk-nowplaying`; Windows delete `claude-desk-nowplaying` from the Startup folder (`shell:startup`) and sign out.
+the `~/.claude-desk` folder. Stop the agent first: macOS `launchctl bootout gui/$(id -u)
+~/Library/LaunchAgents/com.claude-desk.agent.plist` (and `com.claude-desk.calendar.plist`) and delete those files;
+Linux `systemctl --user disable --now claude-desk-agent`; Windows delete `claude-desk-agent` from the Startup folder
+(`shell:startup`) and sign out.
 
 
 ## 6. More apps (optional)
