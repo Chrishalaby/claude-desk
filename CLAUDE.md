@@ -75,4 +75,6 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 
 ## Conventions
 - Owner prefers terse answers. Keep personal data (locations, names) out of the public repo.
+- Push finished work (signed commits, tests green) straight to `main`; never ask whether to merge. Then watch the
+  Railway deploy and verify the live hub.
 - Keep `docs/PROTOCOL.md` the single source of truth; update it with any protocol change and keep `npm test` green.
