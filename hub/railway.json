@@ -3,7 +3,7 @@
   "build": {
     "builder": "DOCKERFILE",
     "dockerfilePath": "hub/Dockerfile",
-    "watchPatterns": ["hub/**", "client/**"]
+    "watchPatterns": ["hub/**", "client/**", "firmware/dist/**"]
   },
   "deploy": {
     "numReplicas": 1,

@@ -13,6 +13,20 @@ import { configFromEnv } from "../dist/config.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cdesk-hub-"));
+const fwDir = fs.mkdtempSync(path.join(os.tmpdir(), "cdesk-fw-"));
+const packsDir = fs.mkdtempSync(path.join(os.tmpdir(), "cdesk-packs-"));
+const md5 = (b) => crypto.createHash("md5").update(b).digest("hex");
+const FW_BIN = crypto.randomBytes(50_000);
+fs.writeFileSync(path.join(fwDir, "claude-desk.bin"), FW_BIN);
+fs.writeFileSync(path.join(fwDir, "version.txt"), "1.4.0\n");
+const PACK_BIN = Buffer.concat([Buffer.from("CDPK\x01\x00\x00\x00", "latin1"), crypto.randomBytes(1000)]);
+const PACK_PNG = Buffer.from("89504e470d0a1a0a", "hex");
+fs.writeFileSync(path.join(packsDir, "testpack.bin"), PACK_BIN);
+fs.writeFileSync(path.join(packsDir, "testpack.png"), PACK_PNG);
+fs.writeFileSync(path.join(packsDir, "index.json"), JSON.stringify({ packs: [
+  { id: "testpack", name: "Test Pack", license: "MIT", size: 1, md5: "stale" },
+  { id: "ghost", name: "No file", license: "", size: 1, md5: "x" },
+] }));
 let clock = Math.floor(Date.now() / 1000);
 const TZ = "Asia/Beirut";
 const hhmm = (t) => new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(t * 1000));
@@ -24,6 +38,7 @@ function makeConfig() {
     publicUrl: null, mqttPublicHost: null, mqttPublicPort: null,
     inviteCode: "letmein", sessionSecret: null, tlsCert: null, tlsKey: null,
     clientDir: path.join(here, "..", "..", "client"),
+    firmwareDir: fwDir, packsDir,
     now: () => clock, log: false,
   };
 }
@@ -103,7 +118,7 @@ before(startIt);
 after(async () => {
   for (const c of clients) c.end(true);
   await hub?.close();
-  fs.rmSync(dataDir, { recursive: true, force: true });
+  for (const d of [dataDir, fwDir, packsDir]) fs.rmSync(d, { recursive: true, force: true });
 });
 
 // shared state across sequential tests
@@ -298,6 +313,7 @@ test("ACL: own namespace only; status is stored", async () => {
 
   await a.publishAsync(`desk/${devA.chip}/up/status`, JSON.stringify({ fw: "1.3.2", ip: "192.168.1.107", rssi: -40, heap: 23000, up: 3600 }), { qos: 1 });
   await sleep(100);
+  assert.equal(a.got.filter((m) => m.topic.includes("/up/")).length, 0, "up/ messages are not echoed to the device");
   const r = await alice.call("GET", "/api/devices");
   assert.equal(r.body.length, 1);
   assert.deepEqual([r.body[0].fw, r.body[0].ip, r.body[0].rssi, r.body[0].online], ["1.3.2", "192.168.1.107", -40, true]);
@@ -478,6 +494,112 @@ test("messages: text + reactions, retained delivery, partner-only rule, limits, 
   assert.equal(r.body[0].mine, true);
 });
 
+test("remote settings: PUT -> retained set with increasing rev, up/settings reported", async () => {
+  const a = devA.client;
+  const url = `/api/devices/${devA.chip}/settings`;
+  let r = await alice.call("GET", url);
+  assert.equal(r.status, 200, r.text);
+  assert.equal(r.body.settings, null);
+  assert.deepEqual(r.body.packs.map((p) => [p.id, p.name, p.md5, p.size]), [["testpack", "Test Pack", md5(PACK_BIN), PACK_BIN.length]]);
+  assert.equal(r.body.firmware.version, "1.4.0");
+
+  r = await alice.call("PUT", url, { layout: 0, soft: 1, casper: 0, pack: "testpack", bday: 60, bnight: 5, nstart: 23, nend: 6,
+    lat: 33.97123456, lon: 35.62, place: "Naccache, Lebanon" });
+  assert.equal(r.status, 200, r.text);
+  let m = await a.waitFor((x) => x.topic === `desk/${devA.chip}/set`, "set");
+  const rev1 = m.json.rev;
+  assert.ok(rev1 >= clock);
+  assert.deepEqual(m.json, { rev: rev1, layout: 0, soft: 1, casper: 0, pack: "testpack", bday: 60, bnight: 5, nstart: 23, nend: 6,
+    lat: 33.9712, lon: 35.62, packUrl: `${base}/packs/testpack.bin`, packMd5: md5(PACK_BIN) });
+  assert.equal(m.json.place, undefined, "place stays on the hub");
+
+  // partial update, same second: rev still increases, other keys kept, pixel has no packUrl
+  r = await alice.call("PUT", url, { bday: 70, pack: "pixel" });
+  m = await a.waitFor((x) => x.topic === `desk/${devA.chip}/set`, "set 2");
+  assert.ok(m.json.rev > rev1);
+  assert.deepEqual([m.json.bday, m.json.layout, m.json.pack, m.json.packUrl, m.json.lat], [70, 0, "pixel", undefined, 33.9712]);
+  devA.rev = m.json.rev;
+
+  for (const bad of [{ bday: 101 }, { nstart: 24 }, { layout: "x" }, { pack: "nope" }, { lat: 95, lon: 0 }, { lat: 1 }, {}]) {
+    assert.equal((await alice.call("PUT", url, bad)).status, 400, JSON.stringify(bad));
+  }
+  assert.equal((await bob.call("PUT", url, { bday: 1 })).status, 404);
+  assert.equal((await bob.call("GET", url)).status, 404);
+
+  // the desk reports what it runs
+  await a.publishAsync(`desk/${devA.chip}/up/settings`, JSON.stringify({ rev: devA.rev, layout: 0, soft: 1, casper: 0, pack: "pixel",
+    bday: 70, bnight: 5, nstart: 23, nend: 6, lat: 33.9712, lon: 35.62, packs: ["pixel", "testpack"], junk: "x".repeat(50) }), { qos: 1 });
+  await sleep(100);
+  r = await alice.call("GET", url);
+  assert.equal(r.body.place, "Naccache, Lebanon");
+  assert.equal(r.body.settings.rev, devA.rev);
+  assert.deepEqual(r.body.reported.packs, ["pixel", "testpack"]);
+  assert.equal(r.body.reported.rev, devA.rev);
+  assert.equal(r.body.reported.junk, undefined);
+  assert.ok(r.body.reportedAt);
+  assert.equal(r.body.device.online, true);
+});
+
+test("firmware + packs served; ota/reboot cmd only to the owner's device", async () => {
+  let r = await anon.call("GET", "/firmware/latest.json");
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { version: "1.4.0", url: `${base}/firmware/claude-desk.bin`, md5: md5(FW_BIN), size: FW_BIN.length });
+  let res = await fetch(base + "/firmware/claude-desk.bin");
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("x-md5"), md5(FW_BIN));
+  assert.equal(md5(Buffer.from(await res.arrayBuffer())), md5(FW_BIN));
+
+  r = await anon.call("GET", "/packs/index.json");
+  assert.deepEqual(r.body, { packs: [{ id: "testpack", name: "Test Pack", license: "MIT", size: PACK_BIN.length, md5: md5(PACK_BIN) }] });
+  res = await fetch(base + "/packs/testpack.bin");
+  assert.equal(res.status, 200);
+  assert.equal(md5(Buffer.from(await res.arrayBuffer())), md5(PACK_BIN));
+  res = await fetch(base + "/packs/testpack.png");
+  assert.equal(res.headers.get("content-type"), "image/png");
+  assert.equal((await fetch(base + "/packs/ghost.bin")).status, 404);
+  assert.equal((await fetch(base + "/packs/..%2Findex.bin")).status, 404);
+
+  // the committed packs in hub/packs (if generated) match their index
+  const real = path.join(here, "..", "packs");
+  if (fs.existsSync(path.join(real, "index.json"))) {
+    for (const p of JSON.parse(fs.readFileSync(path.join(real, "index.json"), "utf8")).packs) {
+      const b = fs.readFileSync(path.join(real, p.id + ".bin"));
+      assert.deepEqual([p.id, b.length, md5(b)], [p.id, p.size, p.md5]);
+      assert.equal(b.subarray(0, 4).toString(), "CDPK");
+    }
+  }
+
+  // ota: not for other people's desks; delivered (not retained) to the owner's desk only
+  const bBefore = devB.client.got.length;
+  assert.equal((await bob.call("POST", `/api/devices/${devA.chip}/ota`)).status, 404);
+  r = await alice.call("POST", `/api/devices/${devA.chip}/ota`);
+  assert.equal(r.status, 200, r.text);
+  const m = await devA.client.waitFor((x) => x.topic === `desk/${devA.chip}/cmd`, "ota cmd");
+  assert.deepEqual(m.json, { cmd: "ota", url: `${base}/firmware/claude-desk.bin`, md5: md5(FW_BIN), version: "1.4.0" });
+  assert.equal(m.retain, false);
+  r = await alice.call("POST", `/api/devices/${devA.chip}/reboot`);
+  assert.deepEqual((await devA.client.waitFor((x) => x.topic === `desk/${devA.chip}/cmd`, "reboot cmd")).json, { cmd: "reboot" });
+  await sleep(100);
+  assert.equal(devB.client.got.slice(bBefore).filter((x) => x.topic.endsWith("/cmd")).length, 0);
+  // a fresh connection doesn't get an old command
+  const probe = await device(devB.chip, devB.secret);
+  await probe.subscribeAsync(`desk/${devB.chip}/#`, { qos: 1 });
+  await probe.quiet(200);
+  assert.equal(probe.got.filter((x) => x.topic.endsWith("/cmd")).length, 0);
+  devB.client = probe;
+
+  // result comes back on up/status
+  await devA.client.publishAsync(`desk/${devA.chip}/up/status`, JSON.stringify({ fw: "1.4.0", ip: "192.168.1.107", ota: "ok" }), { qos: 1 });
+  await sleep(100);
+  r = await alice.call("GET", `/api/devices/${devA.chip}/settings`);
+  assert.deepEqual([r.body.device.ota, r.body.device.fw], ["ok", "1.4.0"]);
+
+  // offline desk -> 409
+  devB.client.end(true);
+  await sleep(100);
+  assert.equal((await bob.call("POST", `/api/devices/${devB.chip}/reboot`)).status, 409);
+});
+
 test("hub restart keeps retained cfg/claude/msg, cert and sessions", async () => {
   const fp = hub.tls.fingerprint;
   const tok = (await alice.call("GET", "/api/token")).body.token;
@@ -497,6 +619,8 @@ test("hub restart keeps retained cfg/claude/msg, cert and sessions", async () =>
   assert.deepEqual([cl.json.s, cl.json.p, cl.json.d], ["needs", "restart", "Allow Bash: ls"]);
   const msg = await a.waitFor((m) => m.topic === `desk/${devA.chip}/msg`, "msg after restart");
   assert.deepEqual([msg.json.from, msg.json.reaction], ["bob", "kiss"]);
+  const set = await a.waitFor((m) => m.topic === `desk/${devA.chip}/set`, "set after restart");
+  assert.deepEqual([set.json.rev, set.json.bday], [devA.rev, 70]);
   devA.client = a;
 });
 
@@ -547,6 +671,6 @@ test("forget device: kicked, retained cleared, next hello re-creates it", async 
   const c2 = await a2.waitFor((m) => m.topic === `desk/${devA.chip}/cfg`, "new cfg");
   assert.deepEqual(c2.json, { paired: false, pairCode: h.body.pairCode, hub: base });
   await a2.quiet(200);
-  assert.equal(a2.got.filter((m) => m.topic.endsWith("/claude") || m.topic.endsWith("/msg")).filter((m) => m.raw).length, 0,
-    "no stale claude/msg for an unpaired device");
+  assert.equal(a2.got.filter((m) => /\/(claude|msg|set)$/.test(m.topic)).filter((m) => m.raw).length, 0,
+    "no stale claude/msg/set for an unpaired device");
 });

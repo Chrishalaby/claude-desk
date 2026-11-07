@@ -29,8 +29,10 @@ void uiCasperZ(int casperX, uint32_t t);   // rising z's above sleeping Casper  
 // hub features
 extern char uiUnread[24];             // non-empty: show an envelope + sender on the clock
 extern bool uiLocationSet;
-extern uint8_t uiEmojiSet;           // 0 pixel (default), 1 Fluent, 2 Twemoji, 3 Noto
-const char *uiEmojiSetName(int i);   // nullptr past the end            // false: weather area asks to set a location
+// reaction images: a downloaded pack when set (main.cpp), else the built-in pixel set
+struct EmojiHdr { uint8_t w, h; uint16_t pal[16]; uint32_t off; };
+extern bool (*uiPackEntry)(int idx, bool small, EmojiHdr &h);   // small: heart_s (idx 5) / wave_s (idx 0)
+extern void (*uiPackRead)(uint32_t off, uint8_t *buf, int n);            // false: weather area asks to set a location
 void uiPair(const char *code, const char *where);
 void uiMessage2(const char *from, bool partner, const char *text, const char *when);
 int  uiReactionIndex(const char *name);   // -1 if unknown

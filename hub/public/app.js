@@ -315,39 +315,177 @@ async function viewDevices() {
     class: "card", onsubmit: async (e) => {
       e.preventDefault();
       try {
-        await api("POST", "/api/devices/pair", { code: code.value.replace(/\s/g, ""), name: name.value.trim() || "Desk" });
-        toast("Paired! Your desk will switch over in a moment."); viewDevices();
+        const d = await api("POST", "/api/devices/pair", { code: code.value.replace(/\s/g, ""), name: name.value.trim() || "Desk" });
+        toast("Paired! Your desk will switch over in a moment."); go("#/device/" + d.chip);
       } catch (ex) { fail(ex); }
     },
   }, h("label", { class: "f", style: "margin-top:0" }, "Pair code shown on the device"), code,
     h("label", { class: "f" }, "Name"), name, h("button", { class: "btn primary block", type: "submit" }, "Pair device"));
 
-  const rename = (d) => async () => {
-    const n = prompt("Device name", d.name || "Desk");
-    if (n == null) return;
-    try { await api("PATCH", "/api/devices/" + encodeURIComponent(d.chip), { name: n.trim() || "Desk" }); viewDevices(); } catch (e) { fail(e); }
-  };
-  const forget = (d) => async () => {
-    if (!confirm(`Forget "${d.name || d.chip}"? It will show a new pair code and needs to be paired again.`)) return;
-    try { await api("DELETE", "/api/devices/" + encodeURIComponent(d.chip)); toast("Forgotten"); viewDevices(); } catch (e) { fail(e); }
-  };
   const list = state.devices.length
-    ? h("div", { class: "list" }, state.devices.map((d) => h("div", { class: "row", style: "align-items:flex-start" },
+    ? h("div", { class: "list" }, state.devices.map((d) => h("div", { class: "row tap", onclick: () => go("#/device/" + d.chip) },
         h("div", { class: "grow" },
           h("div", { class: "title" }, h("span", { class: "dot" + (d.online ? " on" : "") }), d.name || "Desk"),
-          h("div", { class: "kv" },
-            "status", h("b", {}, d.online ? "online" : "last seen " + ago(d.lastSeen)),
-            "chip", h("b", {}, d.chip),
-            d.fw ? ["firmware", h("b", {}, d.fw)] : null,
-            d.ip ? ["ip", h("b", {}, d.ip)] : null,
-            d.rssi != null ? ["wi-fi", h("b", {}, d.rssi + " dBm")] : null)),
-        h("div", { class: "actions", style: "flex-direction:column" },
-          h("button", { class: "btn small", onclick: rename(d) }, "Rename"),
-          h("button", { class: "btn small ghost danger", onclick: forget(d) }, "Forget")))))
+          h("div", { class: "sub" }, [d.online ? "online" : "last seen " + ago(d.lastSeen), d.fw ? "fw " + d.fw : null].filter(Boolean).join(" · "))),
+        h("span", { class: "chev" }, "›"))))
     : h("div", { class: "card empty" }, "No devices yet.");
-  fill(main, h("h2", {}, "Pair a desk"), pair,
-    h("p", { class: "hint" }, "Power on your GeekMagic with the claude-desk firmware. It shows a 6-digit code until it's paired."),
-    h("h2", {}, "Your devices"), list);
+  const pairBlock = [h("h2", {}, "Pair a desk"), pair,
+    h("p", { class: "hint" }, "Power on your GeekMagic with the claude-desk firmware. It shows a 6-digit code until it's paired.")];
+  fill(main, state.devices.length ? [h("h2", {}, "Your desks"), list, pairBlock] : [pairBlock, h("h2", {}, "Your desks"), list]);
+}
+
+// ------------------------------------------------------------------ one desk: status + remote settings
+const DEFAULT_SETTINGS = { layout: 1, soft: 0, casper: 1, pack: "pixel", bday: 25, bnight: 10, nstart: 22, nend: 7 };
+const hourLabel = (n) => String(n).padStart(2, "0") + ":00";
+
+async function viewDevice(chip) {
+  const enc = encodeURIComponent(chip);
+  shell("Desk", h("div", { class: "empty" }, "Loading…"), { back: "#/devices" });
+  let data;
+  try { data = await api("GET", `/api/devices/${enc}/settings`); }
+  catch (e) { if (e.status === 404) { toast("That desk isn't yours (or was forgotten).", true); return go("#/devices"); } throw e; }
+
+  const v = { ...DEFAULT_SETTINGS, ...(data.reported || {}), ...(data.settings || {}) };
+  let place = data.place || null, locChanged = false;
+  const main = shell(data.device.name || "Desk", [], { back: "#/devices" });
+
+  // ---- status card (refreshed by polling, form below is left alone)
+  const status = h("div", { class: "card" });
+  function paintStatus() {
+    const d = data.device, fw = data.firmware;
+    const rep = data.reported, want = data.settings;
+    const sync = !want ? null
+      : rep && rep.rev >= want.rev ? h("span", { class: "ok" }, "✓ Desk is using your latest settings")
+      : h("span", { class: "warn" }, d.online ? "Sending settings to the desk…" : "Settings will apply when the desk comes online");
+    const canUpdate = fw && d.fw && fw.version !== d.fw;
+    const otaLine = d.ota ? `Last update: ${d.ota}${d.otaAt ? " (" + ago(d.otaAt) + ")" : ""}` : null;
+    fill(status,
+      h("div", { class: "title" }, h("span", { class: "dot" + (d.online ? " on" : "") }), d.online ? "Online" : "Offline · last seen " + ago(d.lastSeen)),
+      h("div", { class: "kv" },
+        "firmware", h("b", {}, (d.fw || "?") + (fw ? (fw.version === d.fw ? " (latest)" : ` → ${fw.version} available`) : "")),
+        d.ip ? ["ip", h("b", {}, d.ip)] : null,
+        d.rssi != null ? ["wi-fi", h("b", {}, d.rssi + " dBm")] : null,
+        "chip", h("b", {}, d.chip),
+        rep && rep.packs ? ["packs", h("b", {}, rep.packs.join(", "))] : null),
+      sync ? h("p", { class: "hint", style: "margin:10px 0 0" }, sync) : null,
+      otaLine ? h("p", { class: "hint", style: "margin:6px 0 0" }, otaLine) : null,
+      h("div", { class: "actions", style: "margin-top:12px" },
+        canUpdate ? h("button", { class: "btn small primary", onclick: () => command("ota", `Update to ${fw.version}? The desk restarts when it's done (about a minute).`) }, "Update firmware") : null,
+        h("button", { class: "btn small", onclick: () => command("reboot", "Restart the desk?") }, "Restart desk"),
+        h("button", { class: "btn small", onclick: rename }, "Rename"),
+        h("button", { class: "btn small ghost danger", onclick: forget }, "Forget")));
+  }
+  async function command(cmd, question) {
+    if (!confirm(question)) return;
+    try { await api("POST", `/api/devices/${enc}/${cmd}`); toast(cmd === "ota" ? "Update sent. Keep the desk powered." : "Restarting…"); await refresh(); }
+    catch (e) { fail(e.code === "offline" ? new Error("The desk is offline.") : e); }
+  }
+  async function rename() {
+    const n = prompt("Desk name", data.device.name || "Desk");
+    if (n == null) return;
+    try { await api("PATCH", `/api/devices/${enc}`, { name: n.trim() || "Desk" }); await refresh(); document.querySelector("header h1").textContent = data.device.name; }
+    catch (e) { fail(e); }
+  }
+  async function forget() {
+    if (!confirm(`Forget "${data.device.name || chip}"? It will show a new pair code and needs to be paired again.`)) return;
+    try { await api("DELETE", `/api/devices/${enc}`); toast("Forgotten"); go("#/devices"); } catch (e) { fail(e); }
+  }
+  async function refresh() { data = await api("GET", `/api/devices/${enc}/settings`); paintStatus(); }
+  paintStatus();
+
+  // ---- settings form
+  const seg = (key, options) => {
+    const el = h("div", { class: "seg seg-" + options.length });
+    const paint = () => fill(el, options.map(([val, label]) =>
+      h("button", { type: "button", class: v[key] === val ? "on" : "", onclick: () => { v[key] = val; paint(); } }, label)));
+    paint();
+    return el;
+  };
+  const slider = (key) => {
+    const out = h("span", { class: "val" }, v[key] + "%");
+    const input = h("input", { type: "range", min: 0, max: 100, step: 1, value: v[key] });
+    input.addEventListener("input", () => { v[key] = Number(input.value); out.textContent = input.value + "%"; });
+    return h("div", { class: "slider" }, input, out);
+  };
+  const hours = (key) => {
+    const sel = h("select", {}, Array.from({ length: 24 }, (_, i) => h("option", { value: i, selected: v[key] === i }, hourLabel(i))));
+    sel.addEventListener("change", () => { v[key] = Number(sel.value); });
+    return sel;
+  };
+
+  const installed = (data.reported && data.reported.packs) || ["pixel"];
+  const packList = [{ id: "pixel", name: "Pixel", license: "Built in", preview: "/packs/pixel.png" }, ...data.packs];
+  const packsEl = h("div", { class: "packs" });
+  const paintPacks = () => fill(packsEl, packList.map((p) => h("button", {
+    type: "button", class: "pack" + (v.pack === p.id ? " on" : ""), onclick: () => { v.pack = p.id; paintPacks(); },
+  },
+    h("div", { class: "pack-head" }, h("span", { class: "pack-name" }, p.name),
+      installed.includes(p.id) ? h("span", { class: "tag" }, "on desk") : p.size ? h("span", { class: "tag" }, Math.round(p.size / 1024) + " KB") : null),
+    h("img", { src: p.preview, alt: "", loading: "lazy", onerror: (e) => e.target.remove() }),
+    p.license ? h("div", { class: "pack-lic" }, p.license) : null)));
+  paintPacks();
+
+  // location: Open-Meteo geocoding, called from the browser
+  const placeEl = h("div", { class: "place" });
+  const paintPlace = () => fill(placeEl, h("span", { class: "pin" }, "📍"),
+    place || (v.lat != null && v.lon != null && (v.lat || v.lon) ? `${v.lat}, ${v.lon}` : "Not set — weather needs a location"));
+  paintPlace();
+  const q = h("input", { type: "search", placeholder: "Search a city", autocomplete: "off", enterkeyhint: "search" });
+  const results = h("div", { class: "list results" });
+  results.style.display = "none";
+  async function search() {
+    const name = q.value.trim();
+    if (name.length < 2) return;
+    try {
+      const r = await fetch("https://geocoding-api.open-meteo.com/v1/search?count=5&language=en&format=json&name=" + encodeURIComponent(name));
+      const j = await r.json();
+      const list = j.results || [];
+      results.style.display = "";
+      fill(results, list.length ? list.map((c) => {
+        const label = [c.name, c.admin1, c.country].filter(Boolean).filter((x, i, a) => a.indexOf(x) === i).join(", ");
+        return h("div", { class: "row tap", onclick: () => {
+          v.lat = Math.round(c.latitude * 1e4) / 1e4; v.lon = Math.round(c.longitude * 1e4) / 1e4; place = label; locChanged = true;
+          results.style.display = "none"; q.value = ""; paintPlace();
+        } }, h("div", { class: "grow" }, h("div", { class: "title" }, label),
+          h("div", { class: "sub" }, `${c.latitude.toFixed(2)}, ${c.longitude.toFixed(2)}`)));
+      }) : h("div", { class: "empty" }, "No places found."));
+    } catch { toast("City search is unavailable right now.", true); }
+  }
+  q.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); search(); } });
+
+  const save = h("button", { class: "btn primary block", type: "submit" }, "Save to desk");
+  const form = h("form", {
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const body = { layout: v.layout, soft: v.soft, casper: v.casper, pack: v.pack, bday: v.bday, bnight: v.bnight, nstart: v.nstart, nend: v.nend };
+      if (locChanged) Object.assign(body, { lat: v.lat, lon: v.lon, place });
+      save.disabled = true;
+      try { data = await api("PUT", `/api/devices/${enc}/settings`, body); locChanged = false; paintStatus(); toast("Saved — your desk updates in a few seconds"); }
+      catch (ex) { fail(ex); }
+      finally { save.disabled = false; }
+    },
+  },
+    h("h2", {}, "Look"),
+    h("div", { class: "card" },
+      h("label", { class: "f", style: "margin-top:0" }, "Layout"), seg("layout", [[1, "B · tall clock"], [0, "A · clean"]]),
+      h("label", { class: "f" }, "Colours"), seg("soft", [[0, "Vivid"], [1, "Soft"]]),
+      h("label", { class: "f" }, "Casper"), seg("casper", [[1, "On"], [0, "Off"]])),
+    h("h2", {}, "Reaction style"), packsEl,
+    h("h2", {}, "Brightness"),
+    h("div", { class: "card" },
+      h("label", { class: "f", style: "margin-top:0" }, "Day"), slider("bday"),
+      h("label", { class: "f" }, "Night"), slider("bnight"),
+      h("div", { class: "two" },
+        h("div", {}, h("label", { class: "f" }, "Night starts"), hours("nstart")),
+        h("div", {}, h("label", { class: "f" }, "Night ends"), hours("nend")))),
+    h("h2", {}, "Location (weather)"),
+    h("div", { class: "card" }, placeEl,
+      h("div", { class: "inline", style: "margin-top:10px" }, q, h("button", { class: "btn", type: "button", onclick: search }, "Search")),
+      results),
+    save);
+
+  fill(main, h("h2", {}, "Status"), status, form);
+  state.poll = setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 5000);
 }
 
 // ------------------------------------------------------------------ Claude Code
@@ -436,6 +574,8 @@ async function render() {
     if (!state.friends.length && hash !== "#/friends") loadFriends().catch(() => {});
     const chat = hash.match(/^#\/chat\/([a-z0-9_]{1,20})$/);
     if (chat) return await viewChat(chat[1]);
+    const dev = hash.match(/^#\/device\/(esp-[0-9a-f]{1,8})$/);
+    if (dev) return await viewDevice(dev[1]);
     switch (hash) {
       case "#/friends": return await viewFriends();
       case "#/devices": return await viewDevices();

@@ -63,6 +63,9 @@ export async function startBroker(port: number, host: string, mat: TlsMaterial, 
     cb(null);
   };
 
+  // device -> hub messages (desk/<chip>/up/...) are consumed by the hub; never echo them back to the device
+  aedes.authorizeForward = (_client, packet) => (/^desk\/[^/]+\/up(\/|$)/.test(packet.topic) ? null : packet);
+
   aedes.on("clientReady", (client: Client) => {
     online.add(client.id);
     try { hooks.onReady(client.id); } catch (e) { hooks.log("onReady failed", (e as Error).message); }

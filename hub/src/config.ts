@@ -15,6 +15,10 @@ export interface Config {
   tlsKey: string | null;
   clientDir: string;
   publicDir: string;
+  /** firmware/dist: claude-desk.bin + version.txt */
+  firmwareDir: string;
+  /** hub/packs: <id>.bin, <id>.png, index.json */
+  packsDir: string;
   /** Clock in unix seconds (injectable for tests). */
   now: () => number;
   log: boolean;
@@ -42,6 +46,8 @@ export function configFromEnv(env = process.env): Config {
     tlsKey: pem(env.MQTT_TLS_KEY),
     clientDir: path.resolve(nonEmpty(env.CLIENT_DIR) ?? path.join(here, "..", "..", "client")),
     publicDir: path.join(here, "..", "public"),
+    firmwareDir: path.resolve(nonEmpty(env.FIRMWARE_DIR) ?? path.join(here, "..", "..", "firmware", "dist")),
+    packsDir: path.resolve(nonEmpty(env.PACKS_DIR) ?? path.join(here, "..", "packs")),
     now: () => Date.now() / 1000,
     log: env.HUB_QUIET !== "1",
   };

@@ -1,0 +1,25 @@
+{
+  "packs": [
+    {
+      "id": "fluent",
+      "name": "Fluent",
+      "license": "MIT (Microsoft Fluent Emoji)",
+      "size": 34616,
+      "md5": "40cff49a5db4afd2ce59770d91106465"
+    },
+    {
+      "id": "twemoji",
+      "name": "Twemoji",
+      "license": "CC-BY 4.0 (Twemoji)",
+      "size": 34616,
+      "md5": "2810bda77920ba7969c3e4be2bb42807"
+    },
+    {
+      "id": "noto",
+      "name": "Noto",
+      "license": "Apache 2.0 (Google Noto Emoji)",
+      "size": 34616,
+      "md5": "e0435ce130ff9a76a13c4062dbb2b737"
+    }
+  ]
+}

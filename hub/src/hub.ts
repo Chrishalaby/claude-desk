@@ -40,7 +40,10 @@ export async function startHub(cfg: Config): Promise<Hub> {
     authenticate: (chip, secret) => svc.deviceAuth(chip, secret),
     onReady: (chip) => svc.deviceOnline(chip),
     onGone: (chip) => svc.touchDevice(chip),
-    onUp: (chip, sub, payload) => { if (sub === "status") svc.deviceStatus(chip, payload); },
+    onUp: (chip, sub, payload) => {
+      if (sub === "status") svc.deviceStatus(chip, payload);
+      else if (sub === "settings") svc.deviceSettingsReport(chip, payload);
+    },
     log,
   });
   svc.broker = broker;
@@ -64,6 +67,9 @@ export async function startHub(cfg: Config): Promise<Hub> {
   log(`public url ${cfg.publicUrl ?? "(from requests)"}, mqtt public ${cfg.mqttPublicHost ?? "(request host)"}:${cfg.mqttPublicPort ?? broker.port}`);
   if (!cfg.inviteCode) log("WARNING: HUB_INVITE_CODE not set - anyone can register");
   if (!fs.existsSync(path.join(cfg.clientDir, "install.sh"))) log(`note: client files not found in ${cfg.clientDir}`);
+  const fw = svc.firmware();
+  log(fw ? `firmware ${fw.version} (${fw.size} bytes, md5 ${fw.md5})` : `note: no firmware in ${cfg.firmwareDir} (needs claude-desk.bin + version.txt)`);
+  log(`packs: ${svc.packs().map((p) => p.id).join(", ") || "(none)"} from ${cfg.packsDir}`);
 
   return {
     httpPort,

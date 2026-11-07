@@ -23,6 +23,9 @@
 #include <ArduinoJson.h>
 #include <WiFiClientSecureBearSSL.h>
 #include <PubSubClient.h>
+#include <ESP8266httpUpdate.h>
+#include <LittleFS.h>
+#include <MD5Builder.h>
 #endif
 
 #ifndef FW_VERSION
@@ -86,9 +89,9 @@ void saveSettings() { EEPROM.put(0, S); EEPROM.commit(); }
 
 // extra settings (own block so older settings survive upgrades)
 #define EXT_ADDR 600
-#define EXT_MAGIC 0x48554232
+#define EXT_MAGIC 0x48554233
 struct Ext { uint32_t magic; char host[64]; char secret[44]; uint32_t lastMsg; int32_t tzoff;
-             uint8_t casper, locSet, emoji, _pad; };
+             uint8_t casper, locSet, _pad[2]; char pack[16]; uint32_t setRev; };
 Ext X;
 
 void saveExt() { EEPROM.put(EXT_ADDR, X); EEPROM.commit(); }
@@ -103,7 +106,8 @@ void loadExt() {
   }
   X.host[63] = X.secret[43] = 0;
   uiLocationSet = X.locSet;
-  uiEmojiSet = X.emoji;
+  X.pack[15] = 0;
+  if (!X.pack[0]) strcpy(X.pack, "pixel");
 }
 #endif
 
@@ -278,6 +282,7 @@ void handleInfoBasic() {
 // ============================================================ normal mode ===
 #ifndef LOADER
 enum View { V_CLOCK, V_NEEDS, V_DONE, V_MSG, V_PAIR };
+bool settingsDirty = true;   // report settings to the hub
 View view = V_CLOCK;
 bool dirty = true, timeValid = false;
 RobotMode robot = ROBOT_IDLE;
@@ -443,6 +448,7 @@ uint32_t nextHello = 0, nextMqtt = 0, mqttBackoff = 5000, nextStatus = 0, pairUn
 BearSSL::WiFiClientSecure *mqttNet = nullptr;
 BearSSL::PublicKey *brokerKey = nullptr;
 PubSubClient mqtt;
+String pendingPack, pendingPackUrl, pendingPackMd5, pendingOtaUrl, otaResult;
 // current message
 String mFrom, mText, mWhen;
 bool mPartner = false;
@@ -494,6 +500,8 @@ String hhmm(uint32_t t) {
   return b;
 }
 
+void applySet(JsonDocument &d);
+
 void onMqtt(char *topic, byte *payload, unsigned int len) {
   String t = topic;
   int slash = t.lastIndexOf('/');
@@ -514,6 +522,12 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
       if (view != V_NEEDS) { view = V_PAIR; dirty = true; }
     }
     if (hubPaired && !was && view == V_PAIR) { view = V_CLOCK; dirty = true; }
+  } else if (leaf == "set") {
+    applySet(d);
+  } else if (leaf == "cmd") {
+    String c = (const char *)(d["cmd"] | "");
+    if (c == "reboot") restartAt = millis() + 500;
+    else if (c == "ota") pendingOtaUrl = (const char *)(d["url"] | "");
   } else if (leaf == "msg") {
     uint32_t id = d["id"] | 0;
     if (!id || id <= X.lastMsg) return;          // already shown (retained copy after reconnect)
@@ -534,10 +548,153 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
   }
 }
 
+// ---- packs: downloaded reaction sets in LittleFS (/packs/<id>.bin, format in docs/PROTOCOL.md §9)
+struct PackEnt { char name[16]; uint8_t w, h; uint16_t _p; uint32_t off; uint16_t pal[16]; };
+PackEnt packEnt[12];
+int packCount = 0;
+File packFile;
+static const char *const PACK_ORDER[] = {"wave", "thumbs", "laugh", "coffee", "fire", "heart", "hug", "kiss", "goodnight", "missyou"};
+
+bool packEntry(int idx, bool small, EmojiHdr &h) {
+  if (!packCount || idx < 0 || idx > 9) return false;
+  char want[16];
+  snprintf(want, sizeof want, small ? "%s_s" : "%s", PACK_ORDER[idx]);
+  for (int i = 0; i < packCount; i++)
+    if (!strcmp(packEnt[i].name, want)) {
+      h.w = packEnt[i].w; h.h = packEnt[i].h; h.off = packEnt[i].off;
+      memcpy(h.pal, packEnt[i].pal, sizeof h.pal);
+      return true;
+    }
+  return false;
+}
+
+void packRead(uint32_t off, uint8_t *buf, int n) {
+  if (!packFile || !packFile.seek(off) || packFile.read(buf, n) != (size_t)n) memset(buf, 0, n);
+}
+
+void loadPack() {
+  packCount = 0;
+  if (packFile) packFile.close();
+  uiPackEntry = nullptr; uiPackRead = nullptr;
+  if (!strcmp(X.pack, "pixel")) return;
+  packFile = LittleFS.open(String("/packs/") + X.pack + ".bin", "r");
+  if (!packFile) return;
+  uint8_t hdr[8];
+  if (packFile.read(hdr, 8) != 8 || memcmp(hdr, "CDPK", 4) || hdr[4] != 1) { packFile.close(); return; }
+  int n = hdr[5] > 12 ? 12 : hdr[5];
+  if (packFile.read((uint8_t *)packEnt, n * sizeof(PackEnt)) != n * sizeof(PackEnt)) { packFile.close(); return; }
+  for (int i = 0; i < n; i++) packEnt[i].name[15] = 0;
+  packCount = n;
+  uiPackEntry = packEntry; uiPackRead = packRead;
+}
+
+String installedPacks() {
+  String j = "[\"pixel\"";
+  Dir d = LittleFS.openDir("/packs");
+  while (d.next()) {
+    String n = d.fileName();
+    if (n.endsWith(".bin")) j += ",\"" + n.substring(0, n.length() - 4) + "\"";
+  }
+  return j + "]";
+}
+
+void hubSettings() {   // up/settings
+  String j = "{\"rev\":" + String(X.setRev) + ",\"layout\":" + String(S.layout) + ",\"soft\":" + String(S.soft) +
+             ",\"casper\":" + String(X.casper) + ",\"pack\":\"" + X.pack + "\",\"bday\":" + String(S.bday) +
+             ",\"bnight\":" + String(S.bnight) + ",\"nstart\":" + String(S.nstart) + ",\"nend\":" + String(S.nend) +
+             ",\"lat\":" + String(S.lat, 4) + ",\"lon\":" + String(S.lon, 4) + ",\"packs\":" + installedPacks() + "}";
+  mqtt.publish((String("desk/") + chipId + "/up/settings").c_str(), j.c_str());
+}
+
+void applySet(JsonDocument &d) {
+  uint32_t rev = d["rev"] | 0;
+  if (!rev || rev <= X.setRev) return;     // older than what we have (e.g. retained copy after a local edit)
+  X.setRev = rev;
+  if (d["layout"].is<int>()) { S.layout = d["layout"] ? 1 : 0; uiLayout = S.layout; }
+  if (d["soft"].is<int>()) { S.soft = d["soft"] ? 1 : 0; uiSetSoft(S.soft); }
+  if (d["casper"].is<int>()) X.casper = d["casper"] ? 1 : 0;
+  if (d["bday"].is<int>()) S.bday = constrain((int)d["bday"], 0, 100);
+  if (d["bnight"].is<int>()) S.bnight = constrain((int)d["bnight"], 0, 100);
+  if (d["nstart"].is<int>()) S.nstart = constrain((int)d["nstart"], 0, 23);
+  if (d["nend"].is<int>()) S.nend = constrain((int)d["nend"], 0, 23);
+  if (d["lat"].is<float>() && d["lon"].is<float>()) {
+    float la = d["lat"], lo = d["lon"];
+    if (la != S.lat || lo != S.lon) { S.lat = la; S.lon = lo; X.locSet = (la != 0.0f || lo != 0.0f); uiLocationSet = X.locSet; W.ok = false; nextWeather = 0; }
+  }
+  const char *pk = d["pack"] | "";
+  if (pk[0] && strcmp(pk, X.pack)) {
+    if (!strcmp(pk, "pixel")) { strcpy(X.pack, "pixel"); loadPack(); }
+    else if (LittleFS.exists(String("/packs/") + pk + ".bin")) { strncpy(X.pack, pk, 15); X.pack[15] = 0; loadPack(); }
+    else { pendingPack = pk; pendingPackUrl = (const char *)(d["packUrl"] | ""); pendingPackMd5 = (const char *)(d["packMd5"] | ""); }
+  }
+  saveSettings();
+  saveExt();
+  nextBrt = 0;
+  dirty = true;
+  settingsDirty = true;
+}
+
+void mqttStop() { mqtt.disconnect(); if (mqttNet) mqttNet->stop(); }
+
+bool downloadPack() {   // MQTT is stopped by the caller (one TLS session at a time)
+  uiMessage("DOWNLOADING", "reaction pack", pendingPack.c_str(), "", COL_TEAL);
+  BearSSL::WiFiClientSecure c;
+  c.setInsecure();
+  HTTPClient http;
+  http.setTimeout(15000);
+  bool ok = false;
+  if (http.begin(c, pendingPackUrl) && http.GET() == 200) {
+    LittleFS.mkdir("/packs");
+    File f = LittleFS.open("/packs/tmp.bin", "w");
+    MD5Builder md5; md5.begin();
+    WiFiClient *st = http.getStreamPtr();
+    int left = http.getSize();
+    uint8_t buf[512];
+    uint32_t t0 = millis();
+    while (f && http.connected() && (left > 0 || left == -1) && millis() - t0 < 30000) {
+      size_t a = st->available();
+      if (!a) { delay(5); continue; }
+      int n = st->readBytes(buf, a > sizeof buf ? sizeof buf : a);
+      f.write(buf, n); md5.add(buf, n);
+      if (left > 0) left -= n;
+    }
+    if (f) f.close();
+    md5.calculate();
+    ok = left == 0 && (!pendingPackMd5.length() || md5.toString() == pendingPackMd5);
+  }
+  http.end();
+  if (ok) {
+    Dir d = LittleFS.openDir("/packs");             // keep only the pack in use
+    while (d.next()) if (d.fileName() != "tmp.bin") LittleFS.remove("/packs/" + d.fileName());
+    LittleFS.rename("/packs/tmp.bin", "/packs/" + pendingPack + ".bin");
+    strncpy(X.pack, pendingPack.c_str(), 15); X.pack[15] = 0;
+    saveExt();
+    loadPack();
+  } else {
+    LittleFS.remove("/packs/tmp.bin");
+  }
+  pendingPack = "";
+  settingsDirty = true;
+  dirty = true;
+  return ok;
+}
+
+void doOta() {
+  uiMessage("UPDATING", "installing new firmware", "don't unplug", "", COL_ORANGE);
+  BearSSL::WiFiClientSecure c;
+  c.setInsecure();
+  ESPhttpUpdate.rebootOnUpdate(true);
+  t_httpUpdate_return r = ESPhttpUpdate.update(c, pendingOtaUrl, FW_VERSION);   // reboots on success
+  otaResult = r == HTTP_UPDATE_NO_UPDATES ? "ok: already up to date" : "failed: " + ESPhttpUpdate.getLastErrorString();
+  pendingOtaUrl = "";
+  dirty = true;
+}
+
 void hubStatus() {
-  char b[160];
-  snprintf(b, sizeof b, "{\"fw\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"heap\":%u,\"up\":%lu}", FW_VERSION,
-           WiFi.localIP().toString().c_str(), WiFi.RSSI(), ESP.getFreeHeap(), millis() / 1000);
+  char b[240];
+  snprintf(b, sizeof b, "{\"fw\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"heap\":%u,\"up\":%lu%s%s%s}", FW_VERSION,
+           WiFi.localIP().toString().c_str(), WiFi.RSSI(), ESP.getFreeHeap(), millis() / 1000,
+           otaResult.length() ? ",\"ota\":\"" : "", otaResult.c_str(), otaResult.length() ? "\"" : "");
   mqtt.publish((String("desk/") + chipId + "/up/status").c_str(), b);
 }
 
@@ -561,9 +718,16 @@ void hubLoop() {
     hubState = HUB_MQTT;
     nextMqtt = 0;
   }
+  if (pendingOtaUrl.length() || (pendingPack.length() && pendingPackUrl.length())) {
+    mqttStop();                               // free the TLS session's RAM for the download
+    if (pendingOtaUrl.length()) doOta(); else downloadPack();
+    nextMqtt = 0; nextStatus = 0;
+    return;
+  }
   if (mqtt.connected()) {
     mqtt.loop();
     if ((int32_t)(millis() - nextStatus) >= 0) { hubStatus(); nextStatus = millis() + 10UL * 60 * 1000; }
+    if (settingsDirty) { hubSettings(); settingsDirty = false; }
     return;
   }
   if ((int32_t)(millis() - nextMqtt) < 0) return;
@@ -571,6 +735,7 @@ void hubLoop() {
     mqtt.subscribe((String("desk/") + chipId + "/#").c_str(), 1);
     mqttBackoff = 5000;
     nextStatus = 0;
+    settingsDirty = true;
   } else {
     int st = mqtt.state();
     if (st == MQTT_CONNECT_BAD_CREDENTIALS || st == MQTT_CONNECT_UNAUTHORIZED) {
@@ -593,13 +758,6 @@ const char *hubStateText() {
   }
 }
 
-String emojiOptions() {
-  String o;
-  for (int i = 0; uiEmojiSetName(i); i++)
-    o += "<option value=" + String(i) + (X.emoji == i ? " selected>" : ">") + uiEmojiSetName(i) + "</option>";
-  return o;
-}
-
 void handleRoot() {
   String h = FPSTR(HEAD);
   h += "<h2>claude-desk</h2><p class=m>fw " FW_VERSION " &middot; " + WiFi.localIP().toString() + " &middot; ";
@@ -617,7 +775,7 @@ void handleRoot() {
        ">Soft</option><option value=0" + String(S.soft ? "" : " selected") + ">Vivid</option></select>"
        "<label><input type=checkbox name=casper value=1 style='width:auto'" + String(X.casper ? " checked" : "") +
        "> Casper the dog visits</label><input type=hidden name=casper0 value=1>"
-       "<label>Reaction style</label><select name=emoji>" + emojiOptions() + "</select>"
+       "<p class=m>Reaction style: <b>" + htmlEsc(X.pack) + "</b> (change it in the hub app)</p>"
        "<h3>Friends hub</h3><label>Hub address</label><input name=hub placeholder='your-hub.up.railway.app' value='" +
        htmlEsc(X.host) + "'><p class=m>Status: " + htmlEsc(hubStateText()) + (hubOwner.length() ? " &middot; owner " + htmlEsc(hubOwner) : String("")) +
        " &middot; id " + chipId + "</p>"
@@ -636,7 +794,6 @@ void handleSet() {
   if (server.hasArg("lat") || server.hasArg("lon")) { X.locSet = (S.lat != 0.0f || S.lon != 0.0f); uiLocationSet = X.locSet; W.ok = false; dirty = true; }
   if (server.hasArg("casper0")) { X.casper = server.hasArg("casper") ? 1 : 0; dirty = true; }
   else if (server.hasArg("casper")) { X.casper = server.arg("casper").toInt() ? 1 : 0; dirty = true; }
-  if (server.hasArg("emoji")) { X.emoji = constrain(server.arg("emoji").toInt(), 0, 3); uiEmojiSet = X.emoji; }
   if (server.hasArg("hub")) {
     String hb = server.arg("hub"); hb.trim();
     if (hb != X.host) {                       // new hub: start fresh there, reboot to connect
@@ -646,6 +803,7 @@ void handleSet() {
     }
   }
   saveExt();
+  settingsDirty = true;
   if (server.hasArg("bday")) S.bday = constrain(server.arg("bday").toInt(), 0, 100);
   if (server.hasArg("bnight")) S.bnight = constrain(server.arg("bnight").toInt(), 0, 100);
   if (server.hasArg("ns")) S.nstart = constrain(server.arg("ns").toInt(), 0, 23);
@@ -805,6 +963,8 @@ void setup() {
   if (mode == M_NORMAL) {
     loadSettings();
     loadExt();
+    LittleFSConfig fsc; fsc.setAutoFormat(true); LittleFS.setConfig(fsc);
+    if (LittleFS.begin()) loadPack();
     analogWriteFreq(S.pwm);
     gfxGamma(S.gamma);
     gfxPanelTune(S.gtab, S.vcom);

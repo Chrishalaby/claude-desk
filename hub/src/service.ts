@@ -6,6 +6,7 @@ import { applyEvent, computeView, viewKey, type HookEvent, type Sessions, type V
 import type { TlsMaterial } from "./tls.js";
 import { charLen, oneLine, randomHex, RateLimiter, safeEqual, sha256, sixDigits, trunc } from "./util.js";
 import { MAX_DEVICE_PAYLOAD } from "./broker.js";
+import { firmwareInfo, packIndex } from "./files.js";
 
 export const PAIR_ROTATE_SECS = 10 * 60;
 export const PAIR_GRACE_SECS = 60;
@@ -13,6 +14,18 @@ export const FRIEND_REACTIONS = ["wave", "thumbs", "laugh", "coffee", "fire"] as
 export const PARTNER_REACTIONS = ["heart", "hug", "kiss", "goodnight", "missyou"] as const;
 export const MSG_MAX = 100;
 export type Rel = "friend" | "partner";
+
+/** Remote settings (PROTOCOL.md section 8): key -> validator returning the normalized value or undefined. */
+const bit = (v: unknown) => (v === true || v === 1 || v === "1" ? 1 : v === false || v === 0 || v === "0" ? 0 : undefined);
+const intIn = (lo: number, hi: number) => (v: unknown) => {
+  const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+  return typeof n === "number" && Number.isInteger(n) && n >= lo && n <= hi ? n : undefined;
+};
+const SETTING_VALIDATORS: Record<string, (v: unknown) => number | undefined> = {
+  layout: bit, soft: bit, casper: bit,
+  bday: intIn(0, 100), bnight: intIn(0, 100), nstart: intIn(0, 23), nend: intIn(0, 23),
+};
+export type DeskSettings = Record<string, number | string>;
 
 export class HttpError extends Error {
   constructor(public status: number, public code: string) { super(code); }
@@ -152,7 +165,7 @@ export class Service {
     ).get(code, code, now) as DeviceRow | undefined;
     if (!d) throw new HttpError(404, "invalid_code");
     this.db.prepare(`UPDATE devices SET owner_id = ?, name = ?, pair_code = NULL, pair_code_at = NULL, prev_code = NULL,
-      prev_code_until = NULL, last_msg_id = NULL WHERE chip = ?`).run(userId, name, d.chip);
+      prev_code_until = NULL, last_msg_id = NULL, settings = NULL, place = NULL WHERE chip = ?`).run(userId, name, d.chip);
     this.republishDevice(d.chip);
     return this.device(d.chip)!;
   }
@@ -176,6 +189,7 @@ export class Service {
     if (this.broker) {
       this.broker.publish(`desk/${chip}/claude`, null);
       this.broker.publish(`desk/${chip}/msg`, null);
+      this.broker.publish(`desk/${chip}/set`, null);
       const broker = this.broker;
       broker.publish(`desk/${chip}/cfg`, { paired: false, pairCode: null, hub: this.hubUrl() }, true, () => broker.kick(chip, 500));
     }
@@ -189,6 +203,137 @@ export class Service {
     const s = (v: unknown, n: number) => (typeof v === "string" ? trunc(oneLine(v), n) || null : null);
     this.db.prepare(`UPDATE devices SET fw = COALESCE(?, fw), ip = COALESCE(?, ip), rssi = ?, heap = ?, up = ?, last_seen = ?
       WHERE chip = ?`).run(s(j.fw, 16), s(j.ip, 45), int(j.rssi), int(j.heap), int(j.up), this.now(), chip);
+    const ota = s(j.ota, 80);
+    if (ota) this.db.prepare("UPDATE devices SET ota = ?, ota_at = ? WHERE chip = ?").run(ota, this.now(), chip);
+  }
+
+  // ------------------------------------------------------------------ remote settings, packs, firmware
+  desiredSettings(d: DeviceRow): DeskSettings | null {
+    if (!d.settings) return null;
+    try { return JSON.parse(d.settings) as DeskSettings; } catch { return null; }
+  }
+
+  packs() { return packIndex(this.cfg.packsDir); }
+
+  /** Retained `set` payload: desired settings + packUrl/packMd5 when the pack is a downloadable one. */
+  setPayload(settings: DeskSettings | null) {
+    if (!settings) return null;
+    const out: Record<string, unknown> = { ...settings };
+    if (typeof settings.pack === "string" && settings.pack !== "pixel") {
+      const p = this.packs().find((x) => x.id === settings.pack);
+      if (p) {
+        out.packUrl = `${this.hubUrl()}/packs/${p.id}.bin`;
+        out.packMd5 = p.md5;
+      }
+    }
+    return out;
+  }
+
+  firmware(baseUrl?: string) {
+    const f = firmwareInfo(this.cfg.firmwareDir);
+    if (!f) return null;
+    return { version: f.version, url: `${this.hubUrl(baseUrl)}/firmware/claude-desk.bin`, md5: f.md5, size: f.size };
+  }
+
+  /** desk/<chip>/up/settings: what the desk actually runs (stored for the web app). */
+  deviceSettingsReport(chip: string, payload: Buffer) {
+    let j: any;
+    try { j = JSON.parse(payload.toString("utf8")); } catch { return; }
+    if (!j || typeof j !== "object" || Array.isArray(j)) return;
+    const out: Record<string, unknown> = {};
+    for (const [k, fn] of Object.entries(SETTING_VALIDATORS)) { const v = fn(j[k]); if (v !== undefined) out[k] = v; }
+    if (typeof j.rev === "number" && Number.isFinite(j.rev)) out.rev = Math.floor(j.rev);
+    if (typeof j.pack === "string" && /^[a-z0-9_-]{1,32}$/.test(j.pack)) out.pack = j.pack;
+    for (const k of ["lat", "lon"]) if (typeof j[k] === "number" && Number.isFinite(j[k])) out[k] = Math.round(j[k] * 1e4) / 1e4;
+    if (Array.isArray(j.packs)) {
+      out.packs = j.packs.filter((p: unknown) => typeof p === "string" && /^[a-z0-9_-]{1,32}$/.test(p)).slice(0, 16);
+    }
+    this.db.prepare("UPDATE devices SET reported = ?, reported_at = ?, last_seen = ? WHERE chip = ?")
+      .run(JSON.stringify(out), this.now(), this.now(), chip);
+  }
+
+  /** Validates a (partial) settings update from the web app. */
+  parseSettings(body: Record<string, unknown>) {
+    const set: DeskSettings = {};
+    for (const [k, fn] of Object.entries(SETTING_VALIDATORS)) {
+      if (body[k] === undefined || body[k] === null) continue;
+      const v = fn(body[k]);
+      if (v === undefined) throw new HttpError(400, k);
+      set[k] = v;
+    }
+    if (body.pack !== undefined && body.pack !== null) {
+      const p = String(body.pack);
+      if (p !== "pixel" && !this.packs().some((x) => x.id === p)) throw new HttpError(400, "pack");
+      set.pack = p;
+    }
+    let place: string | null | undefined;
+    if (body.lat !== undefined || body.lon !== undefined) {
+      const lat = Number(body.lat), lon = Number(body.lon);
+      if (body.lat === null || body.lon === null || !Number.isFinite(lat) || !Number.isFinite(lon) ||
+        Math.abs(lat) > 90 || Math.abs(lon) > 180) throw new HttpError(400, "location");
+      set.lat = Math.round(lat * 1e4) / 1e4;
+      set.lon = Math.round(lon * 1e4) / 1e4;
+      place = trunc(oneLine(body.place), 80) || null;
+    }
+    if (!Object.keys(set).length) throw new HttpError(400, "empty");
+    return { set, place };
+  }
+
+  /** PUT settings: merge into the desired state, bump rev, publish retained desk/<chip>/set. */
+  putSettings(userId: number, chip: string, body: Record<string, unknown>) {
+    const d = this.ownedDevice(userId, chip);
+    const { set, place } = this.parseSettings(body);
+    const prev = this.desiredSettings(d) ?? {};
+    const prevRev = typeof prev.rev === "number" ? prev.rev : 0;
+    const merged: DeskSettings = { ...prev, ...set, rev: Math.max(this.now(), prevRev + 1) };
+    // key order: rev first (matches the protocol example)
+    const ordered: DeskSettings = { rev: merged.rev };
+    for (const k of ["layout", "soft", "casper", "pack", "bday", "bnight", "nstart", "nend", "lat", "lon"]) {
+      if (merged[k] !== undefined) ordered[k] = merged[k];
+    }
+    this.db.prepare("UPDATE devices SET settings = ?, place = COALESCE(?, place) WHERE chip = ?")
+      .run(JSON.stringify(ordered), place === undefined ? null : place, chip);
+    if (place === null) this.db.prepare("UPDATE devices SET place = NULL WHERE chip = ?").run(chip);
+    const payload = this.setPayload(ordered)!;
+    this.broker?.publish(`desk/${chip}/set`, payload);
+    return payload;
+  }
+
+  settingsView(userId: number, chip: string, baseUrl?: string) {
+    const d = this.ownedDevice(userId, chip);
+    let reported: unknown = null;
+    try { reported = d.reported ? JSON.parse(d.reported) : null; } catch { /* ignore */ }
+    return {
+      device: this.deviceView(d),
+      settings: this.desiredSettings(d),
+      place: d.place,
+      reported,
+      reportedAt: d.reported_at,
+      packs: this.packs().map((p) => ({ ...p, preview: `/packs/${p.id}.png` })),
+      firmware: this.firmware(baseUrl),
+    };
+  }
+
+  deviceView(d: DeviceRow) {
+    return {
+      chip: d.chip, name: d.name, fw: d.fw, ip: d.ip, rssi: d.rssi, heap: d.heap, up: d.up,
+      lastSeen: d.last_seen, online: this.broker?.isOnline(d.chip) ?? false, ota: d.ota, otaAt: d.ota_at,
+    };
+  }
+
+  /** desk/<chip>/cmd (not retained): ota | reboot. Only to the owner's own, connected device. */
+  command(userId: number, chip: string, cmd: "ota" | "reboot", baseUrl?: string) {
+    this.ownedDevice(userId, chip);
+    if (!this.broker?.isOnline(chip)) throw new HttpError(409, "offline");
+    let payload: Record<string, unknown> = { cmd };
+    if (cmd === "ota") {
+      const fw = this.firmware(baseUrl);
+      if (!fw) throw new HttpError(409, "no_firmware");
+      payload = { cmd, url: fw.url, md5: fw.md5, version: fw.version };
+      this.db.prepare("UPDATE devices SET ota = ?, ota_at = ? WHERE chip = ?").run(`requested ${fw.version}`, this.now(), chip);
+    }
+    this.broker.publish(`desk/${chip}/cmd`, payload, false);
+    return payload;
   }
 
   touchDevice(chip: string) { this.db.prepare("UPDATE devices SET last_seen = ? WHERE chip = ?").run(this.now(), chip); }
@@ -217,9 +362,11 @@ export class Service {
       const m = d.last_msg_id
         ? (this.db.prepare("SELECT * FROM messages WHERE id = ?").get(d.last_msg_id) as MessageRow | undefined) : undefined;
       this.broker.publish(`desk/${chip}/msg`, m ? this.msgPayload(m) : null);
+      this.broker.publish(`desk/${chip}/set`, this.setPayload(this.desiredSettings(d)));
     } else {
       this.broker.publish(`desk/${chip}/claude`, null);
       this.broker.publish(`desk/${chip}/msg`, null);
+      this.broker.publish(`desk/${chip}/set`, null);
     }
   }
 

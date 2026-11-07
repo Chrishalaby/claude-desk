@@ -1,6 +1,8 @@
 **/node_modules
-**/dist
-**/data
 **/__pycache__
+**/.DS_Store
 .git
-firmware
+hub/dist
+hub/data
+firmware/*
+!firmware/dist

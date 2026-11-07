@@ -5,6 +5,7 @@ import type { Config } from "./config.js";
 import type { DB, UserRow } from "./db.js";
 import { CHIP_RE } from "./broker.js";
 import { HttpError, type Rel, type Service } from "./service.js";
+import { firmwareInfo, PACK_ID_RE, readBlob } from "./files.js";
 import { charLen, hashPassword, isValidTz, oneLine, randomHex, RateLimiter, safeEqual, sha256, trunc, verifyPassword } from "./util.js";
 
 const COOKIE = "cd_sid";
@@ -149,10 +150,8 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     return svc.hello(chip, fw, secret, requestUrl(req));
   });
 
-  const deviceView = (d: ReturnType<Service["device"]> & {}) => ({
-    chip: d.chip, name: d.name, fw: d.fw, ip: d.ip, rssi: d.rssi, heap: d.heap, up: d.up,
-    lastSeen: d.last_seen, online: svc.broker?.isOnline(d.chip) ?? false,
-  });
+  const deviceView = (d: ReturnType<Service["device"]> & {}) => svc.deviceView(d);
+  const cmdUser = new RateLimiter(10, 60_000, nowMs);
   const deviceName = (v: unknown) => {
     const n = trunc(oneLine(v), 20);
     return n || "Desk";
@@ -177,6 +176,58 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   app.delete("/api/devices/:chip", { preHandler: auth }, async (req) => {
     svc.forget(req.user!.id, (req.params as { chip: string }).chip);
     return { ok: true };
+  });
+
+  // remote settings (PROTOCOL.md section 8)
+  app.get("/api/devices/:chip/settings", { preHandler: auth }, async (req) =>
+    svc.settingsView(req.user!.id, (req.params as { chip: string }).chip, requestUrl(req)));
+
+  app.put("/api/devices/:chip/settings", { preHandler: auth }, async (req) => {
+    const { chip } = req.params as { chip: string };
+    const b = req.body;
+    if (!b || typeof b !== "object" || Array.isArray(b)) throw new HttpError(400, "bad_request");
+    hubUrl(req);
+    const set = svc.putSettings(req.user!.id, chip, b as Record<string, unknown>);
+    return { set, ...svc.settingsView(req.user!.id, chip, requestUrl(req)) };
+  });
+
+  // commands (PROTOCOL.md section 10)
+  for (const cmd of ["ota", "reboot"] as const) {
+    app.post(`/api/devices/:chip/${cmd}`, { preHandler: auth }, async (req) => {
+      if (!cmdUser.take(String(req.user!.id))) throw new HttpError(429, "rate_limited");
+      return { ok: true, sent: svc.command(req.user!.id, (req.params as { chip: string }).chip, cmd, requestUrl(req)) };
+    });
+  }
+
+  // ---------------------------------------------------------------- firmware + packs (files in the repo)
+  app.get("/firmware/latest.json", async (req, reply) => {
+    const fw = svc.firmware(requestUrl(req));
+    reply.header("cache-control", "no-cache");
+    if (!fw) return reply.code(404).send({ error: "no_firmware" });
+    return fw;
+  });
+  app.get("/firmware/claude-desk.bin", async (req, reply) => {
+    const fw = firmwareInfo(cfg.firmwareDir);
+    if (!fw) return reply.code(404).send({ error: "no_firmware" });
+    const etag = `"${fw.md5}"`;
+    reply.header("cache-control", "no-cache").header("etag", etag).header("x-MD5", fw.md5);
+    if (req.headers["if-none-match"] === etag) return reply.code(304).send();
+    return reply.type("application/octet-stream").send(fw.blob.body);
+  });
+  app.get("/packs/index.json", async (_req, reply) => {
+    reply.header("cache-control", "no-cache");
+    return { packs: svc.packs() };
+  });
+  app.get("/packs/:file", async (req, reply) => {
+    const m = /^([a-z0-9_-]{1,32})\.(bin|png)$/.exec((req.params as { file: string }).file);
+    if (!m || !PACK_ID_RE.test(m[1])) return reply.code(404).send({ error: "not_found" });
+    const blob = readBlob(path.join(cfg.packsDir, `${m[1]}.${m[2]}`));
+    if (!blob) return reply.code(404).send({ error: "not_found" });
+    const etag = `"${blob.md5}"`;
+    reply.header("etag", etag).header("cache-control", "public, max-age=3600");
+    if (m[2] === "bin") reply.header("x-MD5", blob.md5);
+    if (req.headers["if-none-match"] === etag) return reply.code(304).send();
+    return reply.type(m[2] === "png" ? "image/png" : "application/octet-stream").send(blob.body);
   });
 
   // ---------------------------------------------------------------- hook

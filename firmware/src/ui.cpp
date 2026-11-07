@@ -27,7 +27,8 @@ uint16_t COL_GREY   = c565(130, 136, 148);
 int uiLayout = 0;
 char uiUnread[24] = "";
 bool uiLocationSet = true;
-uint8_t uiEmojiSet = 0;
+bool (*uiPackEntry)(int idx, bool small, EmojiHdr &h) = nullptr;
+void (*uiPackRead)(uint32_t off, uint8_t *buf, int n) = nullptr;
 
 void uiSetSoft(bool soft) {   // soft = lower-contrast, cooler palette (closer to the stock look)
   WHITE    = soft ? c565(196, 206, 216) : c565(240, 240, 240);
@@ -419,23 +420,37 @@ static int wrap(const AAFont &f, const char *text, char lines[][64], int maxLine
   return lines[0][0] ? count : 0;
 }
 
-// draw a Fluent emoji bitmap; pad = extra border painted black (erases motion trails); flip = mirror
-static void blitEmoji(const EmojiImg *ep, int x, int y, int pad, bool flip = false) {
+// draw a reaction image (pack from storage, or built-in pixel set from flash).
+// pad = extra border painted black (erases motion trails); flip = mirror horizontally
+static void blitE(int idx, bool small, int x, int y, int pad, bool flip = false) {
   static uint16_t row[SCR_W];
-  EmojiImg e;
-  memcpy_P(&e, ep, sizeof e);              // header + palette live in flash
-  int x0 = x - pad, x1 = x + e.w + pad;
+  static uint8_t line[48];
+  EmojiHdr h;
+  const uint8_t *pgm = nullptr;
+  if (!(uiPackEntry && uiPackEntry(idx, small, h))) {
+    const EmojiImg *ep = small ? (idx == 5 ? &P_HEART_S : &P_WAVE_S) : (const EmojiImg *)pgm_read_ptr(&REACT_IMG[idx]);
+    EmojiImg e;
+    memcpy_P(&e, ep, sizeof e);
+    h.w = e.w; h.h = e.h; memcpy(h.pal, e.pal, sizeof h.pal); h.off = 0;
+    pgm = e.px;
+  }
+  int bpr = (h.w + 1) / 2;
+  int x0 = x - pad, x1 = x + h.w + pad;
   if (x0 < 0) x0 = 0;
   if (x1 > SCR_W) x1 = SCR_W;
-  for (int ry = -pad; ry < e.h + pad; ry++) {
+  for (int ry = -pad; ry < h.h + pad; ry++) {
+    bool in = ry >= 0 && ry < h.h;
+    if (in) {
+      if (pgm) memcpy_P(line, pgm + (uint32_t)ry * bpr, bpr);
+      else uiPackRead(h.off + (uint32_t)ry * bpr, line, bpr);
+    }
     for (int px = x0; px < x1; px++) {
       int d = px - x;
       uint16_t c = CARD_BG;
-      if (ry >= 0 && ry < e.h && d >= 0 && d < e.w) {
-        int sx = flip ? e.w - 1 - d : d;
-        uint32_t i = (uint32_t)ry * e.w + sx;
-        uint8_t b = pgm_read_byte(e.px + i / 2);
-        c = e.pal[(i & 1) ? (b & 0x0F) : (b >> 4)];
+      if (in && d >= 0 && d < h.w) {
+        int sx = flip ? h.w - 1 - d : d;
+        uint8_t b = line[sx / 2];
+        c = h.pal[(sx & 1) ? (b & 0x0F) : (b >> 4)];
       }
       row[px - x0] = c;
     }
@@ -443,11 +458,7 @@ static void blitEmoji(const EmojiImg *ep, int x, int y, int pad, bool flip = fal
   }
 }
 
-static uint8_t eset() { return uiEmojiSet < EMOJI_SETS ? uiEmojiSet : 0; }
-static void blitReact(int idx, int x, int y, int pad, bool flip = false) {
-  blitEmoji((const EmojiImg *)pgm_read_ptr(&REACT_IMG[eset()][idx]), x, y, pad, flip);
-}
-const char *uiEmojiSetName(int i) { return i >= 0 && i < EMOJI_SETS ? EMOJI_SET_NAMES[i] : nullptr; }
+static void blitReact(int idx, int x, int y, int pad, bool flip = false) { blitE(idx, false, x, y, pad, flip); }
 
 static void senderLine(const char *from, bool partner, int baseline) {
   char n[40];
@@ -458,9 +469,7 @@ static void senderLine(const char *from, bool partner, int baseline) {
 
 void uiMessage2(const char *from, bool partner, const char *text, const char *when) {
   gFill(0, 0, SCR_W, SCR_H, CARD_BG);
-  const EmojiImg *sm = (const EmojiImg *)pgm_read_ptr(partner ? &SMALL_HEART[eset()] : &SMALL_WAVE[eset()]);
-  EmojiImg hdr; memcpy_P(&hdr, sm, sizeof hdr);
-  blitEmoji(sm, (SCR_W - hdr.w) / 2, 8, 0);          // small heart (partner) or wave (friend)
+  blitE(partner ? 5 : 0, true, (SCR_W - 44) / 2, 8, 0);   // small heart (partner) or wave (friend)
   senderLine(from, partner, 86);
   char lines[3][64];
   int n = wrap(F_M, text, lines, 3, 224);

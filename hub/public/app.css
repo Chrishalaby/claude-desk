@@ -87,7 +87,7 @@ input:focus, select:focus { border-color: var(--accent); }
 
 .seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
 .seg button { border: 0; background: transparent; padding: 8px; border-radius: 8px; cursor: pointer; color: var(--muted); }
-.seg button.on { background: var(--panel-2); color: var(--text); }
+.seg button.on { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
 
 .auth { padding: 12vh 22px 40px; }
 .auth .logo { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
@@ -128,3 +128,23 @@ input:focus, select:focus { border-color: var(--accent); }
 #toast { position: fixed; left: 50%; top: calc(64px + env(safe-area-inset-top)); transform: translateX(-50%) translateY(-12px); background: var(--panel-2); border: 1px solid var(--line); padding: 10px 16px; border-radius: 12px; opacity: 0; transition: 0.2s; pointer-events: none; z-index: 10; font-size: 14px; max-width: 90vw; }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 #toast.bad { border-color: var(--danger); }
+
+/* desk settings */
+.seg-2 { grid-template-columns: 1fr 1fr; }
+.seg-3 { grid-template-columns: 1fr 1fr 1fr; }
+.ok { color: var(--ok); }
+.warn { color: #d9c39a; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.slider { display: flex; align-items: center; gap: 12px; }
+.slider input { flex: 1; accent-color: var(--accent); height: 28px; }
+.slider .val { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; }
+.packs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pack { appearance: none; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; cursor: pointer; display: flex; flex-direction: column; gap: 8px; min-height: 64px; }
+.pack.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; background: linear-gradient(0deg, var(--accent-dim), var(--accent-dim)), var(--panel); }
+.pack-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.pack-name { font-weight: 600; }
+.pack .tag { margin-left: 0; }
+.pack img { width: 100%; height: auto; border-radius: 6px; background: #000; image-rendering: pixelated; }
+.pack-lic { font-size: 11px; color: var(--muted); }
+.place { display: flex; gap: 8px; align-items: center; font-weight: 550; }
+.results { margin-top: 10px; }
