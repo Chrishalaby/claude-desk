@@ -16,6 +16,8 @@ One Node/TypeScript process that does everything server-side for claude-desk (se
   (PROTOCOL.md §3.5, §3.6, §11).
 * **Drawings**: draw on your own desk, or with a friend on both desks at once, live (binary `draw` topic and
   Server-Sent Events to the browsers; PROTOCOL.md §3.8, §13).
+* **Photos & GIFs**: uploads are converted with sharp into a small delta/RLE format the desk plays from its storage,
+  streamed over MQTT (`media` topic; PROTOCOL.md §3.9, §14).
 * **Wi-Fi management** for each desk: saved networks, scan, add/remove relayed to the desk (passwords not stored).
 
 Storage is one SQLite file in `$DATA_DIR`, next to the session secret and the broker's TLS cert. Runs as a single instance.
@@ -122,6 +124,7 @@ src/service.ts   devices/pairing, status publishing, friends, messages
 src/routes.ts    HTTP routes, sessions, rate limits, installers, static files
 src/apps.ts      hub-side integrations (timers, reminders, calendar, GitHub, markets, music, rain, email, Slack)
 src/doodles.ts   live drawings (sessions, stroke validation/chunking, SSE listeners)
+src/media.ts     photos & GIFs (sharp conversion, desk format encoder, MQTT transfer)
 src/net.ts       safeFetch for user-supplied URLs (public https only)
 src/broker.ts    aedes on a Node TLS server, auth + ACL
 src/tls.ts       cert load/generate, fingerprints, cipher list

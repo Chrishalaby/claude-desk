@@ -192,6 +192,8 @@ form > input[type=password] { margin-top: 8px; }
 .thumb-card { display: flex; flex-direction: column; align-items: center; }
 .thumb-card canvas { border-radius: 10px; border: 1px solid var(--line); background: #000; }
 .steps { margin: 0 0 10px; padding-left: 18px; }
+.thumb-card img.thumb, .bubble img.thumb, .thumb-pick img.thumb { display: block; border-radius: 10px; border: 1px solid var(--line); object-fit: cover; background: #000; }
+.thumb-pick { padding: 0; border: 0; background: none; cursor: pointer; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 8px; vertical-align: middle; }
 .dot.here { background: #3fb950; }
 .dot.away { background: #d29922; }

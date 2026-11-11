@@ -24,7 +24,9 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
   - `src/apps.ts` = hub-side integrations (timers, reminders, calendar via node-ical, GitHub notifications, Yahoo
     quotes, Spotify/Last.fm now playing, Open-Meteo rain, IMAP email via imapflow, Slack mentions); they only ever send
     `card` / `next` to desks (PROTOCOL.md §3.5, §3.6, §11). Spotify/Last.fm/Slack need env vars (hub/README.md).
-  - `src/doodles.ts` = live drawings: binary `draw` topic to desks (§3.8), SSE to browsers (§13). `src/net.ts` = `safeFetch` (public https
+  - `src/doodles.ts` = live drawings: binary `draw` topic to desks (§3.8), SSE to browsers (§13). `src/media.ts` =
+    photos/GIFs: sharp → RGB565 delta/RLE format, streamed on `media` (§3.9, §14); the desk keeps one in
+    LittleFS `/m.bin` and plays it with `firmware/src/media.cpp` (host check: `tools/preview/mediatest.cpp`). `src/net.ts` = `safeFetch` (public https
     only) for user-supplied URLs. New integrations go here, never on the desk.
 - `client/` hook (`hook.py` macOS/Linux, `hook.ps1` Windows) + installers; the hub serves them with `__HUB_URL__` replaced
   (first occurrence only — keep the placeholder's first occurrence as the value). The installers also start the
@@ -37,7 +39,7 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 - Pins: MOSI 13, SCLK 14, DC 0, RST 2, CS none; backlight GPIO5 PWM **active-low**; `invertDisplay(true)`.
 - Panel looks best with gamma preset 2 (`gtab=2`), sharp text on, vivid colours, ~25% day brightness; cards must be
   pure black (dark greys tint green in RGB565).
-- RAM is the constraint (~80 KB total; static RAM 37.9 KB on 1.4.8, was 42.9 KB on 1.4.1). Memory rules:
+- RAM is the constraint (~80 KB total; static RAM 37.96 KB on 1.4.9 (40 bytes under budget), was 42.9 KB on 1.4.1). Memory rules:
   - **String literals live in RAM on the ESP8266.** Web pages are PROGMEM templates (`~key~` placeholders, streamed
     by `sendPage`/`sendTpl`, never built as one big String); use `PSTR()`/`F()`/`snprintf_P` for anything long.
   - Drawing code shares one row buffer (`gRowBuf`); don't add per-function `static` pixel buffers.
@@ -59,7 +61,7 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 
 ## Owner's setup / current state (Nov 2026)
 - Owner: Chris (GitHub `Chrishalaby`), macOS, Claude Code user. Repo: github.com/Chrishalaby/claude-desk (public).
-- His desk runs **firmware 1.4.5** (1.4.8 is built: drawings with a back-to-clock, the now-playing line, leaving a Wi-Fi without internet), paired on the hub as "Chris"
+- His desk runs **firmware 1.4.5** (1.4.9 is built: drawings with a back-to-clock, photos & GIFs, the now-playing line, leaving a Wi-Fi without internet), paired on the hub as "Chris"
   (`chris-desk.local`), ~21 KB free while connected, on home Wi-Fi with the hotspot also saved.
   1.0.4 → 1.4.1 by local `/update`; 1.4.1 → 1.4.3 via SAFE MODE (its own OTA failed); later versions by the hub's
   Update button (restart-then-download path, verified on the device).

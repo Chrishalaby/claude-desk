@@ -111,8 +111,9 @@ Linux `systemctl --user disable --now claude-desk-agent`; Windows delete `claude
 ## 6. More apps (optional)
 
 The same **Apps** tab can put more on the desk, all fetched by the hub (the desk itself needs nothing extra):
-- **Canvas** (on your desk's page under **Devices**): draw on your desk from your phone; **Back to clock** returns it
-  to the clock. From a friend's chat, ✏️ draws on both desks at once, and they can
+- **Canvas, photos & GIFs** (on your desk's page under **Devices**): draw on your desk from your phone, or show a
+  photo or GIF on it (resized for the screen; long GIFs get shortened); **Back to clock** returns it to the clock.
+  From a friend's chat, 🖼️ puts one on their desk. From a friend's chat, ✏️ draws on both desks at once, and they can
   join in and draw with you.
 - **Now playing**: the song under the clock. It comes from your computer automatically (section 5); for music on your
   phone or a speaker, link your app to Last.fm.

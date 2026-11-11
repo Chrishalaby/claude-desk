@@ -26,6 +26,7 @@
 #include <ESP8266httpUpdate.h>
 #include <LittleFS.h>
 #include <MD5Builder.h>
+#include "media.h"
 #endif
 
 #ifndef FW_VERSION
@@ -498,7 +499,7 @@ void handleInfoBasic() {
 
 // ============================================================ normal mode ===
 #ifndef LOADER
-enum View { V_CLOCK, V_NEEDS, V_DONE, V_MSG, V_PAIR, V_NOTE, V_DRAW };
+enum View { V_CLOCK, V_NEEDS, V_DONE, V_MSG, V_PAIR, V_NOTE, V_DRAW, V_MEDIA };
 bool settingsDirty = true;   // report settings to the hub
 View view = V_CLOCK;
 bool dirty = true, timeValid = false;
@@ -784,7 +785,7 @@ void onDraw(const uint8_t *p, unsigned int len) {
     return;
   }
   if (op == 5) {
-    if (view == V_DRAW) { view = V_CLOCK; dirty = true; }
+    if (view == V_DRAW || view == V_MEDIA) { view = V_CLOCK; dirty = true; }
     drawId = 0;
     return;
   }
@@ -817,12 +818,113 @@ void onDraw(const uint8_t *p, unsigned int len) {
   }
 }
 
+File mdFile;
+uint16_t mdSeq = 0, mdSecs = 60, mdFrames = 0, mdFrameNo = 0;
+uint32_t mdSize = 0, mdGot = 0, mdCrc = 0, mdCalc = 0, mdNext = 0, mdUntil = 0;
+bool mdPlaying = false;
+
+static int mdRead(void *ctx, uint8_t *buf, int n) { return ((File *)ctx)->read(buf, n); }
+static void mdTick() { yield(); }
+
+static uint32_t be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+
+void mediaClose() {
+  if (mdFile) mdFile.close();
+  mdPlaying = false;
+}
+
+void mediaAck(PGM_P err) {
+  char e[8] = "", b[56];
+  if (err) strncpy_P(e, err, sizeof e - 1);
+  if (err) snprintf_P(b, sizeof b, PSTR("{\"id\":%u,\"ok\":false,\"e\":\"%s\"}"), mdSeq, e);
+  else snprintf_P(b, sizeof b, PSTR("{\"id\":%u,\"ok\":true}"), mdSeq);
+  mqtt.publish((String(F("desk/")) + chipId + F("/up/media")).c_str(), b);
+}
+
+bool mediaStart() {
+  if (view == V_NEEDS || view == V_PAIR || view == V_MSG) return false;
+  mdFile = LittleFS.open(F("/m.bin"), "r");
+  if (!mdFile || !mediaHeader(mdRead, &mdFile, &mdFrames)) { mediaClose(); return false; }
+  mdPlaying = true;
+  mdFrameNo = 0;
+  mdNext = millis();
+  mdUntil = millis() + 1000UL * mdSecs;
+  view = V_MEDIA;
+  dirty = false;
+  if (scene != SC_NONE) scene = SC_NONE;
+  if (drawFrom.length() && drawFrom != F("you")) {
+    strncpy(uiUnread, drawFrom.c_str(), sizeof uiUnread - 1);
+    uiUnread[sizeof uiUnread - 1] = 0;
+    unreadUntil = millis() + 3UL * 3600 * 1000;
+  }
+  return true;
+}
+
+void mediaFrame() {
+  if (!mdPlaying || (int32_t)(millis() - mdNext) < 0) return;
+  if (mdFrameNo >= mdFrames) { mdFile.seek(8); mdFrameNo = 0; }
+  MediaFrame f;
+  if (!mediaFrameHeader(mdRead, &mdFile, &f) || !mediaDrawFrame(mdRead, &mdFile, f, mdTick)) {
+    mediaClose();
+    view = V_CLOCK;
+    dirty = true;
+    return;
+  }
+  mdFrameNo++;
+  mdNext = millis() + f.delay;
+  if (mdFrames == 1) {
+    mediaClose();
+    if (drawFrom.length() && drawFrom != F("you")) uiDrawFooter(("from " + drawFrom + " \xC2\xB7 " + hhmm(0)).c_str());
+  }
+}
+
+void onMedia(const uint8_t *p, unsigned int len) {
+  if (len < 3) return;
+  uint8_t op = p[0];
+  uint16_t seq = (p[1] << 8) | p[2];
+  if (op == 4) {
+    mediaClose();
+    if (view == V_MEDIA) { view = V_CLOCK; dirty = true; }
+    return;
+  }
+  if (op == 1) {
+    if (len < 14) return;
+    mediaClose();
+    mdSeq = seq;
+    mdSize = be32(p + 3);
+    mdCrc = be32(p + 7);
+    mdSecs = constrain((p[11] << 8) | p[12], 10, 3600);
+    drawFrom = "";
+    for (unsigned i = 0; i < p[13] && 14 + i < len; i++) drawFrom += (char)p[14 + i];
+    mdGot = mdCalc = 0;
+    LittleFS.remove(F("/m.bin"));
+    FSInfo fi;
+    if (!LittleFS.info(fi) || fi.totalBytes - fi.usedBytes < mdSize + 16384) { mdSize = 0; mediaAck(PSTR("space")); return; }
+    mdFile = LittleFS.open(F("/m.bin"), "w");
+    if (!mdFile) mediaAck(PSTR("fs"));
+    return;
+  }
+  if (seq != mdSeq || !mdFile || mdPlaying) return;
+  if (op == 2 && len >= 7) {
+    size_t n = len - 7;
+    if (be32(p + 3) != mdGot || mdGot + n > mdSize || mdFile.write(p + 7, n) != n) { mediaClose(); mediaAck(PSTR("order")); return; }
+    mdCalc = mediaCrc(mdCalc, p + 7, n);
+    mdGot += n;
+  } else if (op == 3) {
+    mdFile.close();
+    if (mdGot != mdSize || mdCalc != mdCrc) { mediaAck(PSTR("crc")); return; }
+    mediaAck(nullptr);
+    mediaStart();
+  }
+}
+
 void onMqtt(char *topic, byte *payload, unsigned int len) {
   String t = topic;
   int slash = t.lastIndexOf('/');
   String leaf = t.substring(slash + 1);
   if (t.indexOf("/up/") >= 0) return;
   if (leaf == F("draw")) { onDraw(payload, len); return; }
+  if (leaf == F("media")) { onMedia(payload, len); return; }
   if (leaf == "next" && !len) { nxText = ""; refreshNext(); return; }
   JsonDocument d;
   if (deserializeJson(d, payload, len)) return;
@@ -1308,6 +1410,8 @@ void loopNormal() {
   if (view == V_MSG && (int32_t)(millis() - msgUntil) >= 0) { view = V_CLOCK; dirty = true; }
   if (view == V_NOTE && (int32_t)(millis() - noteUntil) >= 0) { view = V_CLOCK; dirty = true; }
   if (view == V_DRAW && (int32_t)(millis() - drawUntil) >= 0) { view = V_CLOCK; dirty = true; }
+  if (view == V_MEDIA && (int32_t)(millis() - mdUntil) >= 0) { mediaClose(); view = V_CLOCK; dirty = true; }
+  if (view != V_MEDIA && mdPlaying) mediaClose();
   if (view == V_PAIR && (hubPaired || (int32_t)(millis() - pairUntil) >= 0)) { view = V_CLOCK; dirty = true; }
 
   if (WiFi.status() == WL_CONNECTED && (int32_t)(millis() - nextWeather) >= 0) {
@@ -1386,6 +1490,9 @@ void loopNormal() {
     if (mReact >= 0 && (int32_t)(millis() - nextFrame) >= 0) nextFrame = millis() + uiReactionFrame(mReact, frameNo++);
   } else if (view == V_DRAW) {
     dirty = false;
+  } else if (view == V_MEDIA) {
+    dirty = false;
+    mediaFrame();
   } else if (view == V_NOTE) {
     if (dirty) { uiNotice(nSrc.c_str(), nTitle.c_str(), nText.c_str(), nIcon, nColor); dirty = false; nextFrame = 0; }
     if (nIcon >= 0 && (int32_t)(millis() - nextFrame) >= 0) nextFrame = millis() + uiReactionFrame(nIcon, frameNo++);

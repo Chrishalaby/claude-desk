@@ -21,7 +21,7 @@ export interface FriendRow {
   pending_rel: "friend" | null; pending_from: number | null; updated: number;
 }
 export interface MessageRow {
-  id: number; from_id: number; to_id: number; rel: string; kind: "text" | "reaction" | "doodle"; doodle_id?: number | null;
+  id: number; from_id: number; to_id: number; rel: string; kind: "text" | "reaction" | "doodle" | "media"; doodle_id?: number | null; media_id?: number | null;
   text: string; reaction: string; t: number;
 }
 
@@ -83,6 +83,17 @@ export function openDb(dataDir: string): DB {
       updated INTEGER NOT NULL,
       PRIMARY KEY (user_id, kind)
     );
+    CREATE TABLE IF NOT EXISTS media (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL,
+      data BLOB NOT NULL,
+      preview BLOB NOT NULL,
+      frames INTEGER NOT NULL,
+      bytes INTEGER NOT NULL,
+      created INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS media_user ON media(user_id);
     CREATE TABLE IF NOT EXISTS doodles (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       a INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -129,6 +140,7 @@ export function openDb(dataDir: string): DB {
   }
   const mcols = new Set((db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name));
   if (!mcols.has("doodle_id")) db.exec("ALTER TABLE messages ADD COLUMN doodle_id INTEGER");
+  if (!mcols.has("media_id")) db.exec("ALTER TABLE messages ADD COLUMN media_id INTEGER");
   db.exec(`
     UPDATE friends SET rel = 'friend' WHERE rel IS NOT NULL AND rel != 'friend';
     UPDATE friends SET pending_rel = NULL, pending_from = NULL WHERE rel IS NOT NULL AND pending_rel IS NOT NULL;

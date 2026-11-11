@@ -8,6 +8,7 @@ import type { Config } from "./config.js";
 import { kvGet, kvSet, openDb } from "./db.js";
 import { registerRoutes } from "./routes.js";
 import { Apps } from "./apps.js";
+import { Media } from "./media.js";
 import { Doodles } from "./doodles.js";
 import { Service } from "./service.js";
 import { loadTls, type TlsMaterial } from "./tls.js";
@@ -22,6 +23,7 @@ export interface Hub {
   tick(): void;
   apps: Apps;
   doodles: Doodles;
+  media: Media;
   close(): Promise<void>;
 }
 
@@ -39,6 +41,7 @@ export async function startHub(cfg: Config): Promise<Hub> {
   const cn = cfg.mqttPublicHost ?? "claude-desk-hub";
   const tlsMat = await loadTls(cfg.dataDir, cfg.tlsCert, cfg.tlsKey, cn);
   const svc = new Service(db, cfg, tlsMat);
+  const media = new Media(db, svc, () => Math.floor(cfg.now()));
 
   const broker = await startBroker(cfg.mqttPort, cfg.httpHost, tlsMat, {
     authenticate: (chip, secret) => svc.deviceAuth(chip, secret),
@@ -48,6 +51,7 @@ export async function startHub(cfg: Config): Promise<Hub> {
       if (sub === "status") svc.deviceStatus(chip, payload);
       else if (sub === "settings") svc.deviceSettingsReport(chip, payload);
       else if (sub === "wifi") svc.deviceWifi(chip, payload);
+      else if (sub === "media") media.ack(chip, payload);
     },
     log,
   });
@@ -58,7 +62,7 @@ export async function startHub(cfg: Config): Promise<Hub> {
 
   const app = Fastify({ logger: false, trustProxy: true, bodyLimit: 16 * 1024 });
   await app.register(cookie, { secret: sessionSecret });
-  registerRoutes(app, svc, db, cfg, apps, doodles);
+  registerRoutes(app, svc, db, cfg, apps, doodles, media);
   await app.listen({ port: cfg.httpPort, host: cfg.httpHost });
   const httpPort = (app.server.address() as AddressInfo).port;
 
@@ -89,6 +93,7 @@ export async function startHub(cfg: Config): Promise<Hub> {
     tick: () => svc.tick(),
     apps,
     doodles,
+    media,
     async close() {
       for (const t of timers) clearInterval(t);
       await app.close();

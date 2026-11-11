@@ -17,6 +17,8 @@ const ERRORS = {
   spotify_not_configured: "Spotify isn't set up on this hub yet (it needs a Spotify app ID).", slack_not_configured: "Slack isn't set up on this hub yet.",
   lastfm_not_configured: "Last.fm isn't set up on this hub yet (it needs an API key).", lastfm_user: "No Last.fm user with that name.",
   lastfm_unreachable: "Couldn't reach Last.fm. Try again in a minute.", oauth_state: "That sign-in took too long. Try again.",
+  media_unreadable: "Couldn't read that picture. Try a JPG, PNG or GIF.", media_too_big: "That GIF is too long for the desk, even shortened.",
+  media_full: "You have 30 saved. Delete a few first.", media_input_big: "That file is too big (12 MB max).",
   spotify_invite_only: "Spotify sign-in on this hub only works for invited accounts for now. Use Last.fm below; it works with Spotify too.",
   lastfm_denied: "Last.fm sign-in was cancelled.", lastfm_failed: "Last.fm sign-in failed.",
   google_denied: "Google sign-in was cancelled.", google_failed: "Google sign-in failed.",
@@ -441,6 +443,8 @@ async function viewChat(username) {
     h("div", { class: "reacts" },
       h("button", { type: "button", class: "draw-btn", title: "Draw together", "aria-label": "Draw together",
         onclick: () => openDoodle({ to: username, title: `Drawing with ${fr ? fr.displayName : "@" + username}` }) }, "✏️"),
+      h("button", { type: "button", class: "draw-btn", title: "Send a photo or GIF", "aria-label": "Send a photo or GIF",
+        onclick: () => sendMediaSheet(username, fr ? fr.displayName : "@" + username, () => { last = ""; refresh(); }) }, "🖼️"),
       REACTIONS.map(reactBtn)),
     h("form", {
       class: "inline", onsubmit: async (e) => {
@@ -463,6 +467,9 @@ async function viewChat(username) {
     last = sig;
     msgs.replaceChildren(...(list.length ? list.map((m) => m.kind === "doodle"
       ? h("div", { class: "bubble react" + (m.mine ? " mine" : "") }, doodleThumb(m.doodle), h("span", { class: "meta" }, "drawing · " + clock(m.t)))
+      : m.kind === "media"
+      ? h("div", { class: "bubble react" + (m.mine ? " mine" : "") }, m.media && m.media.kind ? mediaImg(m.media.id, 140) : "🖼️",
+        h("span", { class: "meta" }, (m.media && m.media.kind === "gif" ? "GIF" : m.media && m.media.kind ? "photo" : "deleted") + " · " + clock(m.t)))
       : m.kind === "reaction"
       ? h("div", { class: "bubble react" + (m.mine ? " mine" : ""), title: m.reaction }, EMOJI[m.reaction] || m.reaction, h("span", { class: "meta" }, clock(m.t)))
       : h("div", { class: "bubble" + (m.mine ? " mine" : "") }, m.text, h("span", { class: "meta" }, clock(m.t))))
@@ -772,7 +779,7 @@ async function viewDevice(chip) {
 
   const wifiEl = wifiCard(enc, () => data);
   const refreshAll = async () => { await refresh(); wifiEl.update(data); };
-  fill(main, h("h2", {}, "Status"), status, h("h2", {}, "Draw on your desk"), appCanvas(), form, h("h2", {}, "Wi-Fi networks"), wifiEl);
+  fill(main, h("h2", {}, "Status"), status, h("h2", {}, "On your desk"), appCanvas(), appMedia(), form, h("h2", {}, "Wi-Fi networks"), wifiEl);
   state.poll = setInterval(() => { if (!document.hidden) refreshAll().catch(() => {}); }, 5000);
 }
 
@@ -1061,6 +1068,112 @@ function appWebhook(a) {
     h("button", { class: "btn block", onclick: guarded(async () => {
       try { const r = await api("POST", "/api/apps/test"); toast(r.devices ? "Sent. Look at your desk." : "No desk paired yet"); } catch (e) { fail(e); }
     }) }, "Send a test card"));
+}
+
+const MEDIA_MAX_UPLOAD = 12 * 1024 * 1024;
+function pickFile() {
+  return new Promise((resolve) => {
+    const input = h("input", { type: "file", accept: "image/*", style: "display:none" });
+    input.addEventListener("change", () => { resolve(input.files[0] || null); input.remove(); });
+    document.body.append(input);
+    input.click();
+  });
+}
+async function uploadMedia(file, fit) {
+  if (file.size > MEDIA_MAX_UPLOAD) throw new Error(ERRORS.media_input_big);
+  let res;
+  try {
+    res = await fetch("/api/media" + (fit === "contain" ? "?fit=contain" : ""), {
+      method: "POST", credentials: "same-origin", headers: { "content-type": file.type || "application/octet-stream" }, body: file,
+    });
+  } catch { throw new Error(ERRORS.network); }
+  let data = {};
+  try { data = await res.json(); } catch { data = {}; }
+  if (!res.ok) throw new Error(ERRORS[data.error] || (res.status === 413 ? ERRORS.media_input_big : "Couldn't upload that."));
+  return data;
+}
+const mediaImg = (id, size) => h("img", { class: "thumb", src: `/api/media/${id}/preview`, width: size, height: size, loading: "lazy", alt: "" });
+
+function appMedia() {
+  const el = h("div", { class: "card", style: "margin-top:12px" });
+  const keep = h("select", { style: "max-width:150px" }, [[60, "1 minute"], [600, "10 minutes"], [3600, "1 hour"]].map(([v, l]) => h("option", { value: v, selected: v === 600 }, l)));
+  const fit = h("select", {}, [["cover", "Fill the screen (crops the edges)"], ["contain", "Show the whole picture"]].map(([v, l]) => h("option", { value: v }, l)));
+  const status = h("p", { class: "hint", style: "margin:8px 0 0" });
+  let watching = 0;
+  async function track(id) {
+    const mine = ++watching;
+    status.textContent = "Sending to your desk…";
+    for (let i = 0; i < 90 && mine === watching; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      let d;
+      try { d = await api("GET", "/api/media"); } catch { continue; }
+      const x = d.deliveries.find((v) => v.media === id);
+      if (!x || x.state === "sending") continue;
+      status.textContent = x.state === "ok" ? "On your desk." : x.error === "space" ? "Your desk ran out of room for it." : "That didn't reach your desk. Try again.";
+      return;
+    }
+    if (mine === watching) status.textContent = "Still sending… big GIFs can take a minute.";
+  }
+  async function show(id) {
+    try {
+      const r = await api("POST", `/api/media/${id}/show`, { secs: Number(keep.value) });
+      if (!r.devices) { status.textContent = ""; toast("Your desk is offline", true); return; }
+      track(id);
+    } catch (e) { fail(e); }
+  }
+  async function paint() {
+    let d = { items: [] };
+    try { d = await api("GET", "/api/media"); } catch { d = { items: [] }; }
+    fill(el,
+      h("p", { style: "margin:0" }, "Show a photo or GIF on your desk. It's resized to the screen; long GIFs get shortened to fit."),
+      h("label", { class: "f" }, "Picture"), fit,
+      h("button", { class: "btn primary block", style: "margin-top:10px", onclick: guarded(async () => {
+        const f = await pickFile();
+        if (!f) return;
+        status.textContent = "Preparing it for the desk…";
+        try { const m = await uploadMedia(f, fit.value); await paint(); await show(m.id); } catch (e) { status.textContent = ""; fail(e); }
+      }) }, "Add a photo or GIF"),
+      status,
+      d.items.length ? [h("label", { class: "f" }, "Your photos & GIFs"),
+        h("div", { class: "inline", style: "margin-bottom:8px" }, h("span", { class: "hint", style: "margin:0" }, "Show for"), keep),
+        h("div", { class: "thumbs" }, d.items.map((m) => h("div", { class: "thumb-card" }, mediaImg(m.id, 96),
+          h("div", { class: "actions", style: "justify-content:center;margin-top:6px" },
+            h("button", { class: "btn small", onclick: guarded(() => show(m.id)) }, "Show"),
+            h("button", { class: "btn small ghost danger", "aria-label": "Delete", onclick: guarded(async () => {
+              if (!confirm("Delete this?")) return;
+              try { await api("DELETE", `/api/media/${m.id}`); paint(); } catch (e) { fail(e); }
+            }) }, "✕")))))] : null);
+  }
+  paint();
+  return el;
+}
+
+function sendMediaSheet(username, displayName, onSent) {
+  const grid = h("div", { style: "width:min(92vw,440px);text-align:center" });
+  const close = () => dlg.remove();
+  const send = async (id) => {
+    try {
+      const r = await api("POST", `/api/media/${id}/send`, { to: username });
+      toast(r.devices ? "Sent to their desk" : "Sent (their desk is offline)");
+      close();
+      onSent();
+    } catch (e) { fail(e); }
+  };
+  const dlg = h("div", { class: "draw-overlay" },
+    h("div", { class: "draw-head" }, h("b", {}, `Send to ${displayName}`), h("span", { class: "hint", style: "margin:0" }, "A photo or GIF on their desk for a minute")),
+    h("button", { class: "btn primary", onclick: guarded(async () => {
+      const f = await pickFile();
+      if (!f) return;
+      toast("Preparing it…");
+      try { const m = await uploadMedia(f, "cover"); await send(m.id); } catch (e) { fail(e); }
+    }) }, "Pick a photo or GIF"),
+    grid,
+    h("button", { class: "btn small ghost", onclick: close }, "Cancel"));
+  document.body.append(dlg);
+  api("GET", "/api/media").then((d) => fill(grid, d.items.length
+    ? [h("p", { class: "hint", style: "margin:0 0 8px" }, "Or one you added before:"),
+      h("div", { class: "thumbs", style: "justify-content:center" }, d.items.map((m) => h("button", { class: "thumb-pick", onclick: guarded(() => send(m.id)) }, mediaImg(m.id, 96))))]
+    : null)).catch(() => {});
 }
 
 function appCanvas() {

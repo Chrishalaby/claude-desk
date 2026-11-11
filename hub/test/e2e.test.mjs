@@ -16,6 +16,8 @@ import { eventsFromIcs, slackText } from "../dist/apps.js";
 import { chunkStrokes, validStrokes } from "../dist/doodles.js";
 import { isPrivateAddress } from "../dist/net.js";
 import http from "node:http";
+import zlib from "node:zlib";
+import sharp from "sharp";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "cdesk-hub-"));
@@ -1399,4 +1401,86 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
   assert.equal((await erin.call("PUT", "/api/apps/email", { host: "bad host!", user: "e@x.io", pass: "p" })).body.error, "email_host");
   assert.equal((await erin.call("PUT", "/api/apps/email", { host: "127.0.0.1", user: "e@x.io", pass: "app-pass" })).body.error, "email_unreachable");
   assert.equal((await erin.call("DELETE", "/api/apps/nope")).status, 404);
+});
+
+test("photos and GIFs: converted on the hub, streamed to your desk or a friend's, back to clock", async () => {
+  hub.media.pace = 0;
+  const gina = user(), hank = user(), ivy = user();
+  for (const [u, name] of [[gina, "gina"], [hank, "hank"], [ivy, "ivy"]]) {
+    const r = await u.call("POST", "/api/register", { username: name, displayName: name[0].toUpperCase() + name.slice(1), password: "password-" + name, invite: "letmein", tz: "UTC" });
+    assert.equal(r.status, 200, r.text);
+  }
+  await gina.call("POST", "/api/friends", { username: "hank" });
+  await hank.call("POST", "/api/friends", { username: "gina" });
+  const desk = async (who, chip) => {
+    const hl = await anon.call("POST", "/api/device/hello", { chip, fw: "1.4.9", secret: "" });
+    assert.equal((await who.call("POST", "/api/devices/pair", { code: hl.body.pairCode, name: "Desk" })).status, 200);
+    const c = await device(chip, hl.body.secret);
+    await c.subscribeAsync(`desk/${chip}/#`, { qos: 1 });
+    return c;
+  };
+  const dg = await desk(gina, "esp-a1a001"), dh = await desk(hank, "esp-b1b001");
+  const upload = (who, body, type, q = "") => fetch(`${base}/api/media${q}`, { method: "POST", headers: { cookie: who.cookie(), "content-type": type }, body })
+    .then(async (x) => ({ status: x.status, body: await x.json() }));
+  const received = async (c, chip, n = 1) => {
+    const ends = () => c.got.filter((m) => m.topic === `desk/${chip}/media` && m.buf[0] === 3);
+    await c.waitFor(() => ends().length >= n, "media end on " + chip);
+    const seq = ends()[n - 1].buf.readUInt16BE(1);
+    const mine = c.got.filter((m) => m.topic === `desk/${chip}/media` && m.buf.readUInt16BE(1) === seq);
+    const begin = mine.find((m) => m.buf[0] === 1).buf;
+    const parts = mine.filter((m) => m.buf[0] === 2).map((m) => ({ off: m.buf.readUInt32BE(3), data: m.buf.subarray(7) }));
+    parts.forEach((p, i) => assert.equal(p.off, i ? parts[i - 1].off + parts[i - 1].data.length : 0, "chunks arrive in order"));
+    const data = Buffer.concat(parts.map((p) => p.data));
+    assert.ok(parts.every((p) => p.data.length <= 700), "chunks fit the desk's 768-byte messages");
+    return { seq, data, size: begin.readUInt32BE(3), crc: begin.readUInt32BE(7), secs: begin.readUInt16BE(11), from: begin.subarray(14, 14 + begin[13]).toString() };
+  };
+
+  assert.deepEqual(await upload(gina, Buffer.from("not an image"), "image/png"), { status: 400, body: { error: "media_unreadable" } });
+  const w = 120, h = 90, pages = 4;
+  const raw = Buffer.alloc(w * h * pages * 4);
+  for (let p = 0; p < pages; p++) for (let i = 0; i < w * h; i++) {
+    const x = i % w, o = (p * w * h + i) * 4;
+    raw.set(x >= p * 25 && x < p * 25 + 30 ? [255, 120, 0, 255] : [10, 10, 40, 255], o);
+  }
+  const gif = await sharp(raw, { raw: { width: w, height: h * pages, channels: 4, pageHeight: h } }).gif({ delay: [100, 100, 100, 300], loop: 0 }).toBuffer();
+  let r = await upload(gina, gif, "image/gif");
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.deepEqual([r.body.kind, r.body.frames], ["gif", 4]);
+  const gifId = r.body.id;
+  const photo = await sharp({ create: { width: 640, height: 480, channels: 3, background: "#3366cc" } }).jpeg().toBuffer();
+  r = await upload(gina, photo, "image/jpeg", "?fit=contain");
+  assert.deepEqual([r.status, r.body.kind, r.body.frames], [200, "image", 1]);
+  const list = (await gina.call("GET", "/api/media")).body;
+  assert.deepEqual(list.items.map((x) => x.id), [r.body.id, gifId]);
+  const prev = await fetch(`${base}/api/media/${gifId}/preview`, { headers: { cookie: gina.cookie() } });
+  assert.deepEqual([prev.status, prev.headers.get("content-type")], [200, "image/webp"]);
+
+  r = await gina.call("POST", `/api/media/${gifId}/show`, { secs: 600 });
+  assert.deepEqual(r.body, { devices: 1 });
+  const got = await received(dg, "esp-a1a001");
+  assert.deepEqual([got.data.length, got.crc, got.secs, got.from], [got.size, zlib.crc32(got.data) >>> 0, 600, "you"]);
+  assert.equal(got.data.subarray(0, 4).toString(), "DKM1");
+  assert.equal(got.data.readUInt16LE(4), 4);
+  assert.equal((await gina.call("GET", "/api/media")).body.deliveries[0].state, "sending");
+  await dg.publishAsync("desk/esp-a1a001/up/media", JSON.stringify({ id: got.seq, ok: true }), { qos: 1 });
+  await sleep(100);
+  assert.deepEqual((await gina.call("GET", "/api/media")).body.deliveries[0], { chip: "esp-a1a001", media: gifId, state: "ok", error: null, at: clock });
+
+  assert.equal((await gina.call("POST", `/api/media/${gifId}/send`, { to: "ivy" })).status, 403, "friends only");
+  assert.equal((await hank.call("POST", `/api/media/${gifId}/show`, {})).status, 404, "only your own uploads");
+  r = await gina.call("POST", `/api/media/${gifId}/send`, { to: "hank" });
+  assert.deepEqual(r.body, { devices: 1 });
+  const atHank = await received(dh, "esp-b1b001");
+  assert.deepEqual([atHank.from, atHank.data.equals(got.data)], ["Gina", true]);
+  const chat = (await hank.call("GET", "/api/messages?with=gina")).body.find((m) => m.kind === "media");
+  assert.deepEqual(chat.media, { id: gifId, kind: "gif" });
+  assert.equal((await fetch(`${base}/api/media/${gifId}/preview`, { headers: { cookie: hank.cookie() } })).status, 200, "the friend can see what was sent");
+  assert.equal((await fetch(`${base}/api/media/${gifId}/preview`, { headers: { cookie: ivy.cookie() } })).status, 404);
+
+  assert.equal((await gina.call("POST", "/api/doodles/hide")).status, 200);
+  await dg.waitFor((m) => m.topic === "desk/esp-a1a001/media" && m.buf[0] === 4, "media stop");
+  await dg.waitFor((m) => m.topic === "desk/esp-a1a001/draw" && m.buf[0] === 5, "back to clock");
+  assert.equal((await gina.call("DELETE", `/api/media/${gifId}`)).status, 200);
+  assert.equal((await gina.call("POST", `/api/media/${gifId}/show`, {})).status, 404);
+  for (const c of [dg, dh]) await c.endAsync();
 });

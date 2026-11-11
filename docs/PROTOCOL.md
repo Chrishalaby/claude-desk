@@ -190,6 +190,27 @@ Stroke data: `0xFF, colour (0–11), width (1–24)` starts a stroke, then `x, y
 by lines. Colours: white, black (eraser), red, orange, yellow, green, teal, blue, purple, pink, brown, grey. The hub
 splits long strokes so each frame starts with a stroke header and a continued stroke repeats its last point.
 
+### 3.9 `desk/<chip>/media` — binary, not retained, hub → device (firmware ≥ 1.4.9)
+A photo or GIF (section 14), streamed into the desk's storage as `/m.bin` (one at a time; the previous one is deleted
+first). Every frame starts with `op` and a 16-bit transfer number (big-endian):
+
+| op | rest | desk |
+|---|---|---|
+| 1 begin | size u32, CRC-32 u32, seconds u16 (10–3600), name length u8 + UTF-8 name (≤ 40, `you` = your own) | needs size + 16 KB free in LittleFS, else answers `space` |
+| 2 chunk | offset u32 + up to 700 bytes | appended in order, else `order` |
+| 3 end | — | checks size and CRC (`crc`), answers, then plays it (not over NEEDS YOU, pairing or a message) |
+| 4 stop | — | back to the clock |
+
+Answer on `desk/<chip>/up/media`: `{"id":<transfer>,"ok":true}` or `{"id":…,"ok":false,"e":"space|order|crc|fs"}`.
+The desk loops a GIF until the time is up (Back to clock, draw op 5, also stops it); a still from a friend gets a
+"from <name> · hh:mm" footer and their name in the unread line like a drawing.
+
+File format (little-endian): `DKM1`, frames u16, 2 reserved bytes, then per frame: delay ms u16, x u8, y u8, w u8,
+h u8 (the changed rectangle; w = 0: nothing changed), data length u32, data. The data covers the rectangle row by row
+with tokens: `00nnnnnn` skip n+1 pixels (unchanged), `01nnnnnn` + colour: n+1 pixels of that colour, `10nnnnnn` + n+1
+colours; `11kkhhhh llllllll` is the same with kind k (0 skip, 1 run, 2 literal) and count `hhhhllllllll`+1 (≤ 4096).
+Colours are RGB565. Frame 0 always covers the whole 240×240 screen.
+
 ## 4. Claude Code hooks
 
 ### 4.1 Client → hub: `POST https://<hub>/api/hook`
@@ -230,7 +251,8 @@ Hub publishes the view to `desk/<chip>/claude` for **every device owned by that 
 * `POST /api/messages {to: "<username>", kind: "text"|"reaction", text?, reaction?}` — sender must be friends with `to`.
   Rate limit: 10/min per sender. Stored with id, delivered by publishing retained `desk/<chip>/msg` to each of the recipient's devices.
 * `GET /api/messages?with=<username>` — conversation history (newest first, 50). A finished shared drawing appears as
-  `kind: "doodle"` with `doodle` = its stroke data in base64 (section 13).
+  `kind: "doodle"` with `doodle` = its stroke data in base64 (section 13); a photo or GIF as `kind: "media"` with
+  `media: {id, kind: "image"|"gif"|null}` (null once deleted; preview at `GET /api/media/<id>/preview`).
 
 ## 6. Friends
 
@@ -445,3 +467,18 @@ Draw in the web app; every stroke shows up on the desk as you draw (3.8).
 * `GET /api/doodles/mine` → your last 20 own-canvas drawings; `POST /api/doodles/<id>/show {secs}` puts one back on
   your desks.
 * A drawing nobody touched for 5 min is ended by the hub (shown for 60 s). Strokes are limited to 1200 calls/min.
+
+## 14. Photos & GIFs
+
+* `POST /api/media[?fit=contain]` with the file as the body (`image/*` or `application/octet-stream`, ≤ 12 MB) →
+  `{id, kind: "image"|"gif", frames, bytes, created}`. The hub decodes it (sharp: JPEG, PNG, WebP, GIF, AVIF…; EXIF
+  rotation applied), crops it to fill 240×240 (`contain`: fits it with black bars), converts to RGB565 and encodes it
+  in the section 3.9 format, keeping only the changed rectangle of each GIF frame. Up to 240 frames; delays under
+  20 ms count as 100 ms. If it's over 450 KB the hub drops every other frame (adding their delays) until it fits, else
+  413 `media_too_big`. 400 `media_unreadable`; at most 30 per user (`media_full`), 30 uploads an hour.
+* `GET /api/media` → `{items, deliveries: [{chip, media, state: "sending"|"ok"|"error"|null, error, at}]}` (the last
+  transfer to each of your desks, from section 3.9's answers). `GET /api/media/<id>/preview` → a 160 px WebP (yours, or
+  one in a chat you're part of). `DELETE /api/media/<id>`.
+* `POST /api/media/<id>/show {secs}` → `{devices}`: streams it to your online desks (60 shows an hour).
+  `POST /api/media/<id>/send {to}` → a friend's desks for 60 s plus a `media` chat message (20 an hour, friends only).
+  A new transfer to the same desk cancels the one in flight. `POST /api/doodles/hide` (Back to clock) also stops it.

@@ -24,6 +24,7 @@
     "imapflow": "^1.0.191",
     "node-ical": "^0.20.1",
     "selfsigned": "^5.5.0",
+    "sharp": "^0.34.5",
     "typescript": "^5.9.0"
   },
   "devDependencies": {

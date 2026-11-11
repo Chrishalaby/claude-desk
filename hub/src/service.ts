@@ -678,6 +678,9 @@ export class Service {
       doodle: m.kind === "doodle" && m.doodle_id
         ? Buffer.from((this.db.prepare("SELECT data FROM doodles WHERE id = ?").get(m.doodle_id) as { data: Buffer } | undefined)?.data ?? Buffer.alloc(0)).toString("base64")
         : undefined,
+      media: m.kind === "media" && m.media_id
+        ? { id: m.media_id, kind: (this.db.prepare("SELECT kind FROM media WHERE id = ?").get(m.media_id) as { kind: string } | undefined)?.kind ?? null }
+        : undefined,
     };
   }
 

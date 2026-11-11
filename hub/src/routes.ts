@@ -6,6 +6,7 @@ import type { DB, UserRow } from "./db.js";
 import { CHIP_RE } from "./broker.js";
 import type { Apps } from "./apps.js";
 import type { Doodles } from "./doodles.js";
+import { MEDIA_MAX_INPUT, type Media } from "./media.js";
 import { HttpError, type Service } from "./service.js";
 import { firmwareInfo, PACK_ID_RE, readBlob } from "./files.js";
 import { charLen, hashPassword, isValidTz, oneLine, randomHex, RateLimiter, safeEqual, sha256, trunc, verifyPassword } from "./util.js";
@@ -20,7 +21,7 @@ declare module "fastify" {
 
 const str = (v: unknown) => (typeof v === "string" ? v : "");
 
-export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: Config, apps: Apps, doodles: Doodles) {
+export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: Config, apps: Apps, doodles: Doodles, media: Media) {
   const nowMs = () => cfg.now() * 1000;
   const loginIp = new RateLimiter(20, 60_000, nowMs);
   const loginUser = new RateLimiter(10, 60_000, nowMs);
@@ -434,7 +435,24 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   const body = (req: FastifyRequest) => (req.body ?? {}) as Record<string, unknown>;
   app.post("/api/doodles", { preHandler: auth }, async (req) => doodles.start(req.user!.id, str(body(req).to).trim() || null));
   app.get("/api/doodles/active", { preHandler: auth }, async (req) => doodles.active(req.user!.id));
-  app.post("/api/doodles/hide", { preHandler: auth }, async (req) => { doodles.hide(req.user!.id); return { ok: true }; });
+  app.post("/api/doodles/hide", { preHandler: auth }, async (req) => { media.hide(req.user!.id); doodles.hide(req.user!.id); return { ok: true }; });
+
+  app.addContentTypeParser(/^(application\/octet-stream|image\/[a-z0-9.+-]+)$/, { parseAs: "buffer", bodyLimit: MEDIA_MAX_INPUT }, (_req, b, done) => done(null, b));
+  const mediaId = (req: FastifyRequest) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id) || id <= 0) throw new HttpError(404, "not_found");
+    return id;
+  };
+  app.post("/api/media", { preHandler: auth, bodyLimit: MEDIA_MAX_INPUT }, async (req) => {
+    if (!Buffer.isBuffer(req.body)) throw new HttpError(400, "media_unreadable");
+    return media.add(req.user!.id, req.body, ((req.query ?? {}) as Record<string, unknown>).fit);
+  });
+  app.get("/api/media", { preHandler: auth }, async (req) => ({ items: media.list(req.user!.id), deliveries: media.deliveries(req.user!.id) }));
+  app.get("/api/media/:id/preview", { preHandler: auth }, async (req, reply) =>
+    reply.type("image/webp").header("cache-control", "private, max-age=86400").send(media.preview(req.user!.id, mediaId(req))));
+  app.delete("/api/media/:id", { preHandler: auth }, async (req) => { media.remove(req.user!.id, mediaId(req)); return { ok: true }; });
+  app.post("/api/media/:id/show", { preHandler: auth }, async (req) => media.show(req.user!.id, mediaId(req), body(req).secs));
+  app.post("/api/media/:id/send", { preHandler: auth }, async (req) => media.send(req.user!.id, mediaId(req), str(body(req).to).trim()));
   app.get("/api/doodles/mine", { preHandler: auth }, async (req) => doodles.mine(req.user!.id));
   app.get("/api/doodles/:id", { preHandler: auth }, async (req) => doodles.view(req.user!.id, doodleId(req)));
   app.post("/api/doodles/:id/strokes", { preHandler: auth, bodyLimit: 16384 }, async (req) => {
