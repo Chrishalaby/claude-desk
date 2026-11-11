@@ -184,6 +184,7 @@ Live drawings (section 13). Every frame starts with `op` and a 16-bit drawing id
 | 2 strokes | stroke data, ≤ 700 bytes | draws it |
 | 3 end | seconds to keep it, 16-bit (10–3600) | "from <name>" footer, back to the clock after that time |
 | 4 clear | — | clears the canvas |
+| 5 back to clock | — | firmware ≥ 1.4.8: leaves the drawing now, whatever its id (older firmware ignores it) |
 
 Stroke data: `0xFF, colour (0–11), width (1–24)` starts a stroke, then `x, y` byte pairs (0–239) are its points, joined
 by lines. Colours: white, black (eraser), red, orange, yellow, green, teal, blue, purple, pink, brown, grey. The hub
@@ -439,6 +440,8 @@ Draw in the web app; every stroke shows up on the desk as you draw (3.8).
   drawing is then saved in your chat with each other), `DELETE /api/doodles/<id>` (own canvas only).
 * `GET /api/doodles/<id>/events` — Server-Sent Events: `init {data}`, `strokes {by, s}`, `clear {by}`, `end`; a ping
   comment every 20 s. Both browsers draw from this, so you see each other's lines live.
+* `POST /api/doodles/hide` → back to the clock on your own desks: ends your open own-canvas drawing (saved), then
+  sends the last drawing shown there an end with 10 s (older firmware) followed by op 5 (1.4.8+: immediately).
 * `GET /api/doodles/mine` → your last 20 own-canvas drawings; `POST /api/doodles/<id>/show {secs}` puts one back on
   your desks.
 * A drawing nobody touched for 5 min is ended by the hub (shown for 60 s). Strokes are limited to 1200 calls/min.

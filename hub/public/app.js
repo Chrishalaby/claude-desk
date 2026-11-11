@@ -370,7 +370,12 @@ async function openDoodle({ to = null, id = null, title, onClose = null }) {
         await flush();
         try { await api("POST", `/api/doodles/${id}/end`, { secs: own ? Number(keep.value) : 60 }); ended = true; toast("Drawing saved"); close(); } catch (e) { fail(e); }
       }) }, "Done"),
-      h("button", { class: "btn small ghost", onclick: () => { flush(); close(); } }, own ? "Close" : "Leave")),
+      own ? h("button", { class: "btn small ghost", onclick: guarded(async () => {
+        await flush();
+        try { await api("POST", "/api/doodles/hide"); ended = true; toast("Back to the clock"); close(); } catch (e) { fail(e); }
+      }) }, "Back to clock")
+        : h("button", { class: "btn small ghost", onclick: () => { flush(); close(); } }, "Leave")),
+    own ? h("p", { class: "hint", style: "text-align:center;max-width:440px" }, "Done keeps it on your desk for the time you pick, then the clock comes back. Back to clock saves it and shows the clock now.") : null,
     own ? null : h("p", { class: "hint", style: "text-align:center;max-width:440px" }, "Leave keeps the drawing open for your friend. Done saves it in your chat for both of you."));
   document.body.append(dlg);
 }
@@ -767,7 +772,7 @@ async function viewDevice(chip) {
 
   const wifiEl = wifiCard(enc, () => data);
   const refreshAll = async () => { await refresh(); wifiEl.update(data); };
-  fill(main, h("h2", {}, "Status"), status, form, h("h2", {}, "Wi-Fi networks"), wifiEl);
+  fill(main, h("h2", {}, "Status"), status, h("h2", {}, "Draw on your desk"), appCanvas(), form, h("h2", {}, "Wi-Fi networks"), wifiEl);
   state.poll = setInterval(() => { if (!document.hidden) refreshAll().catch(() => {}); }, 5000);
 }
 
@@ -1065,8 +1070,11 @@ function appCanvas() {
     let mine = [];
     try { mine = await api("GET", "/api/doodles/mine"); } catch { mine = []; }
     fill(el,
-      h("p", { style: "margin:0" }, "Draw something for your own desk: a note, a doodle, a reminder. Friends can draw with you from the chat (✏️)."),
+      h("p", { style: "margin:0" }, "Draw something for your desk: a note, a doodle, a reminder. Friends can draw with you from the chat (✏️)."),
       h("button", { class: "btn primary block", onclick: () => openDoodle({ to: null, title: "Your canvas", onClose: paint }) }, "Draw on my desk"),
+      h("button", { class: "btn block", style: "margin-top:8px", onclick: guarded(async () => {
+        try { await api("POST", "/api/doodles/hide"); toast("Back to the clock"); paint(); } catch (e) { fail(e); }
+      }) }, "Back to clock"),
       mine.length ? [h("label", { class: "f" }, "Your drawings"),
         h("div", { class: "inline", style: "margin-bottom:8px" }, h("span", { class: "hint", style: "margin:0" }, "Show for"), keep),
         h("div", { class: "thumbs" }, mine.map((d) => h("div", { class: "thumb-card" }, doodleThumb(d.data, 96),
@@ -1271,7 +1279,7 @@ async function viewApps() {
   const cmd = (label, text) => [h("label", { class: "f" }, label),
     h("div", { class: "codebox" }, h("div", { class: "code" }, text), h("button", { class: "btn small", onclick: () => copy(text) }, "Copy"))];
   fill(m,
-    h("nav", { class: "chips" }, [["Claude Code", "app-claude"], ["Computer", "app-computer"], ["Canvas", "app-canvas"], ["Music", "app-music"], ["Timer", "app-timer"], ["Reminders", "app-reminders"], ["Rain", "app-rain"], ["Calendar", "app-calendar"], ["GitHub", "app-github"],
+    h("nav", { class: "chips" }, [["Claude Code", "app-claude"], ["Computer", "app-computer"], ["Music", "app-music"], ["Timer", "app-timer"], ["Reminders", "app-reminders"], ["Rain", "app-rain"], ["Calendar", "app-calendar"], ["GitHub", "app-github"],
       ["Markets", "app-markets"], ["Email", "app-email"], ["Slack", "app-slack"], ["Webhook", "app-webhook"]].map(([l, id]) =>
       h("button", { type: "button", class: "chip", onclick: () => document.getElementById(id)?.scrollIntoView({ behavior: "smooth" }) }, l))),
     h("h2", { id: "app-claude" }, "Claude Code"),
@@ -1295,7 +1303,6 @@ async function viewApps() {
         }),
       }, "Regenerate token")),
     h("h2", { id: "app-computer" }, "Your computer"), appComputer(a),
-    h("h2", { id: "app-canvas" }, "Your canvas"), appCanvas(),
     h("h2", { id: "app-music" }, "Now playing"), appMusic(a),
     h("h2", { id: "app-timer" }, "Timer"), appTimers(a),
     h("h2", { id: "app-reminders" }, "Reminders"), appReminders(a),

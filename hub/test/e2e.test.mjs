@@ -1164,6 +1164,20 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
   assert.equal((await erin.call("POST", `/api/doodles/${own}/show`, { secs: 3600 })).status, 200);
   await waitOp(de, "esp-e0e001", 3, 3);
   assert.equal((await fred.call("POST", `/api/doodles/${own}/show`, {})).status, 404);
+  const fredBefore = df.got.length;
+  assert.equal((await erin.call("POST", "/api/doodles/hide")).status, 200);
+  await waitOp(de, "esp-e0e001", 5);
+  const back = frames(de, "esp-e0e001", 5)[0].buf;
+  assert.equal((back[1] << 8) | back[2], own, "back to clock names the drawing on screen");
+  const lastEnd = frames(de, "esp-e0e001", 3).at(-1).buf;
+  assert.equal((lastEnd[3] << 8) | lastEnd[4], 10, "older firmware gets a 10 s end first");
+  const sketch = (await erin.call("POST", "/api/doodles", {})).body.id;
+  await erin.call("POST", `/api/doodles/${sketch}/strokes`, { s: stroke.toString("base64") });
+  await erin.call("POST", "/api/doodles/hide");
+  await waitOp(de, "esp-e0e001", 5, 2);
+  assert.deepEqual((await erin.call("GET", "/api/doodles/active")).body, [], "back to clock ends the open canvas");
+  assert.deepEqual((await erin.call("GET", "/api/doodles/mine")).body.map((d) => d.id), [sketch, own], "and keeps the drawing");
+  assert.equal(df.got.slice(fredBefore).filter((m) => m.topic.endsWith("/draw")).length, 0, "only your own desks");
 
   const conn = await fetch(`${base}/api/apps/spotify/connect`, { headers: { cookie: erin.cookie() }, redirect: "manual" });
   assert.equal(conn.status, 302);

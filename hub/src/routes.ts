@@ -434,6 +434,7 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   const body = (req: FastifyRequest) => (req.body ?? {}) as Record<string, unknown>;
   app.post("/api/doodles", { preHandler: auth }, async (req) => doodles.start(req.user!.id, str(body(req).to).trim() || null));
   app.get("/api/doodles/active", { preHandler: auth }, async (req) => doodles.active(req.user!.id));
+  app.post("/api/doodles/hide", { preHandler: auth }, async (req) => { doodles.hide(req.user!.id); return { ok: true }; });
   app.get("/api/doodles/mine", { preHandler: auth }, async (req) => doodles.mine(req.user!.id));
   app.get("/api/doodles/:id", { preHandler: auth }, async (req) => doodles.view(req.user!.id, doodleId(req)));
   app.post("/api/doodles/:id/strokes", { preHandler: auth, bodyLimit: 16384 }, async (req) => {

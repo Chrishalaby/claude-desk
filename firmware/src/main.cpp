@@ -783,6 +783,11 @@ void onDraw(const uint8_t *p, unsigned int len) {
     unreadUntil = millis() + 3UL * 3600 * 1000;
     return;
   }
+  if (op == 5) {
+    if (view == V_DRAW) { view = V_CLOCK; dirty = true; }
+    drawId = 0;
+    return;
+  }
   if (!drawId || id != drawId || view != V_DRAW) return;
   drawUntil = millis() + 120000UL;
   if (op == 4) { gFill(0, 0, SCR_W, SCR_H, 0); return; }

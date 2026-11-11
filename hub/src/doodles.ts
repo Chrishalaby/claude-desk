@@ -56,6 +56,7 @@ export function chunkStrokes(buf: Buffer, max = CHUNK): Buffer[] {
 
 export class Doodles {
   private sessions = new Map<number, Session>();
+  private shown = new Map<number, number>();
   private startLimiter: RateLimiter;
   private strokeLimiter: RateLimiter;
 
@@ -78,6 +79,7 @@ export class Doodles {
     for (const [owner, other] of pairs) {
       const name = owner === other ? "you" : this.svc.userById(other)?.display_name ?? "a friend";
       const nb = Buffer.from(name, "utf8").subarray(0, 40);
+      this.shown.set(owner, s.id);
       this.publish(owner, Buffer.concat([this.head(1, s.id), Buffer.from([nb.length]), nb]));
     }
   }
@@ -195,9 +197,17 @@ export class Doodles {
     if (!r || (r.a !== me && r.b !== me) || !r.data.length) throw new HttpError(404, "not_found");
     if (!this.startLimiter.take(String(me))) throw new HttpError(429, "rate_limited");
     const nb = Buffer.from("you", "utf8");
+    this.shown.set(me, r.id);
     this.publish(me, Buffer.concat([this.head(1, r.id), Buffer.from([nb.length]), nb]));
     for (const c of chunkStrokes(Buffer.from(r.data))) this.publish(me, Buffer.concat([this.head(2, r.id), c]));
     this.publish(me, this.endFrame(r.id, secs));
+  }
+
+  hide(me: number) {
+    for (const s of [...this.sessions.values()]) if (s.a === me && s.b === me) this.finish(s, 10);
+    const id = this.shown.get(me) ?? 0;
+    this.publish(me, this.endFrame(id, 10));
+    this.publish(me, this.head(5, id));
   }
 
   remove(me: number, id: number) {
