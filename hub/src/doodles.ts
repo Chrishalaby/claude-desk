@@ -3,14 +3,13 @@ import { HttpError, type Service } from "./service.js";
 import { RateLimiter } from "./util.js";
 
 export const DOODLE_MAX_BYTES = 48 * 1024;
-export const DOODLE_IDLE_SECS = 5 * 60;
-export const DOODLE_OPEN_SECS = 30 * 60;
+export const DOODLE_IDLE_SECS = 30 * 60;
 export const DOODLE_RESYNC_SECS = 100;
 export const DOODLE_COLORS = 12;
 const CHUNK = 700;
 
 type Listener = (event: string, data: Record<string, unknown>) => void;
-interface Session { id: number; a: number; b: number; data: Buffer; last: number; seen: number; listeners: Set<Listener> }
+interface Session { id: number; a: number; b: number; data: Buffer; last: number; listeners: Set<Listener> }
 interface DoodleRow { id: number; a: number; b: number; data: Buffer; started: number; ended: number | null }
 
 export function validStrokes(buf: Buffer): boolean {
@@ -125,7 +124,7 @@ export class Doodles {
     if (!this.startLimiter.take(String(me))) throw new HttpError(429, "rate_limited");
     const now = this.now();
     const info = this.db.prepare("INSERT INTO doodles (a, b, data, started) VALUES (?, ?, ?, ?)").run(me, other, Buffer.alloc(0), now);
-    const s: Session = { id: Number(info.lastInsertRowid), a: me, b: other, data: Buffer.alloc(0), last: now, seen: now, listeners: new Set() };
+    const s: Session = { id: Number(info.lastInsertRowid), a: me, b: other, data: Buffer.alloc(0), last: now, listeners: new Set() };
     this.sessions.set(s.id, s);
     this.deskStart(s);
     return { id: s.id, joined: false };
@@ -145,6 +144,7 @@ export class Doodles {
     const bytes = typeof b64 === "string" && b64.length <= 8192 ? Buffer.from(b64, "base64") : Buffer.alloc(0);
     if (!validStrokes(bytes)) throw new HttpError(400, "strokes");
     if (s.data.length + bytes.length > DOODLE_MAX_BYTES) throw new HttpError(413, "too_big");
+    if (this.now() - s.last > DOODLE_RESYNC_SECS) this.resend(s);
     s.data = Buffer.concat([s.data, bytes]);
     s.last = this.now();
     this.db.prepare("UPDATE doodles SET data = ? WHERE id = ?").run(s.data, s.id);
@@ -229,29 +229,17 @@ export class Doodles {
     this.db.prepare("DELETE FROM doodles WHERE id = ?").run(id);
   }
 
-  ping(me: number, id: number) {
-    const s = this.session(me, id);
-    const now = this.now();
-    const gap = now - Math.max(s.last, s.seen);
-    s.seen = now;
-    if (gap > DOODLE_RESYNC_SECS) {
-      for (const owner of new Set([s.a, s.b])) {
-        const nb = Buffer.from(this.fromFor(owner, s), "utf8").subarray(0, 40);
-        this.shown.set(owner, s.id);
-        this.publish(owner, Buffer.concat([this.head(1, s.id), Buffer.from([nb.length]), nb]));
-        for (const c of chunkStrokes(s.data)) this.publish(owner, Buffer.concat([this.head(2, s.id), c]));
-      }
-    } else {
-      this.toBoth(s, this.head(2, s.id));
+  private resend(s: Session) {
+    for (const owner of new Set([s.a, s.b])) {
+      const nb = Buffer.from(this.fromFor(owner, s), "utf8").subarray(0, 40);
+      this.shown.set(owner, s.id);
+      this.publish(owner, Buffer.concat([this.head(1, s.id), Buffer.from([nb.length]), nb]));
+      for (const c of chunkStrokes(s.data)) this.publish(owner, Buffer.concat([this.head(2, s.id), c]));
     }
-    for (const u of new Set([s.a, s.b])) this.svc.setScreen(u, { kind: "drawing", id: s.id, from: this.fromFor(u, s), until: now + 120, live: true });
-    return { resent: gap > DOODLE_RESYNC_SECS };
   }
 
   tick() {
     const now = this.now();
-    for (const s of [...this.sessions.values()]) {
-      if (now - Math.max(s.last, s.seen) > DOODLE_IDLE_SECS || now - s.last > DOODLE_OPEN_SECS) this.finish(s, 60);
-    }
+    for (const s of [...this.sessions.values()]) if (now - s.last > DOODLE_IDLE_SECS) this.finish(s, 60);
   }
 }

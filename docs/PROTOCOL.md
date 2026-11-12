@@ -474,11 +474,10 @@ Draw in the web app; every stroke shows up on the desk as you draw (3.8).
   sends the last drawing shown there an end with 10 s (older firmware) followed by op 5 (1.4.8+: immediately).
 * `GET /api/doodles/mine` → your last 20 own-canvas drawings; `POST /api/doodles/<id>/show {secs}` puts one back on
   your desks.
-* `POST /api/doodles/<id>/ping` → `{resent}`: the web app sends it every 45 s while the canvas is open (and when the
-  page becomes visible again). It keeps both desks on the drawing (an empty strokes frame resets their 2-minute
-  timeout); after more than 100 s without a stroke or ping it resends the start frame and all strokes, so a desk that
-  already went back to the clock shows the drawing again.
-* A drawing with no stroke or ping for 5 min, or no stroke for 30 min, is ended by the hub (shown for 60 s). Strokes are limited to 1200 calls/min.
+* A desk goes back to the clock 2 minutes after the last stroke. When strokes arrive more than 100 s after the
+  previous ones, the hub first resends the start frame and everything drawn so far, so the drawing comes back on the
+  desks and continues.
+* A drawing with no stroke for 30 min is ended by the hub (shown for 60 s) and saved. Strokes are limited to 1200 calls/min.
 
 ## 14. Photos & GIFs
 
