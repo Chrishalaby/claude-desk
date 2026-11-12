@@ -941,8 +941,6 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
   if (deserializeJson(d, payload, len)) return;
   if (leaf == "claude") {
     applyState(d["s"] | "", d["p"] | "", d["d"] | "", d["f"] | "");
-    bool w = (int)(d["w"] | 0) > 0;
-    if (w != uiWaiting) { uiWaiting = w; nextFrame = 0; }
   } else if (leaf == "cfg") {
     bool was = hubPaired;
     hubPaired = d["paired"] | false;

@@ -27,7 +27,7 @@ interface Session {
 }
 export type Sessions = Record<string, Session>;
 
-export interface View { s: "idle" | "working" | "needs" | "done"; p: string; d: string; f: string; t: number; w: number; wp: string }
+export interface View { s: "idle" | "working" | "needs" | "done"; p: string; d: string; f: string; t: number }
 
 const str = (v: unknown, n: number) => trunc(oneLine(v), n);
 
@@ -122,21 +122,20 @@ export function computeView(sessions: Sessions, now: number, tz: string): View {
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i] ? 1 : -1;
     return 0;
   };
-  waits.sort(cmp); // newest request first (same tuple ordering as Python's sort(reverse=True))
-  const w = waits.length, wp = w ? trunc(String(waits[0][1]), 32) : "";
   if (waits.length) {
+    waits.sort(cmp); // newest request first (same tuple ordering as Python's sort(reverse=True))
     const [t, proj, detail] = waits[0];
     const extra = waits.length > 1 ? `+${waits.length - 1} more waiting · ` : "";
-    return { s: "needs", p: trunc(proj, 32), d: trunc(detail, 80), f: trunc(extra + hhmm(t, tz), 40), t: Math.floor(t), w, wp };
+    return { s: "needs", p: trunc(proj, 32), d: trunc(detail, 80), f: trunc(extra + hhmm(t, tz), 40), t: Math.floor(t) };
   }
   if (done.length) {
     done.sort(cmp);
     const [t, proj] = done[0];
-    return { s: "done", p: trunc(proj, 32), d: "Finished", f: hhmm(t, tz), t: Math.floor(t), w, wp };
+    return { s: "done", p: trunc(proj, 32), d: "Finished", f: hhmm(t, tz), t: Math.floor(t) };
   }
-  if (working) return { s: "working", p: "", d: "", f: "", t: Math.floor(lastActive), w, wp };
-  return { s: "idle", p: "", d: "", f: "", t: 0, w, wp };
+  if (working) return { s: "working", p: "", d: "", f: "", t: Math.floor(lastActive) };
+  return { s: "idle", p: "", d: "", f: "", t: 0 };
 }
 
 /** Key used to decide whether the published view changed. */
-export const viewKey = (v: View) => `${v.s}\u0000${v.p}\u0000${v.d}\u0000${v.f}\u0000${v.w ?? 0}`;
+export const viewKey = (v: View) => `${v.s}\u0000${v.p}\u0000${v.d}\u0000${v.f}`;

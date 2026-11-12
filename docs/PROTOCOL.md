@@ -85,11 +85,10 @@ Rules:
 ### 3.1 `desk/<chip>/claude` — retained, hub → device
 Claude Code status for the device owner (aggregated over all their sessions).
 ```json
-{ "s": "idle|working|needs|done", "p": "project", "d": "detail", "f": "footer", "t": 1762412345, "w": 1, "wp": "project" }
+{ "s": "idle|working|needs|done", "p": "project", "d": "detail", "f": "footer", "t": 1762412345 }
 ```
-`w` = open requests for your attention (permission prompts and needs-type notifications, as counted for **needs**
-in 4.2), `wp` = the project of the newest. Firmware ≥ 1.4.11 draws a yellow "!" on the clock's Claude face while
-`w` > 0, so the request stays visible even if something takes the NEEDS card off the screen.
+(1.4.11 and 1.4.12 also drew a "!" on the clock's Claude face from an extra `w` count; 1.4.13 dropped it because the
+NEEDS card stays up until the request is answered.)
 `p` ≤ 32, `d` ≤ 80, `f` ≤ 40 chars. Same meaning as the device's local `/state` endpoint.
 All fields are always present; for `idle`/`working`, `p`, `d`, `f` are `""`. `t` = time of the request (needs),
 of the Stop (done), of the activity that made it `working`, or when it went idle.

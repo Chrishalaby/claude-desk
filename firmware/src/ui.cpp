@@ -27,7 +27,6 @@ uint16_t COL_GREY   = c565(130, 136, 148);
 
 int uiLayout = 0;
 char uiUnread[24] = "";
-bool uiWaiting = false;
 char uiNext[40] = "";
 bool uiNextMusic = false;
 bool uiLocationSet = true;
@@ -84,12 +83,9 @@ static void robotGrid(int dy, Eyes eyes, int look, uint16_t bulb, uint16_t bg) {
   gr(9, y0 + 10, 10, y0 + 10, BODY_DK);        // mouth light
 }
 
+#define ROBOT_X (uiLayout ? 156 : 148)
+#define ROBOT_Y (uiLayout ? 156 : 150)
 static void blitGrid(int x, int y, int s) {
-  if (uiWaiting) {
-    gr(16, 0, 18, 6, c565(255, 204, 0));
-    gr(17, 1, 17, 3, 0);
-    gr(17, 5, 17, 5, 0);
-  }
   uint16_t *row = gRowBuf;
   for (int gy = 0; gy < 20; gy++) {
     for (int gx = 0; gx < 20; gx++)
@@ -98,8 +94,6 @@ static void blitGrid(int x, int y, int s) {
   }
 }
 
-#define ROBOT_X (uiLayout ? 156 : 148)
-#define ROBOT_Y (uiLayout ? 156 : 150)
 
 static void gz(int x, int y) {   // tiny 3x3 'z' inside the robot grid
   gr(x, y, x + 2, y, ZCOL); gr(x + 1, y + 1, x + 1, y + 1, ZCOL); gr(x, y + 2, x + 2, y + 2, ZCOL);

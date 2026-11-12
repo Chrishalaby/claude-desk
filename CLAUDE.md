@@ -39,7 +39,7 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 - Pins: MOSI 13, SCLK 14, DC 0, RST 2, CS none; backlight GPIO5 PWM **active-low**; `invertDisplay(true)`.
 - Panel looks best with gamma preset 2 (`gtab=2`), sharp text on, vivid colours, ~25% day brightness; cards must be
   pure black (dark greys tint green in RGB565).
-- RAM is the constraint (~80 KB total; static RAM 37.96 KB on 1.4.12 (40 bytes under budget), was 42.9 KB on 1.4.1). Memory rules:
+- RAM is the constraint (~80 KB total; static RAM 37.96 KB on 1.4.13 (40 bytes under budget), was 42.9 KB on 1.4.1). Memory rules:
   - **String literals live in RAM on the ESP8266.** Web pages are PROGMEM templates (`~key~` placeholders, streamed
     by `sendPage`/`sendTpl`, never built as one big String); use `PSTR()`/`F()`/`snprintf_P` for anything long.
   - Drawing code shares one row buffer (`gRowBuf`); don't add per-function `static` pixel buffers.
@@ -61,7 +61,7 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 
 ## Owner's setup / current state (Nov 2026)
 - Owner: Chris (GitHub `Chrishalaby`), macOS, Claude Code user. Repo: github.com/Chrishalaby/claude-desk (public).
-- His desk runs **firmware 1.4.5** (1.4.12 is built: drawings (fill, shapes, undo) and photos/GIFs with keep-on and back-to-clock, a "!" on the Claude face while a permission prompt is open, the now-playing line, leaving a Wi-Fi without internet), paired on the hub as "Chris"
+- His desk runs **firmware 1.4.5** (1.4.13 is built: drawings (fill, shapes, undo) and photos/GIFs with keep-on and back-to-clock, the now-playing line, leaving a Wi-Fi without internet), paired on the hub as "Chris"
   (`chris-desk.local`), ~21 KB free while connected, on home Wi-Fi with the hotspot also saved.
   1.0.4 → 1.4.1 by local `/update`; 1.4.1 → 1.4.3 via SAFE MODE (its own OTA failed); later versions by the hub's
   Update button (restart-then-download path, verified on the device).

@@ -89,7 +89,7 @@ export class Service {
     this.baseUrl = cfg.publicUrl ?? kvGet(db, "base_url");
     for (const r of db.prepare("SELECT user_id, sessions, view FROM claude_state").all() as any[]) {
       try {
-        const view = r.view ? (JSON.parse(r.view) as View) : { s: "idle", p: "", d: "", f: "", t: 0, w: 0, wp: "" } as View;
+        const view = r.view ? (JSON.parse(r.view) as View) : { s: "idle", p: "", d: "", f: "", t: 0 } as View;
         this.claude.set(r.user_id, { sessions: JSON.parse(r.sessions), view, key: viewKey(view) });
       } catch { /* corrupt row: start fresh */ }
     }
@@ -533,7 +533,7 @@ export class Service {
   private claudeEntry(userId: number): ClaudeEntry {
     let e = this.claude.get(userId);
     if (!e) {
-      const view: View = { s: "idle", p: "", d: "", f: "", t: 0, w: 0, wp: "" };
+      const view: View = { s: "idle", p: "", d: "", f: "", t: 0 };
       e = { sessions: {}, view, key: viewKey(view) };
       this.claude.set(userId, e);
     }
