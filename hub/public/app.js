@@ -355,7 +355,6 @@ async function openDoodle({ to = null, id = null, title, onClose = null }) {
   es.addEventListener("strokes", (ev) => { const d = JSON.parse(ev.data); if (d.by !== me) drawBytes(ctx, fromB64(d.s), 2); });
   es.addEventListener("clear", (ev) => { const d = JSON.parse(ev.data); if (d.by !== me) { clearCanvas(); toast("Canvas cleared"); } });
   es.addEventListener("end", () => { if (!ended) { ended = true; toast("Drawing saved"); close(); } });
-  const keep = h("select", { style: "max-width:150px" }, [[60, "1 minute"], [600, "10 minutes"], [3600, "1 hour"]].map(([v, l]) => h("option", { value: v }, l)));
   const close = () => { ended = true; clearInterval(timer); es.close(); dlg.remove(); if (onClose) onClose(); else if (state.route.startsWith("/chat/")) render(); };
   const dlg = h("div", { class: "draw-overlay" },
     h("div", { class: "draw-head" }, h("b", {}, title || (own ? "Your canvas" : "Drawing")),
@@ -367,17 +366,16 @@ async function openDoodle({ to = null, id = null, title, onClose = null }) {
         pending = []; carry = 0; clearCanvas();
         try { await api("POST", `/api/doodles/${id}/clear`); } catch (e) { fail(e); }
       }) }, "Clear"),
-      own ? keep : null,
       h("button", { class: "btn small primary", onclick: guarded(async () => {
         await flush();
-        try { await api("POST", `/api/doodles/${id}/end`, { secs: own ? Number(keep.value) : 60 }); ended = true; toast("Drawing saved"); close(); } catch (e) { fail(e); }
+        try { await api("POST", `/api/doodles/${id}/end`, { secs: own ? keepGet() : 60 }); ended = true; toast("Drawing saved"); close(); } catch (e) { fail(e); }
       }) }, "Done"),
       own ? h("button", { class: "btn small ghost", onclick: guarded(async () => {
         await flush();
         try { await api("POST", "/api/doodles/hide"); ended = true; toast("Back to the clock"); close(); } catch (e) { fail(e); }
       }) }, "Back to clock")
         : h("button", { class: "btn small ghost", onclick: () => { flush(); close(); } }, "Leave")),
-    own ? h("p", { class: "hint", style: "text-align:center;max-width:440px" }, "Done keeps it on your desk for the time you pick, then the clock comes back. Back to clock saves it and shows the clock now.") : null,
+    own ? h("p", { class: "hint", style: "text-align:center;max-width:440px" }, "Done keeps it on your desk (for how long is set on your desk's page). Back to clock saves it and shows the clock now.") : null,
     own ? null : h("p", { class: "hint", style: "text-align:center;max-width:440px" }, "Leave keeps the drawing open for your friend. Done saves it in your chat for both of you."));
   document.body.append(dlg);
 }
@@ -779,7 +777,7 @@ async function viewDevice(chip) {
 
   const wifiEl = wifiCard(enc, () => data);
   const refreshAll = async () => { await refresh(); wifiEl.update(data); };
-  fill(main, h("h2", {}, "Status"), status, h("h2", {}, "On your desk"), appCanvas(), appMedia(), form, h("h2", {}, "Wi-Fi networks"), wifiEl);
+  fill(main, h("h2", {}, "Status"), status, h("h2", {}, "On your desk"), appDesk(), form, h("h2", {}, "Wi-Fi networks"), wifiEl);
   state.poll = setInterval(() => { if (!document.hidden) refreshAll().catch(() => {}); }, 5000);
 }
 
@@ -1094,12 +1092,61 @@ async function uploadMedia(file, fit) {
 }
 const mediaImg = (id, size) => h("img", { class: "thumb", src: `/api/media/${id}/preview`, width: size, height: size, loading: "lazy", alt: "" });
 
-function appMedia() {
-  const el = h("div", { class: "card", style: "margin-top:12px" });
-  const keep = h("select", { style: "max-width:150px" }, [[60, "1 minute"], [600, "10 minutes"], [3600, "1 hour"]].map(([v, l]) => h("option", { value: v, selected: v === 600 }, l)));
-  const fit = h("select", {}, [["cover", "Fill the screen (crops the edges)"], ["contain", "Show the whole picture"]].map(([v, l]) => h("option", { value: v }, l)));
+const KEEP_OPTS = [[60, "1 minute"], [600, "10 minutes"], [3600, "1 hour"], [0, "Until I go back"]];
+function keepGet() {
+  try {
+    const v = localStorage.getItem("deskKeep");
+    if (v !== null && KEEP_OPTS.some(([k]) => String(k) === v)) return Number(v);
+  } catch { return 600; }
+  return 600;
+}
+function keepSet(v) { try { localStorage.setItem("deskKeep", String(v)); } catch { return; } }
+
+function photoPreview(file, onShow) {
+  const url = URL.createObjectURL(file);
+  let fit = "cover";
+  const img = h("img", { src: url, class: "pp-img", alt: "" });
+  const seg = h("div", { class: "seg", style: "width:min(92vw,320px)" });
+  const paintSeg = () => {
+    img.style.objectFit = fit;
+    fill(seg, [["cover", "Fill the screen"], ["contain", "Show it all"]].map(([v, l]) =>
+      h("button", { type: "button", class: fit === v ? "on" : "", onclick: () => { fit = v; paintSeg(); } }, l)));
+  };
+  const close = () => { URL.revokeObjectURL(url); dlg.remove(); };
+  const dlg = h("div", { class: "draw-overlay" },
+    h("div", { class: "draw-head", style: "width:min(92vw,320px)" }, h("b", {}, "Show on your desk"), h("span", { class: "hint", style: "margin:0" }, "This is how it will fit the screen.")),
+    h("div", { class: "pp-frame" }, img), seg,
+    h("div", { class: "actions", style: "justify-content:center" },
+      h("button", { class: "btn small ghost", onclick: close }, "Cancel"),
+      h("button", { class: "btn small primary", onclick: () => { close(); onShow(fit); } }, "Show on desk")));
+  paintSeg();
+  document.body.append(dlg);
+}
+
+function appDesk() {
+  const el = h("div", { class: "card" });
+  const nowEl = h("div", {});
   const status = h("p", { class: "hint", style: "margin:8px 0 0" });
-  let watching = 0;
+  const keep = h("select", {}, KEEP_OPTS.map(([v, l]) => h("option", { value: v, selected: v === keepGet() }, l)));
+  keep.addEventListener("change", () => keepSet(Number(keep.value)));
+  let items = [], showing = null, watching = 0;
+  const what = (x) => x.kind === "drawing"
+    ? (x.live ? "a drawing, live" : x.from === "you" ? "your drawing" : `${x.from}'s drawing`)
+    : (x.kind === "gif" ? "a GIF" : "a photo") + (x.from && x.from !== "you" ? ` from ${x.from}` : "");
+  const left = (x) => x.until === null ? "until you go back to the clock" : `${Math.max(1, Math.ceil((x.until - Date.now() / 1000) / 60))} min left`;
+  const cap = (t) => t.charAt(0).toUpperCase() + t.slice(1);
+  function paintNow() {
+    if (showing && showing.until !== null && showing.until <= Date.now() / 1000) showing = null;
+    fill(nowEl, showing ? h("div", { class: "now-showing" },
+      h("div", { class: "grow" }, h("div", { class: "title" }, cap(what(showing))), h("div", { class: "sub" }, left(showing))),
+      h("button", { class: "btn small", onclick: guarded(async () => {
+        try { await api("POST", "/api/doodles/hide"); showing = null; paintNow(); toast("Back to the clock"); } catch (e) { fail(e); }
+      }) }, "Back to clock")) : null);
+  }
+  async function refreshShowing() {
+    try { showing = await api("GET", "/api/showing"); } catch { showing = null; }
+    paintNow();
+  }
   async function track(id) {
     const mine = ++watching;
     status.textContent = "Sending to your desk…";
@@ -1109,42 +1156,58 @@ function appMedia() {
       try { d = await api("GET", "/api/media"); } catch { continue; }
       const x = d.deliveries.find((v) => v.media === id);
       if (!x || x.state === "sending") continue;
-      status.textContent = x.state === "ok" ? "On your desk." : x.error === "space" ? "Your desk ran out of room for it." : "That didn't reach your desk. Try again.";
+      status.textContent = x.state === "ok" ? "" : x.error === "space" ? "Your desk ran out of room for it." : "That didn't reach your desk. Try again.";
       return;
     }
-    if (mine === watching) status.textContent = "Still sending… big GIFs can take a minute.";
+    if (mine === watching) status.textContent = "Still sending… long GIFs can take a minute.";
   }
-  async function show(id) {
+  async function show(it) {
+    const secs = Number(keep.value);
     try {
-      const r = await api("POST", `/api/media/${id}/show`, { secs: Number(keep.value) });
-      if (!r.devices) { status.textContent = ""; toast("Your desk is offline", true); return; }
-      track(id);
+      if (it.type === "drawing") await api("POST", `/api/doodles/${it.id}/show`, { secs });
+      else {
+        const r = await api("POST", `/api/media/${it.id}/show`, { secs });
+        if (!r.devices) { status.textContent = ""; toast("Your desk is offline", true); return; }
+        track(it.id);
+      }
+      refreshShowing();
     } catch (e) { fail(e); }
   }
-  async function paint() {
-    let d = { items: [] };
-    try { d = await api("GET", "/api/media"); } catch { d = { items: [] }; }
-    fill(el,
-      h("p", { style: "margin:0" }, "Show a photo or GIF on your desk. It's resized to the screen; long GIFs get shortened to fit."),
-      h("label", { class: "f" }, "Picture"), fit,
-      h("button", { class: "btn primary block", style: "margin-top:10px", onclick: guarded(async () => {
-        const f = await pickFile();
-        if (!f) return;
-        status.textContent = "Preparing it for the desk…";
-        try { const m = await uploadMedia(f, fit.value); await paint(); await show(m.id); } catch (e) { status.textContent = ""; fail(e); }
-      }) }, "Add a photo or GIF"),
+  async function load() {
+    const [d, m] = await Promise.all([api("GET", "/api/doodles/mine").catch(() => []), api("GET", "/api/media").catch(() => ({ items: [] }))]);
+    items = [...d.map((x) => ({ type: "drawing", id: x.id, at: x.started, data: x.data })),
+      ...m.items.map((x) => ({ type: "media", id: x.id, at: x.created, kind: x.kind }))].sort((a, b) => b.at - a.at);
+    paint();
+  }
+  async function pickPhoto() {
+    const f = await pickFile();
+    if (!f) return;
+    photoPreview(f, async (fit) => {
+      status.textContent = "Preparing it for the desk…";
+      try { const m = await uploadMedia(f, fit); await load(); await show({ type: "media", id: m.id }); } catch (e) { status.textContent = ""; fail(e); }
+    });
+  }
+  function paint() {
+    fill(el, nowEl,
+      h("div", { class: "desk-actions" },
+        h("button", { class: "btn primary", onclick: () => openDoodle({ to: null, title: "Your canvas", onClose: () => { load(); refreshShowing(); } }) }, "✏️ Draw"),
+        h("button", { class: "btn primary", onclick: guarded(pickPhoto) }, "🖼️ Photo or GIF")),
+      h("label", { class: "f" }, "Keep it on the desk for"), keep,
       status,
-      d.items.length ? [h("label", { class: "f" }, "Your photos & GIFs"),
-        h("div", { class: "inline", style: "margin-bottom:8px" }, h("span", { class: "hint", style: "margin:0" }, "Show for"), keep),
-        h("div", { class: "thumbs" }, d.items.map((m) => h("div", { class: "thumb-card" }, mediaImg(m.id, 96),
-          h("div", { class: "actions", style: "justify-content:center;margin-top:6px" },
-            h("button", { class: "btn small", onclick: guarded(() => show(m.id)) }, "Show"),
-            h("button", { class: "btn small ghost danger", "aria-label": "Delete", onclick: guarded(async () => {
-              if (!confirm("Delete this?")) return;
-              try { await api("DELETE", `/api/media/${m.id}`); paint(); } catch (e) { fail(e); }
-            }) }, "✕")))))] : null);
+      items.length ? [h("label", { class: "f" }, "Saved · tap one to show it again"),
+        h("div", { class: "gallery" }, items.map((it) => h("div", { class: "g-item" },
+          h("button", { class: "g-show", "aria-label": "Show on desk", onclick: guarded(() => show(it)) }, it.type === "drawing" ? doodleThumb(it.data, 96) : mediaImg(it.id, 96)),
+          it.type === "media" && it.kind === "gif" ? h("span", { class: "g-tag" }, "GIF") : null,
+          h("button", { class: "g-del", "aria-label": "Delete", onclick: guarded(async () => {
+            if (!confirm("Delete this?")) return;
+            try { await api("DELETE", it.type === "drawing" ? `/api/doodles/${it.id}` : `/api/media/${it.id}`); load(); } catch (e) { fail(e); }
+          }) }, "✕"))))]
+        : h("p", { class: "hint", style: "margin:12px 0 0" }, "Drawings, photos and GIFs you put on your desk are saved here."));
   }
   paint();
+  load();
+  refreshShowing();
+  const timer = setInterval(() => { if (!document.body.contains(el)) clearInterval(timer); else paintNow(); }, 30000);
   return el;
 }
 
@@ -1176,33 +1239,6 @@ function sendMediaSheet(username, displayName, onSent) {
     : null)).catch(() => {});
 }
 
-function appCanvas() {
-  const el = h("div", { class: "card" });
-  const keep = h("select", { style: "max-width:150px" }, [[60, "1 minute"], [600, "10 minutes"], [3600, "1 hour"]].map(([v, l]) => h("option", { value: v }, l)));
-  async function paint() {
-    let mine = [];
-    try { mine = await api("GET", "/api/doodles/mine"); } catch { mine = []; }
-    fill(el,
-      h("p", { style: "margin:0" }, "Draw something for your desk: a note, a doodle, a reminder. Friends can draw with you from the chat (✏️)."),
-      h("button", { class: "btn primary block", onclick: () => openDoodle({ to: null, title: "Your canvas", onClose: paint }) }, "Draw on my desk"),
-      h("button", { class: "btn block", style: "margin-top:8px", onclick: guarded(async () => {
-        try { await api("POST", "/api/doodles/hide"); toast("Back to the clock"); paint(); } catch (e) { fail(e); }
-      }) }, "Back to clock"),
-      mine.length ? [h("label", { class: "f" }, "Your drawings"),
-        h("div", { class: "inline", style: "margin-bottom:8px" }, h("span", { class: "hint", style: "margin:0" }, "Show for"), keep),
-        h("div", { class: "thumbs" }, mine.map((d) => h("div", { class: "thumb-card" }, doodleThumb(d.data, 96),
-          h("div", { class: "actions", style: "justify-content:center;margin-top:6px" },
-            h("button", { class: "btn small", onclick: guarded(async () => {
-              try { await api("POST", `/api/doodles/${d.id}/show`, { secs: Number(keep.value) }); toast("On your desk"); } catch (e) { fail(e); }
-            }) }, "Show"),
-            h("button", { class: "btn small ghost danger", "aria-label": "Delete", onclick: guarded(async () => {
-              if (!confirm("Delete this drawing?")) return;
-              try { await api("DELETE", `/api/doodles/${d.id}`); paint(); } catch (e) { fail(e); }
-            }) }, "✕")))))] : null);
-  }
-  paint();
-  return el;
-}
 
 const MAIL_PRESETS = [["imap.gmail.com", "Gmail"], ["imap.mail.me.com", "iCloud"], ["imap.mail.yahoo.com", "Yahoo"], ["imap.fastmail.com", "Fastmail"], ["", "Other"]];
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];

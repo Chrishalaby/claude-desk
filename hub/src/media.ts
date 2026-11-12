@@ -218,12 +218,14 @@ export class Media {
     if (!this.sendLimiter.take(String(me))) throw new HttpError(429, "rate_limited");
     const from = this.svc.userById(me)?.display_name ?? "a friend";
     const devices = this.deliver(to.id, r, from, 60);
+    this.svc.markUnread(to.id);
     this.db.prepare("INSERT INTO messages (from_id, to_id, rel, kind, text, reaction, t, media_id) VALUES (?, ?, 'friend', 'media', '', '', ?, ?)")
       .run(me, to.id, this.now(), r.id);
     return { devices };
   }
 
   hide(me: number) {
+    this.svc.setScreen(me, null);
     for (const d of this.svc.devicesOf(me)) {
       this.gen.set(d.chip, (this.gen.get(d.chip) ?? 0) + 1);
       this.svc.broker?.publishRaw(`desk/${d.chip}/media`, Buffer.from([4, 0, 0]));
@@ -248,7 +250,8 @@ export class Media {
   }
 
   private deliver(userId: number, r: MediaRow, from: string, secsRaw: unknown) {
-    const secs = Math.max(10, Math.min(3600, Math.round(Number(secsRaw) || 60)));
+    const secs = secsRaw === 0 ? 0 : Math.max(10, Math.min(3600, Math.round(Number(secsRaw) || 60)));
+    this.svc.setScreen(userId, { kind: r.kind, id: r.id, from, until: secs ? this.now() + secs : null });
     let n = 0;
     for (const d of this.svc.devicesOf(userId)) {
       if (!this.svc.broker?.isOnline(d.chip)) continue;

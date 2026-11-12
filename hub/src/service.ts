@@ -131,6 +131,26 @@ export class Service {
 
   // ------------------------------------------------------------------ devices
   device(chip: string) { return this.db.prepare("SELECT * FROM devices WHERE chip = ?").get(chip) as DeviceRow | undefined; }
+  private screens = new Map<number, { kind: string; id: number; from: string; until: number | null; live: boolean }>();
+  private unread = new Set<number>();
+
+  setScreen(userId: number, s: { kind: string; id: number; from: string; until: number | null; live?: boolean } | null) {
+    if (s) this.screens.set(userId, { ...s, live: !!s.live }); else this.screens.delete(userId);
+  }
+
+  screenOf(userId: number) {
+    const s = this.screens.get(userId);
+    if (!s || (s.until !== null && s.until <= this.now())) return null;
+    return s;
+  }
+
+  markUnread(userId: number) { this.unread.add(userId); }
+
+  seen(userId: number) {
+    if (!this.unread.delete(userId)) return;
+    for (const d of this.devicesOf(userId)) this.broker?.publish(`desk/${d.chip}/cmd`, { cmd: "seen" }, false);
+  }
+
   devicesOf(userId: number) {
     return this.db.prepare("SELECT * FROM devices WHERE owner_id = ? ORDER BY created").all(userId) as DeviceRow[];
   }
@@ -708,6 +728,7 @@ export class Service {
     const m = this.db.prepare("SELECT * FROM messages WHERE id = ?").get(info.lastInsertRowid) as MessageRow;
     const payload = this.msgPayload(m);
     let delivered = 0;
+    this.markUnread(to.id);
     for (const d of this.devicesOf(to.id)) {
       this.db.prepare("UPDATE devices SET last_msg_id = ? WHERE chip = ?").run(m.id, d.chip);
       this.broker?.publish(`desk/${d.chip}/msg`, payload);

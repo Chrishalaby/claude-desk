@@ -779,9 +779,11 @@ void onDraw(const uint8_t *p, unsigned int len) {
     if (scene != SC_NONE) scene = SC_NONE;
     gFill(0, 0, SCR_W, SCR_H, 0);
     drawUntil = millis() + 120000UL;
-    strncpy(uiUnread, drawFrom.c_str(), sizeof uiUnread - 1);
-    uiUnread[sizeof uiUnread - 1] = 0;
-    unreadUntil = millis() + 3UL * 3600 * 1000;
+    if (drawFrom != F("you")) {
+      strncpy(uiUnread, drawFrom.c_str(), sizeof uiUnread - 1);
+      uiUnread[sizeof uiUnread - 1] = 0;
+      unreadUntil = millis() + 3UL * 3600 * 1000;
+    }
     return;
   }
   if (op == 5) {
@@ -794,7 +796,8 @@ void onDraw(const uint8_t *p, unsigned int len) {
   if (op == 4) { gFill(0, 0, SCR_W, SCR_H, 0); return; }
   if (op == 3) {
     uiDrawFooter((drawFrom == F("you") ? hhmm(0) : "from " + drawFrom + " \xC2\xB7 " + hhmm(0)).c_str());
-    drawUntil = millis() + 1000UL * (len >= 5 ? constrain((p[3] << 8) | p[4], 10, 3600) : 60);
+    uint16_t s = len >= 5 ? (p[3] << 8) | p[4] : 60;
+    drawUntil = millis() + (s ? 1000UL * constrain(s, 10, 3600) : 0x7FFFFFFFUL);
     return;
   }
   if (op != 2) return;
@@ -848,7 +851,7 @@ bool mediaStart() {
   mdPlaying = true;
   mdFrameNo = 0;
   mdNext = millis();
-  mdUntil = millis() + 1000UL * mdSecs;
+  mdUntil = millis() + (mdSecs ? 1000UL * mdSecs : 0x7FFFFFFFUL);
   view = V_MEDIA;
   dirty = false;
   if (scene != SC_NONE) scene = SC_NONE;
@@ -893,7 +896,8 @@ void onMedia(const uint8_t *p, unsigned int len) {
     mdSeq = seq;
     mdSize = be32(p + 3);
     mdCrc = be32(p + 7);
-    mdSecs = constrain((p[11] << 8) | p[12], 10, 3600);
+    mdSecs = (p[11] << 8) | p[12];
+    if (mdSecs) mdSecs = constrain(mdSecs, 10, 3600);
     drawFrom = "";
     for (unsigned i = 0; i < p[13] && 14 + i < len; i++) drawFrom += (char)p[14 + i];
     mdGot = mdCalc = 0;
@@ -950,6 +954,7 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
     String c = (const char *)(d["cmd"] | "");
     if (c == "reboot") restartAt = millis() + 500;
     else if (c == "ota") pendingOtaUrl = (const char *)(d["url"] | "");
+    else if (c == F("seen")) { if (uiUnread[0]) { uiUnread[0] = 0; if (view == V_CLOCK) dirty = true; } }
     else if (c == F("wifi_scan")) { WiFi.scanDelete(); WiFi.scanNetworks(true); wifiScanForHub = true; }
     else if (c == F("wifi_add")) {
       String s = (const char *)(d[F("ssid")] | ""), p = (const char *)(d[F("pass")] | "");

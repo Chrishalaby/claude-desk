@@ -80,6 +80,8 @@ export class Doodles {
       const name = owner === other ? "you" : this.svc.userById(other)?.display_name ?? "a friend";
       const nb = Buffer.from(name, "utf8").subarray(0, 40);
       this.shown.set(owner, s.id);
+      this.svc.setScreen(owner, { kind: "drawing", id: s.id, from: name, until: this.now() + 120, live: true });
+      if (owner !== other) this.svc.markUnread(owner);
       this.publish(owner, Buffer.concat([this.head(1, s.id), Buffer.from([nb.length]), nb]));
     }
   }
@@ -145,6 +147,7 @@ export class Doodles {
     s.last = this.now();
     this.db.prepare("UPDATE doodles SET data = ? WHERE id = ?").run(s.data, s.id);
     for (const c of chunkStrokes(bytes)) this.toBoth(s, Buffer.concat([this.head(2, s.id), c]));
+    for (const u of new Set([s.a, s.b])) this.svc.setScreen(u, { kind: "drawing", id: s.id, from: this.fromFor(u, s), until: this.now() + 120, live: true });
     this.emit(s, "strokes", { by: this.svc.userById(me)?.username, s: bytes.toString("base64") });
   }
 
@@ -157,8 +160,12 @@ export class Doodles {
     this.emit(s, "clear", { by: this.svc.userById(me)?.username });
   }
 
+  private fromFor(owner: number, s: { a: number; b: number }) {
+    return s.a === s.b ? "you" : this.svc.userById(owner === s.a ? s.b : s.a)?.display_name ?? "a friend";
+  }
+
   private endFrame(id: number, secs: number) {
-    const t = Math.max(10, Math.min(3600, Math.round(secs)));
+    const t = secs === 0 ? 0 : Math.max(10, Math.min(3600, Math.round(secs)));
     return Buffer.concat([this.head(3, id), Buffer.from([(t >> 8) & 0xff, t & 0xff])]);
   }
 
@@ -172,6 +179,8 @@ export class Doodles {
     const now = this.now();
     this.db.prepare("UPDATE doodles SET ended = ? WHERE id = ?").run(now, s.id);
     this.toBoth(s, this.endFrame(s.id, secs));
+    const until = secs === 0 ? null : now + Math.max(10, Math.min(3600, Math.round(secs)));
+    for (const u of new Set([s.a, s.b])) this.svc.setScreen(u, { kind: "drawing", id: s.id, from: this.fromFor(u, s), until });
     this.emit(s, "end", {});
     for (const l of s.listeners) s.listeners.delete(l);
     if (s.data.length && s.a !== s.b) {
@@ -198,6 +207,7 @@ export class Doodles {
     if (!this.startLimiter.take(String(me))) throw new HttpError(429, "rate_limited");
     const nb = Buffer.from("you", "utf8");
     this.shown.set(me, r.id);
+    this.svc.setScreen(me, { kind: "drawing", id: r.id, from: "you", until: secs === 0 ? null : this.now() + Math.max(10, Math.min(3600, Math.round(secs))) });
     this.publish(me, Buffer.concat([this.head(1, r.id), Buffer.from([nb.length]), nb]));
     for (const c of chunkStrokes(Buffer.from(r.data))) this.publish(me, Buffer.concat([this.head(2, r.id), c]));
     this.publish(me, this.endFrame(r.id, secs));
@@ -208,6 +218,7 @@ export class Doodles {
     const id = this.shown.get(me) ?? 0;
     this.publish(me, this.endFrame(id, 10));
     this.publish(me, this.head(5, id));
+    this.svc.setScreen(me, null);
   }
 
   remove(me: number, id: number) {

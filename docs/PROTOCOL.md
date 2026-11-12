@@ -182,7 +182,7 @@ Live drawings (section 13). Every frame starts with `op` and a 16-bit drawing id
 |---|---|---|
 | 1 start | name length (1 byte) + UTF-8 name (≤ 40 bytes) | clears the screen to black and shows the drawing (not over NEEDS YOU, the pairing screen or a friend's message) |
 | 2 strokes | stroke data, ≤ 700 bytes | draws it |
-| 3 end | seconds to keep it, 16-bit (10–3600) | "from <name>" footer, back to the clock after that time |
+| 3 end | seconds to keep it, 16-bit (10–3600; 0 = until back to clock, firmware ≥ 1.4.10) | "from <name>" footer, back to the clock after that time |
 | 4 clear | — | clears the canvas |
 | 5 back to clock | — | firmware ≥ 1.4.8: leaves the drawing now, whatever its id (older firmware ignores it) |
 
@@ -196,7 +196,7 @@ first). Every frame starts with `op` and a 16-bit transfer number (big-endian):
 
 | op | rest | desk |
 |---|---|---|
-| 1 begin | size u32, CRC-32 u32, seconds u16 (10–3600), name length u8 + UTF-8 name (≤ 40, `you` = your own) | needs size + 16 KB free in LittleFS, else answers `space` |
+| 1 begin | size u32, CRC-32 u32, seconds u16 (10–3600; 0 = until back to clock, ≥ 1.4.10), name length u8 + UTF-8 name (≤ 40, `you` = your own) | needs size + 16 KB free in LittleFS, else answers `space` |
 | 2 chunk | offset u32 + up to 700 bytes | appended in order, else `order` |
 | 3 end | — | checks size and CRC (`crc`), answers, then plays it (not over NEEDS YOU, pairing or a message) |
 | 4 stop | — | back to the clock |
@@ -250,7 +250,9 @@ Hub publishes the view to `desk/<chip>/claude` for **every device owned by that 
 
 * `POST /api/messages {to: "<username>", kind: "text"|"reaction", text?, reaction?}` — sender must be friends with `to`.
   Rate limit: 10/min per sender. Stored with id, delivered by publishing retained `desk/<chip>/msg` to each of the recipient's devices.
-* `GET /api/messages?with=<username>` — conversation history (newest first, 50). A finished shared drawing appears as
+* `GET /api/messages?with=<username>` — conversation history (newest first, 50). If a friend's message, drawing or
+  photo arrived since you last opened a chat, this also sends `{"cmd": "seen"}` on `desk/<chip>/cmd` to your desks
+  (firmware ≥ 1.4.10), which clears the "from <name>" unread line on the clock (otherwise it expires after 3 h). A finished shared drawing appears as
   `kind: "doodle"` with `doodle` = its stroke data in base64 (section 13); a photo or GIF as `kind: "media"` with
   `media: {id, kind: "image"|"gif"|null}` (null once deleted; preview at `GET /api/media/<id>/preview`).
 
@@ -462,6 +464,9 @@ Draw in the web app; every stroke shows up on the desk as you draw (3.8).
   drawing is then saved in your chat with each other), `DELETE /api/doodles/<id>` (own canvas only).
 * `GET /api/doodles/<id>/events` — Server-Sent Events: `init {data}`, `strokes {by, s}`, `clear {by}`, `end`; a ping
   comment every 20 s. Both browsers draw from this, so you see each other's lines live.
+* `GET /api/showing` → what the hub last put on your desk and hasn't ended: `{kind: "drawing"|"image"|"gif", id,
+  from ("you" or a friend's name), until (unix seconds, null = until back to clock), live}` or `null`. Seconds in
+  `end`, `show` and section 14's `show` accept 0 for "until back to clock".
 * `POST /api/doodles/hide` → back to the clock on your own desks: ends your open own-canvas drawing (saved), then
   sends the last drawing shown there an end with 10 s (older firmware) followed by op 5 (1.4.8+: immediately).
 * `GET /api/doodles/mine` → your last 20 own-canvas drawings; `POST /api/doodles/<id>/show {secs}` puts one back on

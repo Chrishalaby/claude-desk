@@ -1167,7 +1167,9 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
   await waitOp(de, "esp-e0e001", 3, 3);
   assert.equal((await fred.call("POST", `/api/doodles/${own}/show`, {})).status, 404);
   const fredBefore = df.got.length;
+  assert.deepEqual((await erin.call("GET", "/api/showing")).body, { kind: "drawing", id: own, from: "you", until: clock + 3600, live: false });
   assert.equal((await erin.call("POST", "/api/doodles/hide")).status, 200);
+  assert.equal((await erin.call("GET", "/api/showing")).body, null);
   await waitOp(de, "esp-e0e001", 5);
   const back = frames(de, "esp-e0e001", 5)[0].buf;
   assert.equal((back[1] << 8) | back[2], own, "back to clock names the drawing on screen");
@@ -1175,10 +1177,17 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
   assert.equal((lastEnd[3] << 8) | lastEnd[4], 10, "older firmware gets a 10 s end first");
   const sketch = (await erin.call("POST", "/api/doodles", {})).body.id;
   await erin.call("POST", `/api/doodles/${sketch}/strokes`, { s: stroke.toString("base64") });
+  assert.deepEqual((await erin.call("GET", "/api/showing")).body, { kind: "drawing", id: sketch, from: "you", until: clock + 120, live: true });
   await erin.call("POST", "/api/doodles/hide");
   await waitOp(de, "esp-e0e001", 5, 2);
+  const keepOn = (await erin.call("POST", "/api/doodles", {})).body.id;
+  await erin.call("POST", `/api/doodles/${keepOn}/strokes`, { s: stroke.toString("base64") });
+  await erin.call("POST", `/api/doodles/${keepOn}/end`, { secs: 0 });
+  await de.waitFor(() => frames(de, "esp-e0e001", 3).some((m) => m.buf.readUInt16BE(1) === keepOn && m.buf.readUInt16BE(3) === 0), "keep-on end frame");
+  assert.deepEqual((await erin.call("GET", "/api/showing")).body, { kind: "drawing", id: keepOn, from: "you", until: null, live: false });
+  await erin.call("POST", "/api/doodles/hide");
   assert.deepEqual((await erin.call("GET", "/api/doodles/active")).body, [], "back to clock ends the open canvas");
-  assert.deepEqual((await erin.call("GET", "/api/doodles/mine")).body.map((d) => d.id), [sketch, own], "and keeps the drawing");
+  assert.deepEqual((await erin.call("GET", "/api/doodles/mine")).body.map((d) => d.id).slice(-2), [sketch, own], "and keeps the drawing");
   assert.equal(df.got.slice(fredBefore).filter((m) => m.topic.endsWith("/draw")).length, 0, "only your own desks");
 
   const conn = await fetch(`${base}/api/apps/spotify/connect`, { headers: { cookie: erin.cookie() }, redirect: "manual" });
@@ -1477,7 +1486,21 @@ test("photos and GIFs: converted on the hub, streamed to your desk or a friend's
   assert.equal((await fetch(`${base}/api/media/${gifId}/preview`, { headers: { cookie: hank.cookie() } })).status, 200, "the friend can see what was sent");
   assert.equal((await fetch(`${base}/api/media/${gifId}/preview`, { headers: { cookie: ivy.cookie() } })).status, 404);
 
+  r = await gina.call("POST", `/api/media/${gifId}/show`, { secs: 0 });
+  const forever = await received(dg, "esp-a1a001", 2);
+  assert.equal(forever.secs, 0, "0 = keep it on until Back to clock");
+  assert.deepEqual((await gina.call("GET", "/api/showing")).body, { kind: "gif", id: gifId, from: "you", until: null, live: false });
+  assert.deepEqual((await hank.call("GET", "/api/showing")).body, { kind: "gif", id: gifId, from: "Gina", until: clock + 60, live: false });
+  const seenCmds = () => dh.got.filter((m) => m.topic === "desk/esp-b1b001/cmd" && m.json?.cmd === "seen").length;
+  assert.equal(seenCmds(), 1, "opening the chat cleared the unread line on hank's desk");
+  await hank.call("GET", "/api/messages?with=gina");
+  await dh.quiet(80);
+  assert.equal(seenCmds(), 1, "only once per unread");
+  await gina.call("POST", "/api/messages", { to: "hank", kind: "reaction", reaction: "heart" });
+  await hank.call("GET", "/api/messages?with=gina");
+  await dh.waitFor(() => seenCmds() === 2, "cleared again after a new message");
   assert.equal((await gina.call("POST", "/api/doodles/hide")).status, 200);
+  assert.equal((await gina.call("GET", "/api/showing")).body, null);
   await dg.waitFor((m) => m.topic === "desk/esp-a1a001/media" && m.buf[0] === 4, "media stop");
   await dg.waitFor((m) => m.topic === "desk/esp-a1a001/draw" && m.buf[0] === 5, "back to clock");
   assert.equal((await gina.call("DELETE", `/api/media/${gifId}`)).status, 200);

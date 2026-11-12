@@ -433,6 +433,8 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     return id;
   };
   const body = (req: FastifyRequest) => (req.body ?? {}) as Record<string, unknown>;
+  const secsOf = (v: unknown) => (v === 0 || v === "0" ? 0 : Number(v) || 60);
+  app.get("/api/showing", { preHandler: auth }, async (req) => svc.screenOf(req.user!.id));
   app.post("/api/doodles", { preHandler: auth }, async (req) => doodles.start(req.user!.id, str(body(req).to).trim() || null));
   app.get("/api/doodles/active", { preHandler: auth }, async (req) => doodles.active(req.user!.id));
   app.post("/api/doodles/hide", { preHandler: auth }, async (req) => { media.hide(req.user!.id); doodles.hide(req.user!.id); return { ok: true }; });
@@ -451,7 +453,7 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   app.get("/api/media/:id/preview", { preHandler: auth }, async (req, reply) =>
     reply.type("image/webp").header("cache-control", "private, max-age=86400").send(media.preview(req.user!.id, mediaId(req))));
   app.delete("/api/media/:id", { preHandler: auth }, async (req) => { media.remove(req.user!.id, mediaId(req)); return { ok: true }; });
-  app.post("/api/media/:id/show", { preHandler: auth }, async (req) => media.show(req.user!.id, mediaId(req), body(req).secs));
+  app.post("/api/media/:id/show", { preHandler: auth }, async (req) => media.show(req.user!.id, mediaId(req), secsOf(body(req).secs)));
   app.post("/api/media/:id/send", { preHandler: auth }, async (req) => media.send(req.user!.id, mediaId(req), str(body(req).to).trim()));
   app.get("/api/doodles/mine", { preHandler: auth }, async (req) => doodles.mine(req.user!.id));
   app.get("/api/doodles/:id", { preHandler: auth }, async (req) => doodles.view(req.user!.id, doodleId(req)));
@@ -461,11 +463,11 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   });
   app.post("/api/doodles/:id/clear", { preHandler: auth }, async (req) => { doodles.clear(req.user!.id, doodleId(req)); return { ok: true }; });
   app.post("/api/doodles/:id/end", { preHandler: auth }, async (req) => {
-    doodles.end(req.user!.id, doodleId(req), Number(body(req).secs) || 60);
+    doodles.end(req.user!.id, doodleId(req), secsOf(body(req).secs));
     return { ok: true };
   });
   app.post("/api/doodles/:id/show", { preHandler: auth }, async (req) => {
-    doodles.show(req.user!.id, doodleId(req), Number(body(req).secs) || 60);
+    doodles.show(req.user!.id, doodleId(req), secsOf(body(req).secs));
     return { ok: true };
   });
   app.delete("/api/doodles/:id", { preHandler: auth }, async (req) => { doodles.remove(req.user!.id, doodleId(req)); return { ok: true }; });
@@ -515,8 +517,11 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     return svc.sendMessage(req.user!.id, str(b.to).trim(), b.kind, b.text, b.reaction);
   });
 
-  app.get("/api/messages", { preHandler: auth }, async (req) =>
-    svc.history(req.user!.id, str((req.query as any)?.with).trim()));
+  app.get("/api/messages", { preHandler: auth }, async (req) => {
+    const list = svc.history(req.user!.id, str((req.query as any)?.with).trim());
+    svc.seen(req.user!.id);
+    return list;
+  });
 
   // ---------------------------------------------------------------- client installers
   const clientDirs = [cfg.clientDir, path.join(cfg.publicDir, "..", "client")];
