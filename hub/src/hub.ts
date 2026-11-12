@@ -41,6 +41,7 @@ export async function startHub(cfg: Config): Promise<Hub> {
   const cn = cfg.mqttPublicHost ?? "claude-desk-hub";
   const tlsMat = await loadTls(cfg.dataDir, cfg.tlsCert, cfg.tlsKey, cn);
   const svc = new Service(db, cfg, tlsMat);
+  svc.log = log;
   const media = new Media(db, svc, () => Math.floor(cfg.now()));
 
   const broker = await startBroker(cfg.mqttPort, cfg.httpHost, tlsMat, {

@@ -69,7 +69,7 @@ export function deskHostBase(username: string): string {
   return (username.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "user") + "-desk";
 }
 
-interface ClaudeEntry { sessions: Sessions; view: View; key: string }
+interface ClaudeEntry { sessions: Sessions; view: View; key: string; last?: string; needsAt?: number }
 
 export class Service {
   private claude = new Map<number, ClaudeEntry>();
@@ -542,8 +542,11 @@ export class Service {
 
   hookAllowed(userId: number) { return this.hookLimiter.take(String(userId)); }
 
+  log: (...a: unknown[]) => void = () => {};
+
   hookEvent(user: UserRow, ev: HookEvent) {
     const e = this.claudeEntry(user.id);
+    e.last = `${typeof ev.e === "string" ? ev.e : "?"}${typeof ev.tool === "string" && ev.tool ? " " + ev.tool.slice(0, 32) : ""}${typeof ev.ntype === "string" && ev.ntype ? " " + ev.ntype.slice(0, 32) : ""}`;
     applyEvent(e.sessions, ev, this.cfg.now());
     this.persistClaude(user.id, e);
     this.evaluate(user.id);
@@ -568,6 +571,11 @@ export class Service {
     if (k === e.key && !force) {
       if (pruned) this.persistClaude(userId, e);
       return;
+    }
+    const now = this.cfg.now();
+    if (v.s === "needs" && e.view.s !== "needs") e.needsAt = now;
+    if (v.s !== "needs" && e.view.s === "needs" && e.needsAt && now - e.needsAt < 15) {
+      this.log(`claude needs cleared after ${Math.round(now - e.needsAt)}s for user ${userId} by ${e.last ?? "timer"} -> ${v.s}`);
     }
     e.view = fitPayload(v as unknown as Record<string, unknown>, ["d", "p", "f"]) as unknown as View;
     e.key = k;

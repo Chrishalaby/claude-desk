@@ -131,9 +131,8 @@ const TABS = [["#/home", "💬", "Home"], ["#/friends", "👥", "Friends"], ["#/
 function claudePill() {
   const v = state.me && state.me.claude;
   if (!v) return null;
-  const waiting = v.w > 0 && (v.s === "idle" || v.s === "working");
-  const label = waiting ? "Claude waiting for you" : { idle: "Claude idle", working: "Claude working", needs: "Claude needs you", done: "Claude done" }[v.s] || v.s;
-  return h("span", { class: "pill " + (waiting ? "needs" : v.s), title: waiting ? `Finished in ${v.wp}, waiting for your reply` : v.d || "" }, label);
+  const label = { idle: "Claude idle", working: "Claude working", needs: "Claude needs you", done: "Claude done" }[v.s] || v.s;
+  return h("span", { class: "pill " + v.s, title: v.d || "" }, label);
 }
 
 function shell(title, content, opts = {}) {
@@ -1435,8 +1434,7 @@ async function viewApps() {
     h("h2", { id: "app-claude" }, "Claude Code"),
     h("div", { class: "card status-card" }, h("span", { class: "big" }, icons[v.s] || "•"),
       h("div", { class: "grow" }, h("div", { class: "title" }, words[v.s] || v.s),
-        h("div", { class: "sub" }, [v.p, v.d].filter(Boolean).join(" — ") || "Across all your Claude Code sessions"),
-        v.w > 0 ? h("div", { class: "sub", style: "color:var(--accent)" }, v.w === 1 ? `Waiting for your reply in ${v.wp}` : `${v.w} sessions waiting for your reply (latest: ${v.wp})`) : null)),
+        h("div", { class: "sub" }, [v.p, v.d].filter(Boolean).join(" — ") || "Across all your Claude Code sessions"))),
     h("h2", {}, "Set up your computer"),
     h("div", { class: "card" },
       h("p", { class: "hint", style: "margin-top:0" }, "Run this once on each computer you use. It connects Claude Code to your desk, and your computer starts feeding the desk: what's playing, your calendar, unread counts and when you're away. Only titles and counts leave it, never your code, messages or files. Turn each part on or off below."),

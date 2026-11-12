@@ -61,7 +61,7 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
 
 ## Owner's setup / current state (Nov 2026)
 - Owner: Chris (GitHub `Chrishalaby`), macOS, Claude Code user. Repo: github.com/Chrishalaby/claude-desk (public).
-- His desk runs **firmware 1.4.5** (1.4.11 is built: drawings and photos/GIFs with keep-on and back-to-clock, a "!" on the Claude face while a finished session waits for you, the now-playing line, leaving a Wi-Fi without internet), paired on the hub as "Chris"
+- His desk runs **firmware 1.4.5** (1.4.11 is built: drawings and photos/GIFs with keep-on and back-to-clock, a "!" on the Claude face while a permission prompt is open, the now-playing line, leaving a Wi-Fi without internet), paired on the hub as "Chris"
   (`chris-desk.local`), ~21 KB free while connected, on home Wi-Fi with the hotspot also saved.
   1.0.4 → 1.4.1 by local `/update`; 1.4.1 → 1.4.3 via SAFE MODE (its own OTA failed); later versions by the hub's
   Update button (restart-then-download path, verified on the device).

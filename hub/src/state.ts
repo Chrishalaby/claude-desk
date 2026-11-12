@@ -7,7 +7,7 @@ export const DONE_SECS = 10;
 export const WORKING_TTL = 15 * 60;
 export const NEEDS_TTL = 60 * 60;
 export const SESSION_TTL = 6 * 3600;
-export const WAIT_TTL = 3 * 3600;
+export const GENERIC_GRACE = 3;
 export const MAX_SESSIONS = 64;
 const NEEDS_TYPES = new Set(["permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"]);
 
@@ -74,10 +74,13 @@ export function applyEvent(sessions: Sessions, ev: HookEvent, now: number): Sess
     case "PreToolUse":
       if (name === "PostToolUse") {
         const ck = toolKey(tool, detail);
+        const before = Object.keys(s.pending).length;
         for (const [k, p] of Object.entries(s.pending)) {
           if ((tid && k === tid) || p.ck === ck) delete s.pending[k];
         }
-        if (Object.keys(s.pending).length === 0) s.generic = null;
+        const left = Object.keys(s.pending).length;
+        if (left < before && left === 0) s.generic = null;
+        else if (!before && s.generic && now - s.generic.since >= GENERIC_GRACE) s.generic = null;
       }
       s.active = now;
       break;
@@ -104,14 +107,12 @@ export function computeView(sessions: Sessions, now: number, tz: string): View {
 
   const waits: [number, string, string][] = [];
   const done: [number, string][] = [];
-  const waiting: [number, string][] = [];
   let working = false;
   let lastActive = 0;
   for (const s of Object.values(sessions)) {
     for (const p of Object.values(s.pending)) if (now - p.since < NEEDS_TTL) waits.push([p.since, s.project, p.detail]);
     if (s.generic && now - s.generic.since < NEEDS_TTL) waits.push([s.generic.since, s.project, s.generic.detail]);
     if (s.done && now - s.done < DONE_SECS) done.push([s.done, s.project]);
-    if (s.done && now - s.done < WAIT_TTL) waiting.push([s.done, s.project]);
     if (now - s.active < WORKING_TTL && !s.done) {
       working = true;
       lastActive = Math.max(lastActive, s.active);
@@ -121,10 +122,9 @@ export function computeView(sessions: Sessions, now: number, tz: string): View {
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i] ? 1 : -1;
     return 0;
   };
-  waiting.sort(cmp);
-  const w = waiting.length, wp = w ? trunc(waiting[0][1], 32) : "";
+  waits.sort(cmp); // newest request first (same tuple ordering as Python's sort(reverse=True))
+  const w = waits.length, wp = w ? trunc(String(waits[0][1]), 32) : "";
   if (waits.length) {
-    waits.sort(cmp); // newest request first (same tuple ordering as Python's sort(reverse=True))
     const [t, proj, detail] = waits[0];
     const extra = waits.length > 1 ? `+${waits.length - 1} more waiting · ` : "";
     return { s: "needs", p: trunc(proj, 32), d: trunc(detail, 80), f: trunc(extra + hhmm(t, tz), 40), t: Math.floor(t), w, wp };
