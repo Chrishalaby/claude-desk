@@ -27,6 +27,7 @@ void uiCasper(int frame, int x, int y, bool flip, int padL, int padR, int clipR)
 void uiCardCasper(uint32_t frame);
 void uiCasperZ(int casperX, uint32_t t);   // rising z's above sleeping Casper   // little hop on the DONE card
 // hub features
+extern bool uiWaiting;
 extern char uiUnread[24];             // non-empty: show an envelope + sender on the clock
 extern char uiNext[40];
 extern bool uiNextMusic;

@@ -27,6 +27,7 @@ uint16_t COL_GREY   = c565(130, 136, 148);
 
 int uiLayout = 0;
 char uiUnread[24] = "";
+bool uiWaiting = false;
 char uiNext[40] = "";
 bool uiNextMusic = false;
 bool uiLocationSet = true;
@@ -84,6 +85,11 @@ static void robotGrid(int dy, Eyes eyes, int look, uint16_t bulb, uint16_t bg) {
 }
 
 static void blitGrid(int x, int y, int s) {
+  if (uiWaiting) {
+    gr(16, 0, 18, 6, c565(255, 204, 0));
+    gr(17, 1, 17, 3, 0);
+    gr(17, 5, 17, 5, 0);
+  }
   uint16_t *row = gRowBuf;
   for (int gy = 0; gy < 20; gy++) {
     for (int gx = 0; gx < 20; gx++)

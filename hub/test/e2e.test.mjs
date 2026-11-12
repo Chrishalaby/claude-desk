@@ -484,7 +484,7 @@ test("hook: needs -> working -> done -> idle, parallel PostToolUse keeps a pendi
   const t1 = clock;
   await hook({ e: "PermissionRequest", sid: "s1", project: "supy-api", tool: "Bash", detail: "npm test", tid: "toolu_1" });
   v = await claude((j) => j.s === "needs", "needs");
-  assert.deepEqual(v.json, { s: "needs", p: "supy-api", d: "Allow Bash: npm test", f: hhmm(t1), t: t1 });
+  assert.deepEqual(v.json, { s: "needs", p: "supy-api", d: "Allow Bash: npm test", f: hhmm(t1), t: t1, w: 0, wp: "" });
 
   // parallel tool in the same session finishes: still needs
   clock += 1;
@@ -503,7 +503,7 @@ test("hook: needs -> working -> done -> idle, parallel PostToolUse keeps a pendi
   const t2 = clock;
   await hook({ e: "PermissionRequest", sid: "s2", project: "website", tool: "Write", detail: "index.md" });
   v = await claude((j) => j.s === "needs" && j.p === "website", "second needs");
-  assert.deepEqual(v.json, { s: "needs", p: "website", d: "Allow Write: index.md", f: `+1 more waiting · ${hhmm(t2)}`, t: t2 });
+  assert.deepEqual(v.json, { s: "needs", p: "website", d: "Allow Write: index.md", f: `+1 more waiting · ${hhmm(t2)}`, t: t2, w: 0, wp: "" });
   // its PostToolUse matches by tool:detail
   await hook({ e: "PostToolUse", sid: "s2", project: "website", tool: "Write", detail: "index.md" });
   v = await claude((j) => j.s === "needs" && j.p === "supy-api", "back to first needs");
@@ -519,7 +519,7 @@ test("hook: needs -> working -> done -> idle, parallel PostToolUse keeps a pendi
   const t3 = clock;
   await hook({ e: "Stop", sid: "s1", project: "supy-api" });
   v = await claude((j) => j.s === "done", "done");
-  assert.deepEqual(v.json, { s: "done", p: "supy-api", d: "Finished", f: hhmm(t3), t: t3 });
+  assert.deepEqual(v.json, { s: "done", p: "supy-api", d: "Finished", f: hhmm(t3), t: t3, w: 1, wp: "supy-api" });
 
   clock += 5;
   hub.tick();
@@ -528,6 +528,20 @@ test("hook: needs -> working -> done -> idle, parallel PostToolUse keeps a pendi
   clock += 6;
   hub.tick();
   v = await claude((j) => j.s === "idle", "idle after done");
+  assert.deepEqual([v.json.w, v.json.wp], [1, "supy-api"], "a finished session keeps waiting for a reply after the DONE card");
+  await hook({ e: "Stop", sid: "s4", project: "website" });
+  v = await claude((j) => j.s === "done" && j.p === "website", "second session done");
+  assert.deepEqual([v.json.w, v.json.wp], [2, "website"]);
+  await hook({ e: "UserPromptSubmit", sid: "s1", project: "supy-api" });
+  v = await claude((j) => j.w === 1, "replying clears that session");
+  assert.equal(v.json.wp, "website");
+  await hook({ e: "SessionEnd", sid: "s4", project: "website" });
+  v = await claude((j) => j.w === 0, "closing the session clears it");
+  await hook({ e: "Stop", sid: "s1", project: "supy-api" });
+  await claude((j) => j.w === 1, "waiting again");
+  clock += 3 * 3600 + 1;
+  hub.tick();
+  v = await claude((j) => j.w === 0, "waiting expires after 3 h");
 
   // generic (notification) needs, cleared by the next PostToolUse
   await hook({ e: "UserPromptSubmit", sid: "s3", project: "cortex" });

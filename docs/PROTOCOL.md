@@ -85,8 +85,11 @@ Rules:
 ### 3.1 `desk/<chip>/claude` — retained, hub → device
 Claude Code status for the device owner (aggregated over all their sessions).
 ```json
-{ "s": "idle|working|needs|done", "p": "project", "d": "detail", "f": "footer", "t": 1762412345 }
+{ "s": "idle|working|needs|done", "p": "project", "d": "detail", "f": "footer", "t": 1762412345, "w": 1, "wp": "project" }
 ```
+`w` = sessions that finished (Stop) and are still waiting for your next prompt (cleared by UserPromptSubmit in that
+session, SessionEnd, or after 3 h), `wp` = the latest of them. The DONE card only shows for ~15 s; firmware ≥ 1.4.11
+keeps a yellow "!" on the clock's Claude face while `w` > 0, and the web app's header pill says "Claude waiting for you".
 `p` ≤ 32, `d` ≤ 80, `f` ≤ 40 chars. Same meaning as the device's local `/state` endpoint.
 All fields are always present; for `idle`/`working`, `p`, `d`, `f` are `""`. `t` = time of the request (needs),
 of the Stop (done), of the activity that made it `working`, or when it went idle.
@@ -242,6 +245,7 @@ Tool key = `tid` if present, else `tool + ":" + detail`.
 | Stop | clear pending + generic; done = now |
 | SessionEnd | delete session |
 
+`w` / `wp` (3.1) count sessions with a `done` timestamp younger than 3 h, whatever the view.
 View (priority): any pending/generic → **needs** (newest one; footer `"+N more waiting · HH:MM"`), else a `done` < 10 s old → **done**, else any session active < 15 min and not done → **working**, else **idle**.
 Sessions idle > 6 h are dropped. Times in the footer use the user's IANA timezone (auto-detected from the browser at login via `Intl`, editable in settings; default UTC).
 Hub publishes the view to `desk/<chip>/claude` for **every device owned by that user** whenever it changes, plus re-evaluates on a 1 s timer (for the done → idle/working transition).
