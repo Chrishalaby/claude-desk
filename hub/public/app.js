@@ -324,6 +324,11 @@ async function openDoodle({ to = null, id = null, title, onClose = null }) {
     inflight = false;
   };
   const timer = setInterval(flush, 100);
+  const ping = () => { if (!ended && id) api("POST", `/api/doodles/${id}/ping`).catch(() => {}); };
+  const pinger = setInterval(ping, 45000);
+  const onVisible = () => { if (document.visibilityState === "visible") ping(); };
+  document.addEventListener("visibilitychange", onVisible);
+  ping();
   const pt = (e) => {
     const r = canvas.getBoundingClientRect();
     return [Math.max(0, Math.min(239, Math.round(((e.clientX - r.left) / r.width) * 240))), Math.max(0, Math.min(239, Math.round(((e.clientY - r.top) / r.height) * 240)))];
@@ -355,7 +360,7 @@ async function openDoodle({ to = null, id = null, title, onClose = null }) {
   es.addEventListener("strokes", (ev) => { const d = JSON.parse(ev.data); if (d.by !== me) drawBytes(ctx, fromB64(d.s), 2); });
   es.addEventListener("clear", (ev) => { const d = JSON.parse(ev.data); if (d.by !== me) { clearCanvas(); toast("Canvas cleared"); } });
   es.addEventListener("end", () => { if (!ended) { ended = true; toast("Drawing saved"); close(); } });
-  const close = () => { ended = true; clearInterval(timer); es.close(); dlg.remove(); if (onClose) onClose(); else if (state.route.startsWith("/chat/")) render(); };
+  const close = () => { ended = true; clearInterval(timer); clearInterval(pinger); document.removeEventListener("visibilitychange", onVisible); es.close(); dlg.remove(); if (onClose) onClose(); else if (state.route.startsWith("/chat/")) render(); };
   const dlg = h("div", { class: "draw-overlay" },
     h("div", { class: "draw-head" }, h("b", {}, title || (own ? "Your canvas" : "Drawing")),
       h("span", { class: "hint", style: "margin:0" }, own ? "Shows on your desk as you draw" : "Live on both desks; you can both draw")),

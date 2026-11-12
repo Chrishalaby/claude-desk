@@ -461,6 +461,7 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     doodles.addStrokes(req.user!.id, doodleId(req), body(req).s);
     return { ok: true };
   });
+  app.post("/api/doodles/:id/ping", { preHandler: auth }, async (req) => doodles.ping(req.user!.id, doodleId(req)));
   app.post("/api/doodles/:id/clear", { preHandler: auth }, async (req) => { doodles.clear(req.user!.id, doodleId(req)); return { ok: true }; });
   app.post("/api/doodles/:id/end", { preHandler: auth }, async (req) => {
     doodles.end(req.user!.id, doodleId(req), secsOf(body(req).secs));
