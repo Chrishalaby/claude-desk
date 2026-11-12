@@ -146,6 +146,8 @@ a.btn.off { opacity: 0.4; pointer-events: none; }
 /* desk settings */
 .seg-2 { grid-template-columns: 1fr 1fr; }
 .seg-3 { grid-template-columns: 1fr 1fr 1fr; }
+.seg-4 { grid-template-columns: repeat(4, 1fr); }
+.seg-4 button { padding: 8px 2px; font-size: 13px; }
 .ok { color: var(--ok); }
 .warn { color: #d9c39a; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

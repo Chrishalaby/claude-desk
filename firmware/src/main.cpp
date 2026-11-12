@@ -804,6 +804,13 @@ void onDraw(const uint8_t *p, unsigned int len) {
   uint16_t c = drawColor(0);
   int w = 3, px = -1, py = -1;
   for (unsigned i = 3; i < len;) {
+    if (p[i] == 0xFE) {
+      if (i + 1 >= len) break;
+      gFill(0, 0, SCR_W, SCR_H, drawColor(p[i + 1]));
+      px = py = -1;
+      i += 2;
+      continue;
+    }
     if (p[i] == 0xFF) {
       if (i + 2 >= len) break;
       c = drawColor(p[i + 1]);

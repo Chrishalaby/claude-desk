@@ -9,18 +9,27 @@ export const DOODLE_COLORS = 12;
 const CHUNK = 700;
 
 type Listener = (event: string, data: Record<string, unknown>) => void;
-interface Session { id: number; a: number; b: number; data: Buffer; last: number; listeners: Set<Listener> }
+interface Op { by: number; k: number; bytes: Buffer }
+interface Session { id: number; a: number; b: number; data: Buffer; ops: Op[]; last: number; listeners: Set<Listener> }
 interface DoodleRow { id: number; a: number; b: number; data: Buffer; started: number; ended: number | null }
 
 export function validStrokes(buf: Buffer): boolean {
-  if (!buf.length || buf[0] !== 0xff) return false;
+  if (!buf.length || (buf[0] !== 0xff && buf[0] !== 0xfe)) return false;
+  let inStroke = false;
   for (let i = 0; i < buf.length;) {
+    if (buf[i] === 0xfe) {
+      if (i + 1 >= buf.length || buf[i + 1] >= DOODLE_COLORS) return false;
+      inStroke = false;
+      i += 2;
+      continue;
+    }
     if (buf[i] === 0xff) {
+      inStroke = true;
       if (i + 2 >= buf.length || buf[i + 1] >= DOODLE_COLORS || buf[i + 2] < 1 || buf[i + 2] > 24) return false;
       i += 3;
       continue;
     }
-    if (i + 1 >= buf.length || buf[i] > 239 || buf[i + 1] > 239) return false;
+    if (!inStroke || i + 1 >= buf.length || buf[i] > 239 || buf[i + 1] > 239) return false;
     i += 2;
   }
   return true;
@@ -33,6 +42,14 @@ export function chunkStrokes(buf: Buffer, max = CHUNK): Buffer[] {
   let last: number[] | null = null;
   const flush = () => { if (cur.length) out.push(Buffer.from(cur)); cur = []; };
   for (let i = 0; i < buf.length;) {
+    if (buf[i] === 0xfe) {
+      if (cur.length + 2 > max) flush();
+      cur.push(0xfe, buf[i + 1]);
+      head = null;
+      last = null;
+      i += 2;
+      continue;
+    }
     if (buf[i] === 0xff) {
       head = [0xff, buf[i + 1], buf[i + 2]];
       last = null;
@@ -124,7 +141,7 @@ export class Doodles {
     if (!this.startLimiter.take(String(me))) throw new HttpError(429, "rate_limited");
     const now = this.now();
     const info = this.db.prepare("INSERT INTO doodles (a, b, data, started) VALUES (?, ?, ?, ?)").run(me, other, Buffer.alloc(0), now);
-    const s: Session = { id: Number(info.lastInsertRowid), a: me, b: other, data: Buffer.alloc(0), last: now, listeners: new Set() };
+    const s: Session = { id: Number(info.lastInsertRowid), a: me, b: other, data: Buffer.alloc(0), ops: [], last: now, listeners: new Set() };
     this.sessions.set(s.id, s);
     this.deskStart(s);
     return { id: s.id, joined: false };
@@ -138,7 +155,7 @@ export class Doodles {
     });
   }
 
-  addStrokes(me: number, id: number, b64: unknown) {
+  addStrokes(me: number, id: number, b64: unknown, k?: unknown) {
     const s = this.session(me, id);
     if (!this.strokeLimiter.take(String(me))) throw new HttpError(429, "rate_limited");
     const bytes = typeof b64 === "string" && b64.length <= 8192 ? Buffer.from(b64, "base64") : Buffer.alloc(0);
@@ -146,6 +163,7 @@ export class Doodles {
     if (s.data.length + bytes.length > DOODLE_MAX_BYTES) throw new HttpError(413, "too_big");
     if (this.now() - s.last > DOODLE_RESYNC_SECS) this.resend(s);
     s.data = Buffer.concat([s.data, bytes]);
+    s.ops.push({ by: me, k: Number.isSafeInteger(k) ? Number(k) : -1 - s.ops.length, bytes });
     s.last = this.now();
     this.db.prepare("UPDATE doodles SET data = ? WHERE id = ?").run(s.data, s.id);
     for (const c of chunkStrokes(bytes)) this.toBoth(s, Buffer.concat([this.head(2, s.id), c]));
@@ -156,10 +174,25 @@ export class Doodles {
   clear(me: number, id: number) {
     const s = this.session(me, id);
     s.data = Buffer.alloc(0);
+    s.ops = [];
     s.last = this.now();
     this.db.prepare("UPDATE doodles SET data = ? WHERE id = ?").run(s.data, s.id);
     this.toBoth(s, this.head(4, s.id));
     this.emit(s, "clear", { by: this.svc.userById(me)?.username });
+  }
+
+  undo(me: number, id: number) {
+    const s = this.session(me, id);
+    const lastMine = [...s.ops].reverse().find((o) => o.by === me);
+    if (!lastMine) return { undone: false };
+    s.ops = s.ops.filter((o) => !(o.by === me && o.k === lastMine.k));
+    s.data = Buffer.concat(s.ops.map((o) => o.bytes));
+    s.last = this.now();
+    this.db.prepare("UPDATE doodles SET data = ? WHERE id = ?").run(s.data, s.id);
+    this.toBoth(s, this.head(4, s.id));
+    for (const c of chunkStrokes(s.data)) this.toBoth(s, Buffer.concat([this.head(2, s.id), c]));
+    this.emit(s, "reset", { by: this.svc.userById(me)?.username, s: s.data.toString("base64") });
+    return { undone: true };
   }
 
   private fromFor(owner: number, s: { a: number; b: number }) {

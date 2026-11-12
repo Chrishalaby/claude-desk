@@ -278,6 +278,7 @@ const fromB64 = (s) => Uint8Array.from(atob(s || ""), (c) => c.charCodeAt(0));
 function drawBytes(ctx, bytes, scale, st = {}) {
   ctx.lineCap = "round"; ctx.lineJoin = "round";
   for (let i = 0; i < bytes.length;) {
+    if (bytes[i] === 0xfe) { ctx.fillStyle = DRAW_COLORS[bytes[i + 1]] || "#000"; ctx.fillRect(0, 0, 240 * scale, 240 * scale); st.px = null; i += 2; continue; }
     if (bytes[i] === 0xff) { st.c = DRAW_COLORS[bytes[i + 1]] || "#fff"; st.w = bytes[i + 2]; st.px = null; i += 3; continue; }
     const x = bytes[i], y = bytes[i + 1];
     i += 2;
@@ -305,23 +306,52 @@ async function openDoodle({ to = null, id = null, title, onClose = null }) {
   const ctx = canvas.getContext("2d");
   const clearCanvas = () => { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, 480, 480); };
   clearCanvas();
-  let color = 6, size = 7, ended = false, pending = [], carry = 0, inflight = false, stroke = null, lastPt = null;
+  let color = 6, size = 7, tool = "pen", ended = false, inflight = false, stroke = null, lastPt = null, seq = 0, shape = null;
+  let queue = [];
   const swatches = h("div", { class: "swatches" });
   const sizes = h("div", { class: "seg seg-3", style: "width:min(92vw,440px)" });
+  const tools = h("div", { class: "seg seg-4", style: "width:min(92vw,440px)" });
   const paintTools = () => {
+    fill(tools, [["pen", "✏️ Pen"], ["line", "╱ Line"], ["rect", "▢ Box"], ["circle", "◯ Circle"]].map(([v, l]) =>
+      h("button", { type: "button", class: tool === v ? "on" : "", onclick: () => { tool = v; paintTools(); } }, l)));
     fill(swatches, DRAW_COLORS.map((c, i) => h("button", { type: "button", class: "sw" + (i === color ? " on" : ""), style: `background:${c}`,
       title: i === 1 ? "Eraser" : "", "aria-label": i === 1 ? "Eraser" : "Colour", onclick: () => { color = i; paintTools(); } }, i === 1 ? "⌫" : "")));
     fill(sizes, DRAW_SIZES.map(([l, v]) => h("button", { type: "button", class: size === v ? "on" : "", onclick: () => { size = v; paintTools(); } }, l)));
   };
   paintTools();
+  const add = (k, arr) => {
+    const last = queue[queue.length - 1];
+    if (last && last.k === k) last.bytes.push(...arr); else queue.push({ k, bytes: [...arr], carry: 0 });
+  };
   const flush = async () => {
-    if (inflight || ended || pending.length <= carry) return;
-    const out = pending;
-    pending = []; carry = 0;
-    if (stroke && lastPt) { pending.push(0xff, stroke.c, stroke.w, ...lastPt); carry = pending.length; }
+    if (inflight || ended) return;
+    queue = queue.filter((it, i) => it.bytes.length > it.carry || (stroke && stroke.k === it.k && i === queue.length - 1));
+    const item = queue[0];
+    if (!item || item.bytes.length <= item.carry) return;
+    queue.shift();
+    if (stroke && stroke.k === item.k && lastPt) queue.unshift({ k: item.k, bytes: [0xff, stroke.c, stroke.w, ...lastPt], carry: 5 });
     inflight = true;
-    try { await api("POST", `/api/doodles/${id}/strokes`, { s: toB64(out) }); } catch (e) { fail(e); }
+    try { await api("POST", `/api/doodles/${id}/strokes`, { s: toB64(item.bytes), k: item.k }); } catch (e) { fail(e); }
     inflight = false;
+  };
+  const drain = async () => {
+    for (let i = 0; i < 100 && (inflight || queue.some((it) => it.bytes.length > it.carry)); i++) {
+      await flush();
+      await new Promise((r) => setTimeout(r, 30));
+    }
+  };
+  const shapePoints = (a, b) => {
+    const [x0, y0] = a, [x1, y1] = b;
+    if (tool === "line") return [x0, y0, x1, y1];
+    if (tool === "rect") return [x0, y0, x1, y0, x1, y1, x0, y1, x0, y0];
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, rx = Math.abs(x1 - x0) / 2, ry = Math.abs(y1 - y0) / 2;
+    const n = Math.max(16, Math.min(60, Math.round((rx + ry) / 2)));
+    const pts = [];
+    for (let i = 0; i <= n; i++) {
+      const t = (i / n) * Math.PI * 2;
+      pts.push(Math.max(0, Math.min(239, Math.round(cx + rx * Math.cos(t)))), Math.max(0, Math.min(239, Math.round(cy + ry * Math.sin(t)))));
+    }
+    return pts;
   };
   const timer = setInterval(flush, 100);
   const pt = (e) => {
@@ -333,20 +363,41 @@ async function openDoodle({ to = null, id = null, title, onClose = null }) {
     if (ended) return;
     canvas.setPointerCapture(e.pointerId);
     const p = pt(e);
-    stroke = { c: color, w: size };
+    if (tool !== "pen") {
+      shape = { from: p, to: p, snap: ctx.getImageData(0, 0, 480, 480) };
+      return;
+    }
+    stroke = { c: color, w: size, k: ++seq };
     lastPt = p;
-    pending.push(0xff, color, size, ...p);
+    add(stroke.k, [0xff, color, size, ...p]);
     drawBytes(ctx, Uint8Array.from([0xff, color, size, ...p]), 2, local);
   });
   canvas.addEventListener("pointermove", (e) => {
-    if (!stroke || ended) return;
+    if (ended) return;
+    if (shape) {
+      shape.to = pt(e);
+      ctx.putImageData(shape.snap, 0, 0);
+      drawBytes(ctx, Uint8Array.from([0xff, color, size, ...shapePoints(shape.from, shape.to)]), 2);
+      return;
+    }
+    if (!stroke) return;
     const p = pt(e);
     if (Math.abs(p[0] - lastPt[0]) + Math.abs(p[1] - lastPt[1]) < 2) return;
-    pending.push(...p);
+    add(stroke.k, p);
     drawBytes(ctx, Uint8Array.from(p), 2, local);
     lastPt = p;
   });
-  const up = () => { stroke = null; lastPt = null; if (pending.length === carry) { pending = []; carry = 0; } };
+  const up = () => {
+    if (shape) {
+      const bytes = [0xff, color, size, ...shapePoints(shape.from, shape.to)];
+      ctx.putImageData(shape.snap, 0, 0);
+      drawBytes(ctx, Uint8Array.from(bytes), 2);
+      add(++seq, bytes);
+      shape = null;
+      return;
+    }
+    stroke = null; lastPt = null;
+  };
   canvas.addEventListener("pointerup", up);
   canvas.addEventListener("pointercancel", up);
   const me = state.me && state.me.username;
@@ -354,27 +405,39 @@ async function openDoodle({ to = null, id = null, title, onClose = null }) {
   es.addEventListener("init", (ev) => { const d = JSON.parse(ev.data); clearCanvas(); drawBytes(ctx, fromB64(d.data), 2); });
   es.addEventListener("strokes", (ev) => { const d = JSON.parse(ev.data); if (d.by !== me) drawBytes(ctx, fromB64(d.s), 2); });
   es.addEventListener("clear", (ev) => { const d = JSON.parse(ev.data); if (d.by !== me) { clearCanvas(); toast("Canvas cleared"); } });
+  es.addEventListener("reset", (ev) => { const d = JSON.parse(ev.data); clearCanvas(); drawBytes(ctx, fromB64(d.s), 2); });
   es.addEventListener("end", () => { if (!ended) { ended = true; toast("Drawing saved"); close(); } });
   const close = () => { ended = true; clearInterval(timer); es.close(); dlg.remove(); if (onClose) onClose(); else if (state.route.startsWith("/chat/")) render(); };
   const dlg = h("div", { class: "draw-overlay" },
     h("div", { class: "draw-head" }, h("b", {}, title || (own ? "Your canvas" : "Drawing")),
       h("span", { class: "hint", style: "margin:0" }, own ? "Shows on your desk as you draw" : "Live on both desks; you can both draw")),
-    canvas, swatches, sizes,
+    canvas, tools, swatches, sizes,
     h("div", { class: "actions", style: "justify-content:center" },
+      h("button", { class: "btn small", title: "Fill the whole canvas with the colour", onclick: () => {
+        if (ended) return;
+        const bytes = [0xfe, color];
+        drawBytes(ctx, Uint8Array.from(bytes), 2);
+        add(++seq, bytes);
+      } }, "🪣 Fill"),
+      h("button", { class: "btn small", onclick: guarded(async () => {
+        await drain();
+        try { const r = await api("POST", `/api/doodles/${id}/undo`); if (!r.undone) toast("Nothing of yours to undo"); } catch (e) { fail(e); }
+      }) }, "↶ Undo"),
       h("button", { class: "btn small", onclick: guarded(async () => {
         if (!confirm("Clear the canvas for everyone?")) return;
-        pending = []; carry = 0; clearCanvas();
+        queue = []; clearCanvas();
         try { await api("POST", `/api/doodles/${id}/clear`); } catch (e) { fail(e); }
-      }) }, "Clear"),
+      }) }, "Clear")),
+    h("div", { class: "actions", style: "justify-content:center" },
       h("button", { class: "btn small primary", onclick: guarded(async () => {
-        await flush();
+        await drain();
         try { await api("POST", `/api/doodles/${id}/end`, { secs: own ? keepGet() : 60 }); ended = true; toast("Drawing saved"); close(); } catch (e) { fail(e); }
       }) }, "Done"),
       own ? h("button", { class: "btn small ghost", onclick: guarded(async () => {
-        await flush();
+        await drain();
         try { await api("POST", "/api/doodles/hide"); ended = true; toast("Back to the clock"); close(); } catch (e) { fail(e); }
       }) }, "Back to clock")
-        : h("button", { class: "btn small ghost", onclick: () => { flush(); close(); } }, "Leave")),
+        : h("button", { class: "btn small ghost", onclick: guarded(async () => { await drain(); close(); }) }, "Leave")),
     own ? h("p", { class: "hint", style: "text-align:center;max-width:440px" }, "Done keeps it on your desk (for how long is set on your desk's page). Back to clock saves it and shows the clock now.") : null,
     own ? null : h("p", { class: "hint", style: "text-align:center;max-width:440px" }, "Leave keeps the drawing open for your friend. Done saves it in your chat for both of you."));
   document.body.append(dlg);

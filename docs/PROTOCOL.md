@@ -190,8 +190,10 @@ Live drawings (section 13). Every frame starts with `op` and a 16-bit drawing id
 | 5 back to clock | — | firmware ≥ 1.4.8: leaves the drawing now, whatever its id (older firmware ignores it) |
 
 Stroke data: `0xFF, colour (0–11), width (1–24)` starts a stroke, then `x, y` byte pairs (0–239) are its points, joined
-by lines. Colours: white, black (eraser), red, orange, yellow, green, teal, blue, purple, pink, brown, grey. The hub
-splits long strokes so each frame starts with a stroke header and a continued stroke repeats its last point.
+by lines. `0xFE, colour` fills the whole canvas with that colour (firmware ≥ 1.4.12; points after it need a new
+stroke header). Colours: white, black (eraser), red, orange, yellow, green, teal, blue, purple, pink, brown, grey.
+Lines, boxes and circles from the web app are ordinary strokes (2, 5 and 17–61 points). The hub splits long strokes
+so each frame starts with a stroke header (or a fill) and a continued stroke repeats its last point.
 
 ### 3.9 `desk/<chip>/media` — binary, not retained, hub → device (firmware ≥ 1.4.9)
 A photo or GIF (section 14), streamed into the desk's storage as `/m.bin` (one at a time; the previous one is deleted
@@ -462,10 +464,13 @@ Draw in the web app; every stroke shows up on the desk as you draw (3.8).
   your desk. 403 `not_friends`, 30 new drawings per hour.
 * `GET /api/doodles/active` → open drawings you're part of (`{id, with, withName, startedByMe}`); the web app shows a
   "join" banner for them. `GET /api/doodles/<id>` → `{id, with, open, data (base64), started, ended}`.
-* `POST /api/doodles/<id>/strokes {s}` (base64 stroke data, ≤ 8 KB per call; whole drawing ≤ 48 KB, 413 `too_big`;
-  400 `strokes` when malformed), `POST .../clear`, `POST .../end {secs}` (how long the desks keep showing it; a shared
+* `POST /api/doodles/<id>/strokes {s, k?}` (base64 stroke data, ≤ 8 KB per call; whole drawing ≤ 48 KB, 413
+  `too_big`; 400 `strokes` when malformed; `k` = the sender's stroke number, so a stroke sent in several calls is one
+  step for undo), `POST .../undo` → `{undone}`: removes your most recent stroke (all calls with its `k`), then clears
+  both desks (op 4) and redraws what's left, and sends `reset {by, s}` (the whole drawing) to the browsers;
+  `POST .../clear`, `POST .../end {secs}` (how long the desks keep showing it; a shared
   drawing is then saved in your chat with each other), `DELETE /api/doodles/<id>` (own canvas only).
-* `GET /api/doodles/<id>/events` — Server-Sent Events: `init {data}`, `strokes {by, s}`, `clear {by}`, `end`; a ping
+* `GET /api/doodles/<id>/events` — Server-Sent Events: `init {data}`, `strokes {by, s}`, `clear {by}`, `reset {by, s}`, `end`; a ping
   comment every 20 s. Both browsers draw from this, so you see each other's lines live.
 * `GET /api/showing` → what the hub last put on your desk and hasn't ended: `{kind: "drawing"|"image"|"gif", id,
   from ("you" or a friend's name), until (unix seconds, null = until back to clock), live}` or `null`. Seconds in
