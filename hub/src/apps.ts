@@ -39,6 +39,7 @@ interface ComputerState {
 }
 export const PRESENCE_STALE_SECS = 300;
 const DEFAULT_MUTED = ["App Store", "System Settings", "System Preferences"];
+const COMMON_BADGE_APPS = ["WhatsApp", "Slack", "Discord", "Teams", "Telegram", "Messenger", "Gmail", "Outlook"];
 const BADGE_COLOR: Record<string, string> = {
   slack: "purple", discord: "purple", "microsoft teams": "purple", mail: "blue", "microsoft outlook": "blue", outlook: "blue",
   telegram: "blue", signal: "blue", messages: "green", whatsapp: "green",
@@ -367,7 +368,7 @@ export class Apps {
     return {
       seen: pc.state.at || null, os: pc.state.os, music: !pc.config.off, calendar: pc.config.calendar !== false,
       presence: pc.config.presence !== false, away: !!pc.state.away, cal: pc.state.cal ?? null, dock: pc.state.dock ?? null,
-      apps: (pc.state.known ?? []).map((app) => ({ app, count: badges[app] ?? 0, muted: muted.has(app) })),
+      apps: [...new Set([...(pc.state.at ? COMMON_BADGE_APPS : []), ...(pc.state.known ?? [])])].map((app) => ({ app, count: badges[app] ?? 0, muted: muted.has(app) })),
     };
   }
 

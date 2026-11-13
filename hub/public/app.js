@@ -1007,7 +1007,7 @@ function appComputer(a) {
       c.cal === "not_allowed" ? note("macOS is blocking it: System Settings → Privacy & Security → Calendars → turn on Claude Desk Calendar.", true) : note(cal),
       toggle("Show friends when I'm away", c.presence, set("presence")),
       note("After 10 minutes without keyboard or mouse, or when the computer sleeps."),
-      mac || c.apps.length ? [
+      c.seen || c.apps.length ? [
         h("label", { class: "f" }, "Unread counts"),
         c.apps.length ? c.apps.map((x) => toggle(`${x.app}${x.count ? ` · ${x.count === -1 ? "new" : x.count}` : ""}`, !x.muted, set((v) => ({ mute: { [x.app]: !v } }))))
           : h("p", { class: "hint", style: "margin:0" }, "Apps with a red badge on the Dock show up here (Slack, Mail, Messages, WhatsApp, Discord, Teams…). Your desk gets a card when the number goes up."),

@@ -1,6 +1,8 @@
+param([switch]$Check)
 $ErrorActionPreference = 'SilentlyContinue'
 $mutex = New-Object Threading.Mutex($false, 'claude-desk-agent')
-if (-not $mutex.WaitOne(0)) { exit 0 }
+$alreadyRunning = -not $mutex.WaitOne(0)
+if ($alreadyRunning -and -not $Check) { exit 0 }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ConfigPath = Join-Path $env:USERPROFILE '.claude-desk\config.json'
 $AwaySecs = 600
@@ -181,6 +183,33 @@ function OutlookEvents {
     })
   }
   , $list.ToArray()
+}
+
+if ($Check) {
+  $Error.Clear()
+  Write-Host "claude-desk check"
+  Write-Host ("windows:        " + [Environment]::OSVersion.Version + ", powershell " + $PSVersionTable.PSVersion)
+  Write-Host ("helper running: " + $alreadyRunning)
+  $cfg = $null
+  try { $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json } catch {}
+  Write-Host ("config:         " + $(if ($cfg) { "ok, hub " + $cfg.hub } else { "MISSING " + $ConfigPath }))
+  Write-Host ("media reader:   " + $(if ($Manager) { "ok, " + @($Manager.GetSessions()).Count + " app(s) with media" } else { "FAILED" }))
+  $m = Media
+  Write-Host ("playing now:    " + $(if ($m.playing) { $m.title + " / " + $m.artist + " (" + $m.app + ")" } else { "nothing" }))
+  Write-Host ("idle seconds:   " + [DeskIdle]::Seconds())
+  $b = Badges
+  Write-Host ("unread reader:  " + $(if ($null -eq $b) { "FAILED (loaded: $NotifOk)" } else { "ok: " + (($b.GetEnumerator() | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ", ") }))
+  Write-Host ("outlook:        " + $(if ($null -ne (OutlookEvents)) { "ok" } else { "not open" }))
+  if ($cfg) {
+    try {
+      $m.os = 'windows'
+      $json = [Text.Encoding]::UTF8.GetBytes(($m | ConvertTo-Json -Compress -Depth 5))
+      $r = Invoke-RestMethod -Uri ($cfg.hub.TrimEnd('/') + '/api/computer') -Method Post -Body $json -ContentType 'application/json' -Headers @{ Authorization = "Bearer $($cfg.token)" } -TimeoutSec 15
+      Write-Host ("send to site:   ok" + $(if ($r.off) { " (now playing is switched off on the site)" } else { "" }))
+    } catch { Write-Host ("send to site:   FAILED " + $_.Exception.Message) }
+  }
+  if ($Error.Count) { Write-Host "errors:"; $Error | Select-Object -First 8 | ForEach-Object { Write-Host ("  " + $_.ToString()) } }
+  exit 0
 }
 
 $last = ''

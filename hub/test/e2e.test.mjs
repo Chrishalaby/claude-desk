@@ -1347,7 +1347,7 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
   assert.equal(r.body.dock, null);
   await pcr({ badges: { Slack: 4 }, dock: "not_allowed" });
   assert.equal((await erin.call("GET", "/api/apps")).body.computer.dock, "not_allowed");
-  assert.deepEqual(r.body.apps.map((x) => x.app).sort(), ["App Store", "Slack", "WhatsApp"]);
+  assert.deepEqual(r.body.apps.map((x) => x.app).sort(), ["App Store", "Discord", "Gmail", "Messenger", "Outlook", "Slack", "Teams", "Telegram", "WhatsApp"], "common apps are listed before they ever show a badge");
   clock += 61;
   await pcr({ badges: { Slack: 9 } });
   await de.quiet(80);
