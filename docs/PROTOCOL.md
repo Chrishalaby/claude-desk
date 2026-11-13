@@ -445,7 +445,16 @@ One agent per computer (installed with the hook, section 7) reports to `POST /ap
   the Dock's accessibility tree (`AXStatusLabel` of every Dock item), read by `claude-desk-dock` (`dock.swift`,
   compiled at install, its own LaunchAgent `com.claude-desk.dock` so the Accessibility grant belongs to it; writes
   `~/.claude-desk/badges.json` every 10 s; asks for Accessibility once). `dock`: `ok` / `not_allowed` tells the page
-  whether that second source works. a card
+  whether that second source works. A third source needs nothing new: the tab titles of web apps in Chrome, Arc,
+  Edge, Brave and Safari ("(3) WhatsApp", "Inbox (5) … Gmail"; WhatsApp Web, Gmail, Slack, Discord, Telegram, Teams,
+  Messenger, Outlook), read every 30 s. On Windows 10/11 `agent.ps1` reads the notification store
+  (`%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db`) through the system's `winsqlite3.dll`: an app's
+  badge value if it has one, else its number of toasts still in the notification centre, for WhatsApp, Slack, Discord,
+  Teams, Telegram, Messenger, Outlook and Signal (written without a Windows machine: untested).
+* **Self-update**: every 6 h (first check 10 min after start) the agent downloads `/client/hook.*` and
+  `/client/agent.*` from its hub (https only). A file that differs, is at least 500 bytes, contains its endpoint path
+  and parses (`compile()` / PowerShell's parser) replaces the installed one; a new agent then exits and is restarted
+  (launchd / systemd / a fresh hidden process on Windows). The Swift helpers still need the installer. a card
   (`<App>`, "3 unread" / "Something new", 20 s) when an app's count goes up, at most one per app per minute, never on
   the first report. Muted by default: App Store, System Settings. The hub remembers up to 30 app names for the page.
 * **Away** (`away`, `idle` seconds): idle ≥ 10 min (macOS `HIDIdleTime`, Windows `GetLastInputInfo`, Linux

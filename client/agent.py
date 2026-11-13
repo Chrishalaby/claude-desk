@@ -10,7 +10,8 @@ import time
 import urllib.error
 import urllib.request
 
-DIR = os.path.join(os.path.expanduser("~"), ".claude-desk")
+DIR = os.environ.get("CLAUDE_DESK_DIR") or os.path.join(os.path.expanduser("~"), ".claude-desk")
+UPDATE_EVERY = 6 * 3600
 CONFIG = os.path.join(DIR, "config.json")
 CALENDAR = os.path.join(DIR, "calendar.json")
 DOCK = os.path.join(DIR, "badges.json")
@@ -44,6 +45,42 @@ SITES = {
     "tidal.com": "Tidal", "deezer.com": "Deezer", "vimeo.com": "Vimeo", "primevideo.com": "Prime Video",
     "disneyplus.com": "Disney+", "max.com": "Max", "open.qobuz.com": "Qobuz", "pandora.com": "Pandora",
 }
+
+
+WEB_APPS = {
+    "web.whatsapp.com": "WhatsApp", "mail.google.com": "Gmail", "app.slack.com": "Slack", "discord.com": "Discord",
+    "web.telegram.org": "Telegram", "teams.microsoft.com": "Teams", "teams.live.com": "Teams",
+    "www.messenger.com": "Messenger", "outlook.live.com": "Outlook", "outlook.office.com": "Outlook",
+}
+
+
+def web_count(url, title):
+    host = re.sub(r"^[a-z]+://", "", url.strip().lower()).split("/")[0].split(":")[0]
+    name = WEB_APPS.get(host)
+    if not name:
+        return None
+    m = re.match(r"\s*\((\d[\d,+]*)\)", title) or (re.search(r"\((\d[\d,+]*)\)", title) if name in ("Gmail", "Outlook") else None)
+    if m:
+        return name, int(re.sub(r"\D", "", m.group(1)) or 0)
+    if name == "Slack" and title.lstrip().startswith("!"):
+        return name, -1
+    return name, 0
+
+
+def web_badges():
+    out = {}
+    for app, field in BROWSERS:
+        if not running(app):
+            continue
+        r = run(["osascript", "-e", TABS_SCRIPT % (app, field)], 60)
+        if r is None or r.returncode != 0:
+            continue
+        for line in r.stdout.splitlines():
+            url, _, title = line.partition("\t")
+            hit = web_count(url, title) if url else None
+            if hit and hit[1]:
+                out[hit[0]] = hit[1] if hit[1] < 0 or out.get(hit[0], 0) < 0 else out.get(hit[0], 0) + hit[1]
+    return out
 
 
 def run(args, timeout=15):
@@ -212,6 +249,7 @@ def calendar():
 class Agent:
     def __init__(self):
         self.badges, self.badges_at = {}, 0.0
+        self.web, self.web_at = {}, 0.0
         self.idle, self.idle_at = None, 0.0
 
     def snapshot(self, now):
@@ -223,7 +261,13 @@ class Agent:
             if now - self.badges_at >= 15:
                 self.badges, self.badges_at = badges(), now
             status, from_dock = dock_badges()
-            body["badges"] = {**self.badges, **(from_dock or {})}
+            if now - self.web_at >= 30:
+                self.web, self.web_at = web_badges(), now
+            merged = {**self.badges, **(from_dock or {})}
+            for name, n in self.web.items():
+                cur = merged.get(name, 0)
+                merged[name] = n if cur == 0 or (n > 0 and (cur < 0 or n > cur)) else cur
+            body["badges"] = merged
             if status:
                 body["dock"] = status
         if now - self.idle_at >= 30:
@@ -249,6 +293,32 @@ def post(cfg, body):
         return json.loads(r.read() or b"{}")
 
 
+def self_update(cfg):
+    hub = str(cfg.get("hub") or "").rstrip("/")
+    if not (hub.startswith("https://") or hub.startswith("http://localhost") or hub.startswith("http://127.0.0.1")):
+        return False
+    restart = False
+    for name, marker in (("hook.py", b"/api/hook"), ("agent.py", b"/api/computer")):
+        try:
+            with urllib.request.urlopen(hub + "/client/" + name, timeout=20) as r:
+                new = r.read()
+            path = os.path.join(DIR, name)
+            with open(path, "rb") as f:
+                old = f.read()
+            if new == old or len(new) < 500 or marker not in new:
+                continue
+            compile(new, name, "exec")
+            tmp = path + ".new"
+            with open(tmp, "wb") as f:
+                f.write(new)
+            os.chmod(tmp, 0o755)
+            os.replace(tmp, path)
+            restart = restart or name == "agent.py"
+        except Exception:
+            pass
+    return restart
+
+
 def main():
     if not OS:
         return
@@ -257,6 +327,7 @@ def main():
         print(json.dumps(agent.snapshot(time.time()), indent=1, ensure_ascii=False))
         return
     last, sent_at, events_key, events_at, pause_until = None, 0.0, None, 0.0, 0.0
+    checked = time.time() - UPDATE_EVERY + float(os.environ.get("CLAUDE_DESK_UPDATE_IN") or 600)
     while True:
         now = time.time()
         if now < pause_until:
@@ -268,6 +339,10 @@ def main():
         except Exception:
             time.sleep(60)
             continue
+        if now - checked >= UPDATE_EVERY:
+            checked = now
+            if self_update(cfg):
+                return
         body = agent.snapshot(now)
         events = body.pop("events", None)
         ekey = hashlib.sha1(json.dumps(events, sort_keys=True).encode()).hexdigest() if events is not None else None

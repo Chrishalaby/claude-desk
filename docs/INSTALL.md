@@ -102,6 +102,8 @@ Then **restart open Claude Code sessions**. The hooks run asynchronously with a 
 can't slow Claude down. Only the event name, session id, project folder name, tool name and a short detail (command /
 file name, ≤60 chars) leave your machine.
 
+The helper keeps itself up to date from your hub (it checks every 6 hours), so the command only needs running once.
+
 To remove: delete the claude-desk entries from `~/.claude/settings.json` (or restore the `.bak-claude-desk-*` backup) and
 the `~/.claude-desk` folder. Stop the agent first: macOS `launchctl bootout gui/$(id -u)
 ~/Library/LaunchAgents/com.claude-desk.agent.plist` (and `com.claude-desk.calendar.plist`) and delete those files;
