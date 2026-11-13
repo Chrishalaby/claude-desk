@@ -972,6 +972,9 @@ function appComputer(a) {
         h("label", { class: "f" }, "Unread counts"),
         c.apps.length ? c.apps.map((x) => toggle(`${x.app}${x.count ? ` · ${x.count === -1 ? "new" : x.count}` : ""}`, !x.muted, set((v) => ({ mute: { [x.app]: !v } }))))
           : h("p", { class: "hint", style: "margin:0" }, "Apps with a red badge on the Dock show up here (Slack, Mail, Messages, WhatsApp, Discord, Teams…). Your desk gets a card when the number goes up."),
+        mac && c.dock !== "ok" ? h("p", { class: "hint" + (c.dock === "not_allowed" ? " warn" : ""), style: "margin:8px 0 0" }, c.dock === "not_allowed"
+          ? "WhatsApp and a few other apps need one more permission: System Settings → Privacy & Security → Accessibility → turn on claude-desk-dock."
+          : "WhatsApp and a few other apps only show after you run the setup command again and allow Accessibility.") : null,
       ] : null);
   }
   paint();

@@ -35,7 +35,7 @@ interface LastfmConfig extends MusicConfig { user: string }
 interface ComputerConfig extends MusicConfig { off: boolean; calendar?: boolean; presence?: boolean; muted?: string[] }
 interface ComputerState {
   at: number; app: string; os: string; error: string | null;
-  badges?: Record<string, number>; known?: string[]; away?: boolean; awaySince?: number; cal?: string | null;
+  badges?: Record<string, number>; known?: string[]; away?: boolean; awaySince?: number; cal?: string | null; dock?: string | null;
 }
 export const PRESENCE_STALE_SECS = 300;
 const DEFAULT_MUTED = ["App Store", "System Settings", "System Preferences"];
@@ -366,7 +366,7 @@ export class Apps {
     const badges = pc.state.badges ?? {};
     return {
       seen: pc.state.at || null, os: pc.state.os, music: !pc.config.off, calendar: pc.config.calendar !== false,
-      presence: pc.config.presence !== false, away: !!pc.state.away, cal: pc.state.cal ?? null,
+      presence: pc.config.presence !== false, away: !!pc.state.away, cal: pc.state.cal ?? null, dock: pc.state.dock ?? null,
       apps: (pc.state.known ?? []).map((app) => ({ app, count: badges[app] ?? 0, muted: muted.has(app) })),
     };
   }
@@ -420,6 +420,7 @@ export class Apps {
       state.away = b.away;
     }
     if (typeof b.calendar === "string" && /^[a-z_]{1,20}$/.test(b.calendar)) state.cal = b.calendar;
+    state.dock = typeof b.dock === "string" && /^[a-z_]{1,20}$/.test(b.dock) ? b.dock : null;
     this.put(userId, "computer", config, state);
     if (Array.isArray(b.events)) this.takeEvents(userId, b.events);
     if (!config.off) {

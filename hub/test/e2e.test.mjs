@@ -814,6 +814,8 @@ test("installers and static files", async () => {
       assert.ok(c.text.includes("/api/computer"), f);
     }
     assert.ok((await anon.call("GET", "/client/calendar.swift")).text.includes("EventKit"));
+    assert.ok((await anon.call("GET", "/client/dock.swift")).text.includes("AXStatusLabel"));
+    assert.ok(sh.text.includes("dock.swift"));
     assert.ok(sh.text.includes("agent.py") && sh.text.includes("calendar.swift") && ps.text.includes("agent.ps1"), "installers set up the computer agent");
   } else {
     assert.equal(sh.status, 404);
@@ -1342,6 +1344,9 @@ test("shared drawings live on both desks and both browsers; own canvas; music, r
   await pcr({ badges: { Slack: 4 } });
   r = await erin.call("PATCH", "/api/apps/computer", { mute: { Slack: true } });
   assert.deepEqual(r.body.apps.find((x) => x.app === "Slack"), { app: "Slack", count: 4, muted: true });
+  assert.equal(r.body.dock, null);
+  await pcr({ badges: { Slack: 4 }, dock: "not_allowed" });
+  assert.equal((await erin.call("GET", "/api/apps")).body.computer.dock, "not_allowed");
   assert.deepEqual(r.body.apps.map((x) => x.app).sort(), ["App Store", "Slack", "WhatsApp"]);
   clock += 61;
   await pcr({ badges: { Slack: 9 } });

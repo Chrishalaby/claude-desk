@@ -107,6 +107,25 @@ agent_mac() {
   say "Your computer now feeds the desk: what's playing (Spotify, Apple Music, YouTube and more in"
   say "Chrome, Safari, Arc, Edge, Brave), unread counts from Dock apps, and when you're away."
   say "macOS asks once per app to let Python read it (Spotify, Music, your browser). Click Allow."
+  if xcode-select -p >/dev/null 2>&1 && xcrun --find swiftc >/dev/null 2>&1 && fetch dock.swift; then
+    local sum
+    sum="$(shasum "$DIR/dock.swift" | cut -d' ' -f1)"
+    if [ ! -x "$DIR/claude-desk-dock" ] || [ "$(cat "$DIR/.dock.sha" 2>/dev/null)" != "$sum" ]; then
+      if xcrun swiftc -O -swift-version 5 -o "$DIR/claude-desk-dock" "$DIR/dock.swift" >/dev/null 2>&1 \
+         && codesign --force -s - --identifier com.claude-desk.dock "$DIR/claude-desk-dock" >/dev/null 2>&1; then
+        echo "$sum" > "$DIR/.dock.sha"
+        rm -f "$DIR/.dock-asked"
+      else
+        rm -f "$DIR/claude-desk-dock"
+      fi
+    fi
+    if [ -x "$DIR/claude-desk-dock" ] && agent_plist "$la/com.claude-desk.dock.plist" com.claude-desk.dock \
+         "<string>$DIR/claude-desk-dock</string><string>$DIR/badges.json</string>" \
+         "<key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer>"; then
+      say "Unread counts for every Dock app (WhatsApp too): macOS asks to let claude-desk-dock use"
+      say "Accessibility. Open System Settings from that prompt and switch it on. It's optional."
+    fi
+  fi
   if xcode-select -p >/dev/null 2>&1 && xcrun --find swiftc >/dev/null 2>&1 && fetch calendar.swift; then
     cat > "$DIR/calendar-Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

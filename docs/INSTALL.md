@@ -90,7 +90,8 @@ What the installer does (safe to re-run):
     Spotify, SoundCloud and other media sites in Chrome, Safari, Arc, Edge or Brave (macOS asks once per app to let
     Python read it: click Allow; Firefox isn't readable); on Windows any app or browser; on Linux through `playerctl`;
   - **unread counts** (Mac): the red badges on Dock apps (Slack, Mail, Messages, WhatsApp, Discord, Teams…) become a
-    card when they go up; no permission needed;
+    card when they go up; no permission needed. WhatsApp and a few others only show if you also allow
+    *claude-desk-dock* under Accessibility (macOS asks once; optional);
   - **calendar**: on a Mac every calendar added to the Calendar app (iCloud, Google, Outlook…), through a small reader
     the installer compiles (needs the command line tools; macOS asks once to let *Claude Desk Calendar* see your
     calendars); on Windows the classic Outlook calendar while Outlook is open;

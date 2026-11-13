@@ -440,7 +440,12 @@ One agent per computer (installed with the hook, section 7) reports to `POST /ap
   Spotify / Music through AppleScript, or reads the tab titles of Chrome, Arc, Edge, Brave or Safari and keeps only known
   media sites (YouTube, YouTube Music, Spotify web, SoundCloud, Apple Music, Twitch, Netflix…; nothing else leaves the
   computer). Windows: every media session Windows knows about. Linux: `playerctl`.
-* **Unread counts** (`badges`, macOS only, read with `lsappinfo`; `-1` = a badge without a number): a card
+* **Unread counts** (`badges`, macOS only; `-1` = a badge without a number). Two sources, merged: `lsappinfo` (no
+  permission, but misses apps such as WhatsApp that set their badge through the notification system) and, optionally,
+  the Dock's accessibility tree (`AXStatusLabel` of every Dock item), read by `claude-desk-dock` (`dock.swift`,
+  compiled at install, its own LaunchAgent `com.claude-desk.dock` so the Accessibility grant belongs to it; writes
+  `~/.claude-desk/badges.json` every 10 s; asks for Accessibility once). `dock`: `ok` / `not_allowed` tells the page
+  whether that second source works. a card
   (`<App>`, "3 unread" / "Something new", 20 s) when an app's count goes up, at most one per app per minute, never on
   the first report. Muted by default: App Store, System Settings. The hub remembers up to 30 app names for the page.
 * **Away** (`away`, `idle` seconds): idle ≥ 10 min (macOS `HIDIdleTime`, Windows `GetLastInputInfo`, Linux

@@ -13,6 +13,7 @@ import urllib.request
 DIR = os.path.join(os.path.expanduser("~"), ".claude-desk")
 CONFIG = os.path.join(DIR, "config.json")
 CALENDAR = os.path.join(DIR, "calendar.json")
+DOCK = os.path.join(DIR, "badges.json")
 OS = "mac" if sys.platform == "darwin" else "linux" if sys.platform.startswith("linux") else ""
 AWAY_SECS = 600
 
@@ -168,6 +169,19 @@ def badges():
     return out
 
 
+def dock_badges():
+    try:
+        with open(DOCK) as f:
+            d = json.load(f)
+    except Exception:
+        return None, None
+    if not isinstance(d, dict) or time.time() - float(d.get("at") or 0) > 90:
+        return None, None
+    if not d.get("ok"):
+        return str(d.get("error") or "not_allowed"), None
+    return "ok", {str(k): int(v) for k, v in (d.get("badges") or {}).items()}
+
+
 def idle_secs():
     if OS == "mac":
         r = run(["ioreg", "-c", "IOHIDSystem", "-d", "4"])
@@ -208,7 +222,10 @@ class Agent:
         if OS == "mac":
             if now - self.badges_at >= 15:
                 self.badges, self.badges_at = badges(), now
-            body["badges"] = self.badges
+            status, from_dock = dock_badges()
+            body["badges"] = {**self.badges, **(from_dock or {})}
+            if status:
+                body["dock"] = status
         if now - self.idle_at >= 30:
             self.idle, self.idle_at = idle_secs(), now
         if self.idle is not None:

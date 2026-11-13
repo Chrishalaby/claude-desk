@@ -547,6 +547,7 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   app.get("/client/agent.py", serveClient("agent.py", false));
   app.get("/client/agent.ps1", serveClient("agent.ps1", false));
   app.get("/client/calendar.swift", serveClient("calendar.swift", false));
+  app.get("/client/dock.swift", serveClient("dock.swift", false));
 
   // ---------------------------------------------------------------- web app
   const types: Record<string, string> = {
