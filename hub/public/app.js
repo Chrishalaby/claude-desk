@@ -645,13 +645,49 @@ function viewAddDevice() {
 }
 
 // ------------------------------------------------------------------ one desk: status + remote settings
-const DEFAULT_SETTINGS = { layout: 1, soft: 0, casper: 1, pack: "pixel", bday: 25, bnight: 10, nstart: 22, nend: 7 };
+const DEFAULT_SETTINGS = { layout: 1, soft: 0, casper: 1, h12: 0, tf: 0, face: 1, pack: "pixel", bday: 25, bnight: 10, nstart: 22, nend: 7 };
 const versionNewer = (a, b) => {
   const pa = String(a).split(".").map(Number), pb = String(b).split(".").map(Number);
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0);
   return false;
 };
-const SAVE_KEYS = ["layout", "soft", "casper", "pack", "bday", "bnight", "nstart", "nend"];
+const SAVE_KEYS = ["layout", "soft", "casper", "h12", "tf", "face", "pack", "bday", "bnight", "nstart", "nend"];
+
+function appNotify() {
+  const el = h("div", { class: "card" });
+  let p = null;
+  const put = async (body) => { try { p = await api("PUT", "/api/notify-prefs", body); } catch (e) { fail(e); } paint(); };
+  const pick = (key, options) => {
+    const s = h("div", { class: "seg seg-" + options.length });
+    fill(s, options.map(([val, label]) => h("button", { type: "button", class: p[key] === val ? "on" : "", onclick: () => put({ [key]: val }) }, label)));
+    return s;
+  };
+  const time = (key) => {
+    const i = h("input", { type: "time", value: fromMin(p[key]) });
+    i.addEventListener("change", () => put({ [key]: toMin(i.value) }));
+    return i;
+  };
+  const STYLES = [["full", "Full screen"], ["banner", "Banner"]];
+  function paint() {
+    if (!p) return fill(el, h("p", { class: "hint", style: "margin:0" }, "Loading…"));
+    fill(el,
+      toggle("Do not disturb", p.dnd, (v) => put({ dnd: v })),
+      h("p", { class: "hint", style: "margin:2px 0 8px 28px" }, p.quietNow ? "Quiet now: nothing pops up. Messages wait as a small line under the date." : "Nothing pops up while it's on. Claude asking for permission always shows."),
+      toggle("Quiet hours", p.quiet, (v) => put({ quiet: v })),
+      p.quiet ? h("div", { class: "two" }, h("div", {}, h("label", { class: "f" }, "From"), time("qfrom")), h("div", {}, h("label", { class: "f" }, "Until"), time("qto"))) : null,
+      h("label", { class: "f" }, "Friend messages"), pick("msg", STYLES),
+      h("label", { class: "f" }, "App notifications"), pick("app", STYLES),
+      h("label", { class: "f" }, "Claude finished"), pick("done", [...STYLES, ["off", "Off"]]),
+      h("p", { class: "hint", style: "margin:6px 0 0" }, "Banner keeps the clock and slides the text across the top."),
+      h("label", { class: "f" }, "Messages stay for"), pick("secs", [[5, "5 s"], [15, "15 s"], [30, "30 s"], [60, "1 min"], [180, "3 min"]]),
+      h("label", { class: "f" }, "Banner speed"), pick("speed", [[1, "Slow"], [2, "Normal"], [3, "Fast"]]),
+      h("label", { class: "f" }, "Notifications from"),
+      p.sources.map((s) => toggle(s, !p.off.includes(s), (v) => put({ off: v ? p.off.filter((x) => x !== s) : [...p.off, s] }))));
+  }
+  paint();
+  api("GET", "/api/notify-prefs").then((r) => { p = r; paint(); }).catch(() => {});
+  return el;
+}
 const LOW_HEAP = 8 * 1024;
 const CRASH_RE = /exception|watchdog|wdt/i;
 const hourLabel = (n) => String(n).padStart(2, "0") + ":00";
@@ -823,7 +859,10 @@ async function viewDevice(chip) {
     h("div", { class: "card" },
       h("label", { class: "f", style: "margin-top:0" }, "Layout"), seg("layout", [[1, "B · tall clock"], [0, "A · clean"]]),
       h("label", { class: "f" }, "Colours"), seg("soft", [[0, "Vivid"], [1, "Soft"]]),
-      h("label", { class: "f" }, "Casper"), seg("casper", [[1, "On"], [0, "Off"]])),
+      h("label", { class: "f" }, "Casper"), seg("casper", [[1, "On"], [0, "Off"]]),
+      h("label", { class: "f" }, "Claude face"), seg("face", [[1, "On"], [0, "Off"]]),
+      h("label", { class: "f" }, "Time"), seg("h12", [[0, "24 hour"], [1, "12 hour"]]),
+      h("label", { class: "f" }, "Temperature"), seg("tf", [[0, "°C"], [1, "°F"]])),
     h("h2", {}, "Reaction style"), packsEl,
     h("h2", {}, "Brightness"),
     h("div", { class: "card" },
@@ -840,7 +879,7 @@ async function viewDevice(chip) {
 
   const wifiEl = wifiCard(enc, () => data);
   const refreshAll = async () => { await refresh(); wifiEl.update(data); };
-  fill(main, h("h2", {}, "Status"), status, h("h2", {}, "On your desk"), appDesk(), form, h("h2", {}, "Wi-Fi networks"), wifiEl);
+  fill(main, h("h2", {}, "Status"), status, h("h2", {}, "On your desk"), appDesk(), h("h2", {}, "Notifications"), appNotify(), form, h("h2", {}, "Wi-Fi networks"), wifiEl);
   state.poll = setInterval(() => { if (!document.hidden) refreshAll().catch(() => {}); }, 5000);
 }
 

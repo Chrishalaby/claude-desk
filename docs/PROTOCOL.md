@@ -502,3 +502,23 @@ Draw in the web app; every stroke shows up on the desk as you draw (3.8).
 * `POST /api/media/<id>/show {secs}` → `{devices}`: streams it to your online desks (60 shows an hour).
   `POST /api/media/<id>/send {to}` → a friend's desks for 60 s plus a `media` chat message (20 an hour, friends only).
   A new transfer to the same desk cancels the one in flight. `POST /api/doodles/hide` (Back to clock) also stops it.
+
+## 15. Notification preferences
+
+Per user: `GET` / `PUT /api/notify-prefs` → `{msg, app: "full"|"banner", done: "full"|"banner"|"off", secs: 5|15|30|60|180
+(how long friend messages stay; default 180), speed: 1|2|3, dnd, quiet, qfrom, qto (minutes after midnight, user's time
+zone), off: [sources], sources, quietNow}`. The hub applies them; the desk only obeys per-message fields (firmware ≥
+1.4.14, older firmware ignores them and shows everything full screen):
+
+* `card` (3.5): `st: 1` = banner, `sp` = speed. Cards whose `src` is in `off`, and all cards while quiet (do not
+  disturb, or inside quiet hours), are not sent.
+* `msg` (3.2): `secs`, `st: 1` banner, `st: 2` = quiet: no pop-up, only the "from <name>" unread line; `sp`.
+* `claude` (3.1): on `done`, `b: 1` = banner, `b: 2` = don't show (quiet, or "Claude finished: Off"). `needs` is never
+  changed: permission prompts always show full screen.
+
+Banner: the clock stays; on layout B the date line shows the source in its colour and the line under it scrolls the
+text right to left (33 ms frames; 2, 3 or 6 px per frame); on layout A one line across the date row. A banner only
+starts on the clock, otherwise the item shows the normal way.
+
+Clock options ride on the normal settings (section 8): `h12` (12-hour time), `tf` (°F), `face` (0 hides the Claude
+face). Stored in a spare byte of the desk's `Ext` block.

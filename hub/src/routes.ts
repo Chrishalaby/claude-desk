@@ -7,7 +7,7 @@ import { CHIP_RE } from "./broker.js";
 import type { Apps } from "./apps.js";
 import type { Doodles } from "./doodles.js";
 import { MEDIA_MAX_INPUT, type Media } from "./media.js";
-import { HttpError, type Service } from "./service.js";
+import { HttpError, NOTIFY_SOURCES, type Service } from "./service.js";
 import { firmwareInfo, PACK_ID_RE, readBlob } from "./files.js";
 import { charLen, hashPassword, isValidTz, oneLine, randomHex, RateLimiter, safeEqual, sha256, trunc, verifyPassword } from "./util.js";
 
@@ -434,6 +434,11 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   };
   const body = (req: FastifyRequest) => (req.body ?? {}) as Record<string, unknown>;
   const secsOf = (v: unknown) => (v === 0 || v === "0" ? 0 : Number(v) || 60);
+  app.get("/api/notify-prefs", { preHandler: auth }, async (req) => ({ ...svc.notifyPrefs(req.user!.id), sources: NOTIFY_SOURCES, quietNow: svc.quietNow(req.user!.id) }));
+  app.put("/api/notify-prefs", { preHandler: auth }, async (req) => {
+    const p = svc.setNotifyPrefs(req.user!.id, body(req));
+    return { ...p, sources: NOTIFY_SOURCES, quietNow: svc.quietNow(req.user!.id) };
+  });
   app.get("/api/showing", { preHandler: auth }, async (req) => svc.screenOf(req.user!.id));
   app.post("/api/doodles", { preHandler: auth }, async (req) => doodles.start(req.user!.id, str(body(req).to).trim() || null));
   app.get("/api/doodles/active", { preHandler: auth }, async (req) => doodles.active(req.user!.id));

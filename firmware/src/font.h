@@ -9,6 +9,8 @@
 #define pgm_read_ptr(p) (*(const void *const *)(p))
 #define strcmp_P strcmp
 #define strlen_P strlen
+#define snprintf_P snprintf
+#define PSTR(x) x
 #endif
 
 struct AAGlyph {

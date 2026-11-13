@@ -26,6 +26,8 @@ static bool glyph(const AAFont &f, int code, AAGlyph &g) {
   return true;
 }
 
+int16_t tScroll = 0;
+
 int tWidth(const AAFont &f, const char *s) {
   int w = 0, code;
   AAGlyph g;
@@ -40,7 +42,7 @@ void tBox(const AAFont &f, const char *s, int bx, int bw, int baseline, Align al
   if (bx + bw > SCR_W) bw = SCR_W - bx;
   if (bw <= 0) return;
   int tw = tWidth(f, s);
-  int x0 = al == AL_LEFT ? bx : al == AL_CENTER ? bx + (bw - tw) / 2 : bx + bw - tw;
+  int x0 = (al == AL_LEFT ? bx : al == AL_CENTER ? bx + (bw - tw) / 2 : bx + bw - tw) - tScroll;
 
   // collect glyphs (max 48)
   struct G { AAGlyph g; int pen; uint16_t fg; } gs[48];
@@ -49,6 +51,8 @@ void tBox(const AAFont &f, const char *s, int bx, int bw, int baseline, Align al
   while ((code = nextCode(p)) >= 0 && n < 48) {
     AAGlyph g;
     if (!glyph(f, code, g)) { ci++; continue; }
+    if (pen + g.adv + 8 < bx) { pen += g.adv; ci++; continue; }
+    if (pen > bx + bw + 8) break;
     gs[n].g = g; gs[n].pen = pen; gs[n].fg = perChar ? perChar[ci] : fg;
     pen += g.adv; n++; ci++;
   }

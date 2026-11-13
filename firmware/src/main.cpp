@@ -106,6 +106,7 @@ void loadExt() {
     saveExt();
   }
   X.host[63] = X.secret[43] = 0;
+  uiFlags = X._pad[0] & 7;
   uiLocationSet = X.locSet;
   X.pack[15] = 0;
   if (!X.pack[0]) strcpy(X.pack, "pixel");
@@ -625,6 +626,9 @@ bool fetchWeather() {
   return ok;
 }
 
+extern uint8_t doneStyle;
+void bannerStart(uint8_t kind, uint8_t speed);
+
 // Claude status from the local /state endpoint or from the hub (MQTT)
 bool applyState(const String &s, const String &p, const String &d, const String &f) {
   lastStateMs = millis();
@@ -635,6 +639,12 @@ bool applyState(const String &s, const String &p, const String &d, const String 
   } else if (s == "needs" || s == "done") {
     View nv = s == "needs" ? V_NEEDS : V_DONE;
     if (nv == V_DONE && busyCard) { robot = ROBOT_IDLE; return true; }   // don't cover a message with DONE
+    if (nv == V_DONE && doneStyle) {
+      robot = ROBOT_IDLE;
+      if (view == V_NEEDS) { view = V_CLOCK; dirty = true; }
+      if (doneStyle == 1 && view == V_CLOCK && p != cardP) { cardP = p; doneUntil = millis() + 15000; bannerStart(3, 2); }
+      return true;
+    }
     if (nv != view || p != cardP || d != cardD || f != cardF) {
       cardP = p; cardD = d; cardF = f; view = nv; dirty = true;
     }
@@ -672,7 +682,38 @@ String mFrom, mText, mWhen;
 String nTitle, nText, nSrc, nxText;
 int nIcon = -1;
 uint16_t nColor = 0;
-uint32_t noteUntil = 0, nxAt = 0, drawUntil = 0;
+uint32_t noteUntil = 0, nxAt = 0, drawUntil = 0, bnNext = 0;
+int16_t bnX = 0;
+uint8_t bnKind = 0, bnStep = 3, doneStyle = 0;
+
+void bannerStart(uint8_t kind, uint8_t speed) {
+  bnKind = kind;
+  bnX = 0;
+  bnNext = 0;
+  bnStep = speed == 1 ? 2 : speed == 3 ? 6 : 3;
+  uiBannerOn = true;
+}
+
+void bannerStop() {
+  if (!bnKind) return;
+  bnKind = 0;
+  uiBannerOn = false;
+  if (view == V_CLOCK) dirty = true;
+}
+
+void bannerFrame() {
+  if (!bnKind) return;
+  uint32_t until = bnKind == 1 ? noteUntil : bnKind == 2 ? msgUntil : doneUntil;
+  if ((int32_t)(millis() - until) >= 0) { bannerStop(); return; }
+  if ((int32_t)(millis() - bnNext) < 0) return;
+  bnNext = millis() + 33;
+  int bw = uiLayout ? 160 : 212, tw;
+  if (bnKind == 1) tw = uiBanner(nSrc.c_str(), nText.c_str(), nColor, bnX);
+  else if (bnKind == 2) tw = uiBanner(mFrom.c_str(), mText.c_str(), uiColor("orange"), bnX);
+  else tw = uiBanner("DONE", cardP.c_str(), uiColor("green"), bnX);
+  if (tw <= bw) { if (bnX < bw) bnX = min(bw, bnX + bnStep); }
+  else { bnX += bnStep; if (bnX > bw + tw) bnX = 0; }
+}
 bool nxLeft = false, nxMusic = false, wifiScanForHub = false, wifiReport = false;
 uint16_t drawId = 0;
 String drawFrom;
@@ -721,7 +762,8 @@ String hhmm(uint32_t t) {
   struct tm m;
   localtime_r(&tt, &m);
   char b[8];
-  snprintf(b, sizeof b, "%02d:%02d", m.tm_hour, m.tm_min);
+  if (uiFlags & UF_H12) snprintf_P(b, sizeof b, PSTR("%d:%02d"), (m.tm_hour + 11) % 12 + 1, m.tm_min);
+  else snprintf(b, sizeof b, "%02d:%02d", m.tm_hour, m.tm_min);
   return b;
 }
 
@@ -940,7 +982,9 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
   JsonDocument d;
   if (deserializeJson(d, payload, len)) return;
   if (leaf == "claude") {
+    doneStyle = d[F("b")] | 0;
     applyState(d["s"] | "", d["p"] | "", d["d"] | "", d["f"] | "");
+    doneStyle = 0;
   } else if (leaf == "cfg") {
     bool was = hubPaired;
     hubPaired = d["paired"] | false;
@@ -981,6 +1025,12 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
     nIcon = uiReactionIndex(d[F("icon")] | "");
     nColor = uiColor(d[F("color")] | "");
     noteUntil = millis() + 1000UL * constrain((int)(d[F("secs")] | 15), 3, 300);
+    if ((int)(d[F("st")] | 0) == 1 && view == V_CLOCK) {
+      if (ti.length() && tx.length()) nText = ti + F(" \xC2\xB7 ") + tx; else if (ti.length()) nText = ti;
+      bannerStart(1, d[F("sp")] | 2);
+      return;
+    }
+    bannerStop();
     view = V_NOTE; dirty = true;
     if (scene != SC_NONE) scene = SC_NONE;
   } else if (leaf == F("next")) {
@@ -1003,7 +1053,18 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
     strncpy(uiUnread, mFrom.c_str(), sizeof uiUnread - 1);
     uiUnread[sizeof uiUnread - 1] = 0;
     unreadUntil = millis() + 3UL * 3600 * 1000;
-    msgUntil = millis() + 3UL * 60 * 1000;
+    msgUntil = millis() + 1000UL * constrain((int)(d[F("secs")] | 180), 3, 600);
+    uint8_t st = d[F("st")] | 0;
+    if (st && (view == V_CLOCK || st == 2)) {
+      if (view == V_CLOCK) dirty = true;
+      if (st == 1) {
+        if (mReact >= 0) mText = (const char *)(d["reaction"] | "");
+        bannerStart(2, d[F("sp")] | 2);
+        dirty = false;
+      }
+      return;
+    }
+    bannerStop();
     if (view != V_NEEDS) { view = V_MSG; dirty = true; }
     if (scene != SC_NONE) scene = SC_NONE;
   }
@@ -1093,7 +1154,8 @@ void hubWifi(bool withScan) {
 
 void hubSettings() {   // up/settings
   String j = "{\"rev\":" + String(X.setRev) + ",\"layout\":" + String(S.layout) + ",\"soft\":" + String(S.soft) +
-             ",\"casper\":" + String(X.casper) + ",\"pack\":\"" + X.pack + "\",\"bday\":" + String(S.bday) +
+             ",\"casper\":" + String(X.casper) + F(",\"h12\":") + String(uiFlags & UF_H12 ? 1 : 0) + F(",\"tf\":") + String(uiFlags & UF_F ? 1 : 0) +
+             F(",\"face\":") + String(uiFlags & UF_NOFACE ? 0 : 1) + ",\"pack\":\"" + X.pack + "\",\"bday\":" + String(S.bday) +
              ",\"bnight\":" + String(S.bnight) + ",\"nstart\":" + String(S.nstart) + ",\"nend\":" + String(S.nend) +
              ",\"lat\":" + String(S.lat, 4) + ",\"lon\":" + String(S.lon, 4) + ",\"packs\":" + installedPacks() + "}";
   mqtt.publish((String("desk/") + chipId + "/up/settings").c_str(), j.c_str());
@@ -1106,6 +1168,10 @@ void applySet(JsonDocument &d) {
   if (d["layout"].is<int>()) { S.layout = d["layout"] ? 1 : 0; uiLayout = S.layout; }
   if (d["soft"].is<int>()) { S.soft = d["soft"] ? 1 : 0; uiSetSoft(S.soft); }
   if (d["casper"].is<int>()) X.casper = d["casper"] ? 1 : 0;
+  if (d[F("h12")].is<int>()) uiFlags = (uiFlags & ~UF_H12) | (d[F("h12")] ? UF_H12 : 0);
+  if (d[F("tf")].is<int>()) uiFlags = (uiFlags & ~UF_F) | (d[F("tf")] ? UF_F : 0);
+  if (d[F("face")].is<int>()) uiFlags = (uiFlags & ~UF_NOFACE) | (d[F("face")] ? 0 : UF_NOFACE);
+  X._pad[0] = uiFlags;
   if (d["bday"].is<int>()) S.bday = constrain((int)d["bday"], 0, 100);
   if (d["bnight"].is<int>()) S.bnight = constrain((int)d["bnight"], 0, 100);
   if (d["nstart"].is<int>()) S.nstart = constrain((int)d["nstart"], 0, 23);
@@ -1492,7 +1558,9 @@ void loopNormal() {
     RobotMode rm = working ? ROBOT_WORKING : isNight ? ROBOT_SLEEP : scene == SC_SIT ? ROBOT_HAPPY
                  : dozing ? ROBOT_DOZE : ROBOT_IDLE;
     if (rm != lastRobotMode) { lastRobotMode = rm; nextFrame = 0; }
-    if ((int32_t)(millis() - nextFrame) >= 0) nextFrame = millis() + uiRobotFrame(rm, frameNo++);
+    if (uiFlags & UF_NOFACE) nextFrame = millis() + 1000;
+    else if ((int32_t)(millis() - nextFrame) >= 0) nextFrame = millis() + uiRobotFrame(rm, frameNo++);
+    bannerFrame();
   } else if (view == V_MSG) {
     if (dirty) {
       if (mReact >= 0) uiReactionCard(mFrom.c_str(), mPartner, mReact, mWhen.c_str());

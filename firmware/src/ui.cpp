@@ -30,6 +30,26 @@ char uiUnread[24] = "";
 char uiNext[40] = "";
 bool uiNextMusic = false;
 bool uiLocationSet = true;
+uint8_t uiFlags = 0;
+bool uiBannerOn = false;
+
+static int deg(float c) {
+  if (uiFlags & UF_F) c = c * 9 / 5 + 32;
+  return (int)(c + (c < 0 ? -0.5f : 0.5f));
+}
+
+int uiBanner(const char *src, const char *text, uint16_t color, int offset) {
+  const AAFont &f = uiLayout ? F_S : F_M;
+  int bw = uiLayout ? 160 : 212;
+  if (uiLayout) {
+    tBox(F_M, src, 14, 160, 28, AL_LEFT, color, BG);
+    if (!offset) gFill(14, 34, 160, 18, BG);
+  }
+  tScroll = offset - bw;
+  tBox(f, text, 14, bw, uiLayout ? 48 : 32, AL_LEFT, uiLayout ? WHITE : color, BG);
+  tScroll = 0;
+  return tWidth(f, text);
+}
 bool (*uiPackEntry)(int idx, bool small, EmojiHdr &h) = nullptr;
 void (*uiPackRead)(uint32_t off, uint8_t *buf, int n) = nullptr;
 
@@ -200,7 +220,8 @@ void uiCardCasper(uint32_t frame) {
 // ------------------------------------------------------------ clock screen ---
 void uiClockTime(int h, int m) {
   char s[8];
-  snprintf(s, sizeof s, "%02d:%02d", h, m);
+  if (uiFlags & UF_H12) snprintf_P(s, sizeof s, PSTR("%2d:%02d"), (h + 11) % 12 + 1, m);
+  else snprintf(s, sizeof s, "%02d:%02d", h, m);
   const uint16_t pc[5] = {WHITE, WHITE, DIM, COL_TEAL, COL_TEAL};  // hours white, minutes teal
   if (uiLayout) tBox(F_TALL, s, 0, SCR_W, 138, AL_CENTER, WHITE, BG, pc);
   else tBox(F_CLOCK, s, 0, SCR_W, 112, AL_CENTER, WHITE, BG, pc);
@@ -212,7 +233,8 @@ void uiClockDate(int wday, int mday, int mon, const Weather &w) {
   char s[24];
   snprintf(s, sizeof s, "%s %d %s", WDAY[wday % 7], mday, MON[mon % 12]);
   char r[24] = "";
-  if (w.ok) snprintf(r, sizeof r, "H %d\x7f  L %d\x7f", (int)(w.tmax + 0.5f), (int)(w.tmin + 0.5f));
+  if (uiBannerOn) return;
+  if (w.ok) snprintf(r, sizeof r, "H %d\x7f  L %d\x7f", deg(w.tmax), deg(w.tmin));
   if (uiLayout && uiUnread[0]) {          // unread message: envelope + sender replaces H/L + wind
     tBox(F_M, s, 14, 160, 28, AL_LEFT, COL_GREY, BG);
     gFill(14, 34, 160, 18, BG);
@@ -309,7 +331,7 @@ static void windIcon(int x, int y) { blitIcon(I_WIND_S, x, y); }
 
 void uiWeather(const Weather &w) {
   char t[12], h[8];
-  snprintf(t, sizeof t, "%d\x7f", (int)(w.temp + (w.temp < 0 ? -0.5f : 0.5f)));
+  snprintf(t, sizeof t, "%d\x7f", deg(w.temp));
   snprintf(h, sizeof h, "%d%%", w.hum);
   if (uiLayout) {
     gFill(176, 0, 64, 56, BG);

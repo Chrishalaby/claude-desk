@@ -116,6 +116,9 @@ The same **Apps** tab can put more on the desk, all fetched by the hub (the desk
   photo or GIF on it (resized for the screen; long GIFs get shortened); **Back to clock** returns it to the clock.
   From a friend's chat, 🖼️ puts one on their desk. From a friend's chat, ✏️ draws on both desks at once, and they can
   join in and draw with you.
+- **Notifications** (on your desk's page): full screen or a sliding banner for messages, app notifications and
+  "Claude finished"; do not disturb and quiet hours; how long messages stay; which apps may notify; 12-hour time, °F,
+  and hiding the Claude face are under **Look**.
 - **Now playing**: the song under the clock. It comes from your computer automatically (section 5); for music on your
   phone or a speaker, link your app to Last.fm.
 - **Timer**: a countdown under the clock and a card when it ends.

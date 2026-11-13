@@ -22,10 +22,17 @@ const intIn = (lo: number, hi: number) => (v: unknown) => {
   return typeof n === "number" && Number.isInteger(n) && n >= lo && n <= hi ? n : undefined;
 };
 const SETTING_VALIDATORS: Record<string, (v: unknown) => number | undefined> = {
-  layout: bit, soft: bit, casper: bit,
+  layout: bit, soft: bit, casper: bit, h12: bit, tf: bit, face: bit,
   bday: intIn(0, 100), bnight: intIn(0, 100), nstart: intIn(0, 23), nend: intIn(0, 23),
 };
 export type DeskSettings = Record<string, number | string>;
+
+export interface NotifyPrefs {
+  msg: "full" | "banner"; app: "full" | "banner"; done: "full" | "banner" | "off";
+  secs: number; speed: number; dnd: boolean; quiet: boolean; qfrom: number; qto: number; off: string[];
+}
+export const NOTIFY_DEFAULTS: NotifyPrefs = { msg: "full", app: "full", done: "full", secs: 180, speed: 2, dnd: false, quiet: false, qfrom: 22 * 60, qto: 7 * 60, off: [] };
+export const NOTIFY_SOURCES = ["Calendar", "Timer", "Reminder", "Weather", "GitHub", "Markets", "Email", "Slack", "Now playing", "Webhook"];
 
 export class HttpError extends Error {
   constructor(public status: number, public code: string) { super(code); }
@@ -364,7 +371,7 @@ export class Service {
     const merged: DeskSettings = { ...prev, ...set, rev: Math.max(this.now(), prevRev + 1) };
     // key order: rev first (matches the protocol example)
     const ordered: DeskSettings = { rev: merged.rev };
-    for (const k of ["layout", "soft", "casper", "pack", "bday", "bnight", "nstart", "nend", "lat", "lon"]) {
+    for (const k of ["layout", "soft", "casper", "h12", "tf", "face", "pack", "bday", "bnight", "nstart", "nend", "lat", "lon"]) {
       if (merged[k] !== undefined) ordered[k] = merged[k];
     }
     this.db.prepare("UPDATE devices SET settings = ?, place = COALESCE(?, place) WHERE chip = ?")
@@ -444,7 +451,7 @@ export class Service {
     if (!d || !this.broker) return;
     this.broker.publish(`desk/${chip}/cfg`, this.cfgPayload(d));
     if (d.owner_id) {
-      this.broker.publish(`desk/${chip}/claude`, this.claudeEntry(d.owner_id).view);
+      this.broker.publish(`desk/${chip}/claude`, this.claudePayload(d.owner_id, this.claudeEntry(d.owner_id).view));
       const m = d.last_msg_id
         ? (this.db.prepare("SELECT * FROM messages WHERE id = ?").get(d.last_msg_id) as MessageRow | undefined) : undefined;
       this.broker.publish(`desk/${chip}/msg`, m ? this.msgPayload(m) : null);
@@ -458,9 +465,63 @@ export class Service {
     }
   }
 
+  notifyPrefs(userId: number): NotifyPrefs {
+    const r = this.db.prepare("SELECT config FROM apps WHERE user_id = ? AND kind = 'notify'").get(userId) as { config: string } | undefined;
+    try { return { ...NOTIFY_DEFAULTS, ...(r ? JSON.parse(r.config) : {}) }; } catch { return { ...NOTIFY_DEFAULTS }; }
+  }
+
+  setNotifyPrefs(userId: number, b: Record<string, unknown>): NotifyPrefs {
+    const p = this.notifyPrefs(userId);
+    const style = (v: unknown, extra: string[] = []) => (["full", "banner", ...extra].includes(String(v)) ? String(v) : null);
+    if (b.msg !== undefined) { const v = style(b.msg); if (!v) throw new HttpError(400, "style"); p.msg = v as NotifyPrefs["msg"]; }
+    if (b.app !== undefined) { const v = style(b.app); if (!v) throw new HttpError(400, "style"); p.app = v as NotifyPrefs["app"]; }
+    if (b.done !== undefined) { const v = style(b.done, ["off"]); if (!v) throw new HttpError(400, "style"); p.done = v as NotifyPrefs["done"]; }
+    if (b.secs !== undefined) { if (![5, 15, 30, 60, 180].includes(Number(b.secs))) throw new HttpError(400, "secs"); p.secs = Number(b.secs); }
+    if (b.speed !== undefined) { if (![1, 2, 3].includes(Number(b.speed))) throw new HttpError(400, "speed"); p.speed = Number(b.speed); }
+    if (b.dnd !== undefined) p.dnd = !!b.dnd;
+    if (b.quiet !== undefined) p.quiet = !!b.quiet;
+    for (const k of ["qfrom", "qto"] as const) {
+      if (b[k] === undefined) continue;
+      const n = Number(b[k]);
+      if (!Number.isInteger(n) || n < 0 || n > 1439) throw new HttpError(400, "time");
+      p[k] = n;
+    }
+    if (b.off !== undefined) {
+      if (!Array.isArray(b.off)) throw new HttpError(400, "off");
+      p.off = NOTIFY_SOURCES.filter((s) => (b.off as unknown[]).includes(s));
+    }
+    this.db.prepare(`INSERT INTO apps (user_id, kind, config, state, updated) VALUES (?, 'notify', ?, '{}', ?)
+      ON CONFLICT(user_id, kind) DO UPDATE SET config = excluded.config, updated = excluded.updated`).run(userId, JSON.stringify(p), this.now());
+    this.evaluate(userId, true);
+    return p;
+  }
+
+  quietNow(userId: number, p = this.notifyPrefs(userId)): boolean {
+    if (p.dnd) return true;
+    if (!p.quiet || p.qfrom === p.qto) return false;
+    const tz = this.userById(userId)?.tz || "UTC";
+    let min = 0;
+    try {
+      const parts = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hourCycle: "h23", hour: "2-digit", minute: "2-digit" }).formatToParts(new Date(this.cfg.now() * 1000));
+      min = Number(parts.find((x) => x.type === "hour")?.value) * 60 + Number(parts.find((x) => x.type === "minute")?.value);
+    } catch { return false; }
+    return p.qfrom < p.qto ? min >= p.qfrom && min < p.qto : min >= p.qfrom || min < p.qto;
+  }
+
+  private claudePayload(userId: number, view: View) {
+    if (view.s !== "done") return view;
+    const p = this.notifyPrefs(userId);
+    const b = this.quietNow(userId, p) || p.done === "off" ? 2 : p.done === "banner" ? 1 : 0;
+    return b ? { ...view, b } : view;
+  }
+
   sendCard(userId: number, input: CardInput): { devices: number; limited: boolean } {
+    const prefs = this.notifyPrefs(userId);
+    const src = String(input.src ?? "").toLowerCase();
+    if (prefs.off.some((s) => s.toLowerCase() === src) || this.quietNow(userId, prefs)) return { devices: 0, limited: false };
     if (!this.cardLimiter.take(String(userId))) return { devices: 0, limited: true };
-    const card = normalizeCard(input, ++this.cardSeq);
+    const base = normalizeCard(input, ++this.cardSeq);
+    const card = prefs.app === "banner" ? { ...base, st: 1, sp: prefs.speed, secs: Math.max(Number(base.secs) || 15, 15) } : base;
     let devices = 0;
     for (const d of this.devicesOf(userId)) {
       this.broker?.publish(`desk/${d.chip}/card`, card, false);
@@ -581,7 +642,8 @@ export class Service {
     e.key = k;
     this.persistClaude(userId, e);
     if (!this.broker) return;
-    for (const d of this.devicesOf(userId)) this.broker.publish(`desk/${d.chip}/claude`, e.view);
+    const out = this.claudePayload(userId, e.view);
+    for (const d of this.devicesOf(userId)) this.broker.publish(`desk/${d.chip}/claude`, out);
   }
 
   claudeView(userId: number) { return this.claudeEntry(userId).view; }
@@ -734,7 +796,9 @@ export class Service {
     const info = this.db.prepare("INSERT INTO messages (from_id, to_id, rel, kind, text, reaction, t) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(me, to.id, rel, kind, t, r, now);
     const m = this.db.prepare("SELECT * FROM messages WHERE id = ?").get(info.lastInsertRowid) as MessageRow;
-    const payload = this.msgPayload(m);
+    const prefs = this.notifyPrefs(to.id);
+    const st = this.quietNow(to.id, prefs) ? 2 : prefs.msg === "banner" ? 1 : 0;
+    const payload = { ...this.msgPayload(m), ...(prefs.secs !== NOTIFY_DEFAULTS.secs ? { secs: prefs.secs } : {}), ...(st ? { st, sp: prefs.speed } : {}) };
     let delivered = 0;
     this.markUnread(to.id);
     for (const d of this.devicesOf(to.id)) {

@@ -34,6 +34,12 @@ void uiDrawFooter(const char *s);
 void uiNotice(const char *src, const char *title, const char *text, int icon, uint16_t color);
 uint16_t uiColor(const char *s);
 extern bool uiLocationSet;
+extern uint8_t uiFlags;
+extern bool uiBannerOn;
+#define UF_H12 1
+#define UF_F 2
+#define UF_NOFACE 4
+int uiBanner(const char *src, const char *text, uint16_t color, int offset);
 // reaction images: a downloaded pack when set (main.cpp), else the built-in pixel set
 struct EmojiHdr { uint8_t w, h; uint16_t pal[16]; uint32_t off; };
 extern bool (*uiPackEntry)(int idx, bool small, EmojiHdr &h);   // small: heart_s (idx 5) / wave_s (idx 0)

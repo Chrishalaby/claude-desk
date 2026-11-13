@@ -18,6 +18,7 @@ extern uint16_t gRowBuf[SCR_W];
 void gRow(int x, int y, int w, const uint16_t *px);                   // push one pixel row
 
 // ---- common helpers (gfx_common.cpp)
+extern int16_t tScroll;
 extern uint8_t gSharp;   // 1 = crisper text edges (steeper anti-alias curve)
 enum Align { AL_LEFT, AL_CENTER, AL_RIGHT };
 void gLine(int x0, int y0, int x1, int y1, int thick, uint16_t c);   // thick line via circles

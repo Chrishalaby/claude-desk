@@ -1550,3 +1550,76 @@ test("photos and GIFs: converted on the hub, streamed to your desk or a friend's
   assert.equal((await gina.call("POST", `/api/media/${gifId}/show`, {})).status, 404);
   for (const c of [dg, dh]) await c.endAsync();
 });
+
+test("notification preferences: banner style, quiet hours, do not disturb, per-app cards, clock options", async () => {
+  const jo = user(), kim = user();
+  for (const [u, name] of [[jo, "joey"], [kim, "kimi"]]) {
+    assert.equal((await u.call("POST", "/api/register", { username: name, displayName: name, password: "password-" + name, invite: "letmein", tz: "UTC" })).status, 200);
+  }
+  await jo.call("POST", "/api/friends", { username: "kimi" });
+  await kim.call("POST", "/api/friends", { username: "joey" });
+  const hl = await anon.call("POST", "/api/device/hello", { chip: "esp-c1c001", fw: "1.4.14", secret: "" });
+  await kim.call("POST", "/api/devices/pair", { code: hl.body.pairCode, name: "Desk" });
+  const dk = await device("esp-c1c001", hl.body.secret);
+  await dk.subscribeAsync("desk/esp-c1c001/#", { qos: 1 });
+  const token = (await kim.call("GET", "/api/token")).body.token;
+  const notify = (b) => fetch(`${base}/api/notify/${token}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) }).then((x) => x.json());
+  const hook = (b) => fetch(`${base}/api/hook`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify(b) });
+  const last = (leaf) => dk.got.filter((m) => m.topic === `desk/esp-c1c001/${leaf}` && m.json).at(-1)?.json;
+  const count = (leaf) => dk.got.filter((m) => m.topic === `desk/esp-c1c001/${leaf}`).length;
+
+  let r = await kim.call("GET", "/api/notify-prefs");
+  assert.deepEqual([r.body.msg, r.body.app, r.body.done, r.body.secs, r.body.dnd, r.body.quietNow], ["full", "full", "full", 180, false, false]);
+  assert.ok(r.body.sources.includes("Calendar"));
+  assert.equal((await kim.call("PUT", "/api/notify-prefs", { msg: "tiny" })).body.error, "style");
+  assert.equal((await kim.call("PUT", "/api/notify-prefs", { secs: 7 })).body.error, "secs");
+
+  await jo.call("POST", "/api/messages", { to: "kimi", kind: "text", text: "hi" });
+  await dk.waitFor(() => last("msg")?.text === "hi", "full-screen message");
+  assert.deepEqual([last("msg").secs, last("msg").st], [undefined, undefined]);
+
+  await kim.call("PUT", "/api/notify-prefs", { msg: "banner", app: "banner", done: "banner", secs: 15, speed: 3 });
+  await jo.call("POST", "/api/messages", { to: "kimi", kind: "text", text: "banner please" });
+  await dk.waitFor(() => last("msg")?.text === "banner please", "banner message");
+  assert.deepEqual([last("msg").secs, last("msg").st, last("msg").sp], [15, 1, 3]);
+  assert.equal((await notify({ title: "Build passed", secs: 5 })).devices, 1);
+  await dk.waitFor(() => last("card")?.title === "Build passed", "banner card");
+  assert.deepEqual([last("card").st, last("card").sp, last("card").secs], [1, 3, 15]);
+  await hook({ e: "Stop", sid: "n1", project: "site" });
+  await dk.waitFor(() => last("claude")?.s === "done", "done as banner");
+  assert.equal(last("claude").b, 1);
+
+  await kim.call("PUT", "/api/notify-prefs", { off: ["Webhook", "Nope"] });
+  assert.deepEqual((await kim.call("GET", "/api/notify-prefs")).body.off, ["Webhook"]);
+  const cards = count("card");
+  assert.equal((await notify({ title: "Muted" })).devices, 0);
+  await kim.call("PUT", "/api/notify-prefs", { off: [], dnd: true });
+  assert.equal((await kim.call("GET", "/api/notify-prefs")).body.quietNow, true);
+  assert.equal((await notify({ title: "During DND" })).devices, 0);
+  await dk.quiet(80);
+  assert.equal(count("card"), cards, "no cards while muted or in do not disturb");
+  await jo.call("POST", "/api/messages", { to: "kimi", kind: "text", text: "shh" });
+  await dk.waitFor(() => last("msg")?.text === "shh", "quiet message");
+  assert.equal(last("msg").st, 2, "messages wait as the unread line");
+  clock += 30;
+  await hook({ e: "UserPromptSubmit", sid: "n1", project: "site" });
+  await hook({ e: "Stop", sid: "n1", project: "site" });
+  await dk.waitFor(() => last("claude")?.s === "done" && last("claude").b === 2, "done stays quiet");
+  await hook({ e: "PermissionRequest", sid: "n1", project: "site", tool: "Bash", detail: "ls" });
+  await dk.waitFor(() => last("claude")?.s === "needs", "permission prompts always show");
+  assert.equal(last("claude").b, undefined);
+  await hook({ e: "SessionEnd", sid: "n1", project: "site" });
+
+  const nowMin = Math.floor((clock % 86400) / 60);
+  await kim.call("PUT", "/api/notify-prefs", { dnd: false, quiet: true, qfrom: (nowMin + 1439) % 1440, qto: (nowMin + 2) % 1440 });
+  assert.equal((await kim.call("GET", "/api/notify-prefs")).body.quietNow, true, "inside quiet hours");
+  await kim.call("PUT", "/api/notify-prefs", { qfrom: (nowMin + 5) % 1440, qto: (nowMin + 10) % 1440 });
+  assert.equal((await kim.call("GET", "/api/notify-prefs")).body.quietNow, false);
+
+  r = await kim.call("PUT", "/api/devices/esp-c1c001/settings", { h12: 1, tf: 1, face: 0 });
+  assert.equal(r.status, 200, r.text);
+  await dk.waitFor(() => last("set")?.h12 === 1, "clock options reach the desk");
+  assert.deepEqual([last("set").h12, last("set").tf, last("set").face], [1, 1, 0]);
+  assert.equal((await kim.call("PUT", "/api/devices/esp-c1c001/settings", { h12: 2 })).body.error, "h12");
+  await dk.endAsync();
+});
