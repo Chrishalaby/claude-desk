@@ -208,6 +208,8 @@ form > input[type=password] { margin-top: 8px; }
 .g-tag { position: absolute; left: 6px; bottom: 6px; font-size: 10px; font-weight: 700; background: rgba(0, 0, 0, .65); color: #fff; padding: 1px 5px; border-radius: 6px; pointer-events: none; }
 .pp-frame { width: min(92vw, 320px); aspect-ratio: 1; background: #000; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .pp-img { display: block; width: 100%; height: 100%; }
+.spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; vertical-align: -2px; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-left: 8px; vertical-align: middle; }
 .dot.here { background: #3fb950; }
 .dot.away { background: #d29922; }

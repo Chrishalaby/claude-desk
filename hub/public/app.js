@@ -1246,7 +1246,7 @@ function appDesk() {
     const f = await pickFile();
     if (!f) return;
     photoPreview(f, async (fit) => {
-      status.textContent = "Preparing it for the desk…";
+      fill(status, h("span", { class: "spin" }), " Uploading… this can take a few seconds");
       try { const m = await uploadMedia(f, fit); await load(); await show({ type: "media", id: m.id }); } catch (e) { status.textContent = ""; fail(e); }
     });
   }
@@ -1276,29 +1276,40 @@ function appDesk() {
 
 function sendMediaSheet(username, displayName, onSent) {
   const grid = h("div", { style: "width:min(92vw,440px);text-align:center" });
+  const status = h("p", { class: "hint", style: "margin:0;min-height:20px;text-align:center" });
+  let busy = false;
   const close = () => dlg.remove();
+  const setBusy = (text) => {
+    busy = !!text;
+    fill(status, text ? [h("span", { class: "spin" }), " " + text] : null);
+    pick.disabled = busy;
+    grid.style.opacity = busy ? ".4" : "";
+    grid.style.pointerEvents = busy ? "none" : "";
+  };
   const send = async (id) => {
+    setBusy("Sending to their desk…");
     try {
       const r = await api("POST", `/api/media/${id}/send`, { to: username });
       toast(r.devices ? "Sent to their desk" : "Sent (their desk is offline)");
       close();
       onSent();
-    } catch (e) { fail(e); }
+    } catch (e) { setBusy(""); fail(e); }
   };
+  const pick = h("button", { class: "btn primary", onclick: async () => {
+    if (busy) return;
+    const f = await pickFile();
+    if (!f) return;
+    setBusy(`Uploading ${f.type === "image/gif" ? "GIF" : "photo"}… this can take a few seconds`);
+    try { const m = await uploadMedia(f, "cover"); await send(m.id); } catch (e) { setBusy(""); fail(e); }
+  } }, "Pick a photo or GIF");
   const dlg = h("div", { class: "draw-overlay" },
     h("div", { class: "draw-head" }, h("b", {}, `Send to ${displayName}`), h("span", { class: "hint", style: "margin:0" }, "A photo or GIF on their desk for a minute")),
-    h("button", { class: "btn primary", onclick: guarded(async () => {
-      const f = await pickFile();
-      if (!f) return;
-      toast("Preparing it…");
-      try { const m = await uploadMedia(f, "cover"); await send(m.id); } catch (e) { fail(e); }
-    }) }, "Pick a photo or GIF"),
-    grid,
+    pick, status, grid,
     h("button", { class: "btn small ghost", onclick: close }, "Cancel"));
   document.body.append(dlg);
   api("GET", "/api/media").then((d) => fill(grid, d.items.length
     ? [h("p", { class: "hint", style: "margin:0 0 8px" }, "Or one you added before:"),
-      h("div", { class: "thumbs", style: "justify-content:center" }, d.items.map((m) => h("button", { class: "thumb-pick", onclick: guarded(() => send(m.id)) }, mediaImg(m.id, 96))))]
+      h("div", { class: "thumbs", style: "justify-content:center" }, d.items.map((m) => h("button", { class: "thumb-pick", onclick: () => { if (!busy) send(m.id); } }, mediaImg(m.id, 96))))]
     : null)).catch(() => {});
 }
 
