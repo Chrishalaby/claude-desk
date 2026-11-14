@@ -374,7 +374,11 @@ per integration. Web app: the **Apps** tab (`#/apps`). All endpoints are per sig
 * **Webhook** — `POST /api/notify/<hook token>` or `POST /api/notify` with `Authorization: Bearer <hook token>` (the
   same token as the Claude Code hook). Body: JSON `{title?, text?, icon?, color?, secs?, src?}` (fields of 3.5; `src`
   defaults to `Webhook`), or `text/plain` (becomes `text`); the same fields also work as query parameters. Needs a title
-  or a text. → `{ok, devices}`; 401 bad token, 429 over 120/min per IP or 30 cards/min per user.
+  or a text. → `{ok, devices}`; 401 bad token, 429 over 120/min per IP or 30 cards/min per user. `style: "banner"` or
+  `"full"` overrides the user's notification style for that one card.
+  `POST /api/notify/<hook token>/image[?secs=60&fit=contain]` with an image as the body (`image/*`, ≤ 6 MB) shows that
+  photo or GIF on the owner's desks without saving it (`secs=0`: until cleared; 30 an hour) → `{ok, devices, kind,
+  frames, bytes}`; `POST /api/notify/<hook token>/clear` goes back to the clock.
 * **Timers** — `GET/POST /api/timers {minutes 1–720, label ≤ 20}`, `DELETE /api/timers/<id>`; at most 10 running.
   The running one ending first is the next-up countdown; when it ends: a `Timer` card (60 s).
 * **Google Calendar** — `GET /api/apps/google/connect` → Google OAuth (PKCE + client secret, `access_type=offline`,

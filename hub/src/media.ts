@@ -158,6 +158,7 @@ export class Media {
   private uploadLimiter: RateLimiter;
   private showLimiter: RateLimiter;
   private sendLimiter: RateLimiter;
+  private onceLimiter: RateLimiter;
   pace = 60;
 
   constructor(private db: DB, private svc: Service, private now: () => number) {
@@ -165,6 +166,7 @@ export class Media {
     this.uploadLimiter = new RateLimiter(30, 3_600_000, nowMs);
     this.showLimiter = new RateLimiter(60, 3_600_000, nowMs);
     this.sendLimiter = new RateLimiter(20, 3_600_000, nowMs);
+    this.onceLimiter = new RateLimiter(30, 3_600_000, nowMs);
   }
 
   private row(id: number) { return this.db.prepare("SELECT * FROM media WHERE id = ?").get(id) as MediaRow | undefined; }
@@ -180,6 +182,14 @@ export class Media {
     const info = this.db.prepare("INSERT INTO media (user_id, kind, data, preview, frames, bytes, created) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(me, m.kind, m.data, m.preview, m.frames, m.data.length, this.now());
     return this.view(this.row(Number(info.lastInsertRowid))!);
+  }
+
+  async showOnce(me: number, input: Buffer, fit: unknown, secs: unknown) {
+    if (!input.length) throw new HttpError(400, "media_unreadable");
+    if (!this.onceLimiter.take(String(me))) throw new HttpError(429, "rate_limited");
+    const m = await convertMedia(input, fit === "contain" ? "contain" : "cover");
+    const row: MediaRow = { id: 0, user_id: me, kind: m.kind, data: m.data, preview: m.preview, frames: m.frames, bytes: m.data.length, created: this.now() };
+    return { ok: true, devices: this.deliver(me, row, "you", secs), kind: m.kind, frames: m.frames, bytes: m.data.length };
   }
 
   list(me: number) {

@@ -1269,6 +1269,9 @@ function appWebhook(a) {
         h("li", {}, h("b", {}, "icon"), ": wave, thumbs, laugh, coffee, fire, heart, hug, kiss, goodnight, missyou."),
         h("li", {}, h("b", {}, "color"), ": teal, orange, green, red, blue, purple, pink, yellow, white or #rrggbb."),
         h("li", {}, h("b", {}, "secs"), ": how long it stays up, 3 to 300 (default 15)."),
+        h("li", {}, h("b", {}, "style"), ": banner or full, to override your Notifications setting for this one card."),
+        h("li", {}, h("b", {}, "A picture or GIF: "), "POST the image file itself to the same URL with ", h("b", {}, "/image"), " added (", h("b", {}, "?secs=60"), ", ", h("b", {}, "?fit=contain"), " optional). ",
+          h("b", {}, "/clear"), " goes back to the clock."),
         h("li", {}, "It uses the same token as the Claude Code hook: regenerating the token changes this URL."))),
     h("button", { class: "btn block", onclick: guarded(async () => {
       try { const r = await api("POST", "/api/apps/test"); toast(r.devices ? "Sent. Look at your desk." : "No desk paired yet"); } catch (e) { fail(e); }

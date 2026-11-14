@@ -7,6 +7,8 @@ import { CHIP_RE } from "./broker.js";
 import type { Apps } from "./apps.js";
 import type { Doodles } from "./doodles.js";
 import { MEDIA_MAX_INPUT, type Media } from "./media.js";
+
+const NOTIFY_IMAGE_MAX = 6 * 1024 * 1024;
 import { HttpError, NOTIFY_SOURCES, type Service } from "./service.js";
 import { firmwareInfo, PACK_ID_RE, readBlob } from "./files.js";
 import { charLen, hashPassword, isValidTz, oneLine, randomHex, RateLimiter, safeEqual, sha256, trunc, verifyPassword } from "./util.js";
@@ -274,7 +276,7 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     const b = req.body;
     const card = typeof b === "string" ? { text: b } : b && typeof b === "object" && !Array.isArray(b) ? (b as Record<string, unknown>) : {};
     const q = req.query as Record<string, unknown>;
-    for (const k of ["title", "text", "icon", "color", "secs"]) if (card[k] === undefined && typeof q[k] === "string") card[k] = q[k];
+    for (const k of ["title", "text", "icon", "color", "secs", "style"]) if (card[k] === undefined && typeof q[k] === "string") card[k] = q[k];
     if (!str(card.title).trim() && !str(card.text).trim() && typeof card.text !== "number") return reply.code(400).send({ error: "empty" });
     const r = svc.sendCard(u.id, { src: card.src ?? "Webhook", ...card });
     if (r.limited) return reply.code(429).send({ error: "rate_limited" });
@@ -285,6 +287,24 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     return notify(req, reply, h.startsWith("Bearer ") ? h.slice(7).trim() : "");
   });
   app.post("/api/notify/:token", { bodyLimit: 4096 }, async (req, reply) => notify(req, reply, (req.params as { token: string }).token));
+  const tokenUser = (req: FastifyRequest) => {
+    if (!notifyIp.take(req.ip)) throw new HttpError(429, "rate_limited");
+    const u = svc.userByHookToken((req.params as { token: string }).token);
+    if (!u) throw new HttpError(401, "token");
+    return u;
+  };
+  app.post("/api/notify/:token/image", { bodyLimit: NOTIFY_IMAGE_MAX }, async (req) => {
+    const u = tokenUser(req);
+    if (!Buffer.isBuffer(req.body)) throw new HttpError(400, "media_unreadable");
+    const q = (req.query ?? {}) as Record<string, unknown>;
+    return media.showOnce(u.id, req.body, q.fit, q.secs === undefined ? 60 : q.secs === "0" ? 0 : Number(q.secs) || 60);
+  });
+  app.post("/api/notify/:token/clear", { bodyLimit: 1024 }, async (req) => {
+    const u = tokenUser(req);
+    media.hide(u.id);
+    doodles.hide(u.id);
+    return { ok: true };
+  });
 
   const appsLimit = async (req: FastifyRequest) => {
     await auth(req);

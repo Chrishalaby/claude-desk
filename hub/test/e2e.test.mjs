@@ -1549,6 +1549,25 @@ test("photos and GIFs: converted on the hub, streamed to your desk or a friend's
   assert.equal((await gina.call("GET", "/api/showing")).body, null);
   await dg.waitFor((m) => m.topic === "desk/esp-a1a001/media" && m.buf[0] === 4, "media stop");
   await dg.waitFor((m) => m.topic === "desk/esp-a1a001/draw" && m.buf[0] === 5, "back to clock");
+  const gtoken = (await gina.call("GET", "/api/token")).body.token;
+  const hookPost = (path, body, type) => fetch(`${base}/api/notify/${gtoken}${path}`, { method: "POST", headers: { "content-type": type }, body })
+    .then(async (x) => ({ status: x.status, body: await x.json() }));
+  r = await hookPost("/image?secs=0&fit=contain", photo, "image/jpeg");
+  assert.deepEqual([r.status, r.body.ok, r.body.devices, r.body.kind, r.body.frames], [200, true, 1, "image", 1]);
+  const once = await received(dg, "esp-a1a001", 3);
+  assert.deepEqual([once.from, once.secs, once.data.subarray(0, 4).toString()], ["you", 0, "DKM1"]);
+  assert.equal((await gina.call("GET", "/api/media")).body.items.length, 2, "a webhook image is shown, not saved");
+  r = await hookPost("/image", Buffer.from("nope"), "image/png");
+  assert.deepEqual([r.status, r.body.error], [400, "media_unreadable"]);
+  assert.equal((await fetch(`${base}/api/notify/wrong-token/image`, { method: "POST", headers: { "content-type": "image/png" }, body: photo })).status, 401);
+  const stopsBefore = dg.got.filter((m) => m.topic === "desk/esp-a1a001/media" && m.buf[0] === 4).length;
+  r = await hookPost("/clear", "{}", "application/json");
+  assert.deepEqual(r.body, { ok: true });
+  await dg.waitFor(() => dg.got.filter((m) => m.topic === "desk/esp-a1a001/media" && m.buf[0] === 4).length === stopsBefore + 1, "webhook clear");
+  r = await hookPost("", JSON.stringify({ title: "As a banner", style: "banner" }), "application/json");
+  assert.equal(r.body.devices, 1);
+  const bc = await dg.waitFor((m) => m.topic === "desk/esp-a1a001/card" && m.json?.title === "As a banner", "banner card from the webhook");
+  assert.equal(bc.json.st, 1, "style=banner overrides the full-screen default for one card");
   assert.equal((await gina.call("DELETE", `/api/media/${gifId}`)).status, 200);
   assert.equal((await gina.call("POST", `/api/media/${gifId}/show`, {})).status, 404);
   for (const c of [dg, dh]) await c.endAsync();

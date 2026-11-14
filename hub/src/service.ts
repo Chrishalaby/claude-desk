@@ -50,7 +50,7 @@ export function fitPayload<T extends Record<string, unknown>>(obj: T, fields: (k
   return out;
 }
 
-export interface CardInput { src?: unknown; title?: unknown; text?: unknown; icon?: unknown; color?: unknown; secs?: unknown }
+export interface CardInput { src?: unknown; title?: unknown; text?: unknown; icon?: unknown; color?: unknown; secs?: unknown; style?: unknown }
 export interface NextUp { text: string; at: number; left?: boolean; kind?: "music" }
 export const CARD_COLORS = ["teal", "orange", "green", "red", "blue", "purple", "pink", "yellow", "white"] as const;
 
@@ -533,7 +533,8 @@ export class Service {
     if (prefs.off.some((s) => s.toLowerCase() === src) || this.quietNow(userId, prefs)) return { devices: 0, limited: false };
     if (!this.cardLimiter.take(String(userId))) return { devices: 0, limited: true };
     const base = normalizeCard(input, ++this.cardSeq);
-    const card = prefs.app === "banner" ? { ...base, st: 1, sp: prefs.speed, secs: Math.max(Number(base.secs) || 15, 15) } : base;
+    const banner = input.style === "banner" || (input.style !== "full" && prefs.app === "banner");
+    const card = banner ? { ...base, st: 1, sp: prefs.speed, secs: Math.max(Number(base.secs) || 15, 15) } : base;
     let devices = 0;
     for (const d of this.devicesOf(userId)) {
       this.broker?.publish(`desk/${d.chip}/card`, card, false);
