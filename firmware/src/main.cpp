@@ -812,7 +812,7 @@ void onDraw(const uint8_t *p, unsigned int len) {
   uint8_t op = p[0];
   uint16_t id = (p[1] << 8) | p[2];
   if (op == 1) {
-    if (view == V_NEEDS || view == V_PAIR || view == V_MSG) { drawId = 0; return; }
+    if (view == V_NEEDS || view == V_PAIR) { drawId = 0; return; }
     drawId = id;
     drawFrom = "";
     for (unsigned i = 0; len > 3 && i < p[3] && 4 + i < len; i++) drawFrom += (char)p[4 + i];
@@ -894,7 +894,7 @@ void mediaAck(PGM_P err) {
 }
 
 bool mediaStart() {
-  if (view == V_NEEDS || view == V_PAIR || view == V_MSG) return false;
+  if (view == V_NEEDS || view == V_PAIR) return false;
   mdFile = LittleFS.open(F("/m.bin"), "r");
   if (!mdFile || !mediaHeader(mdRead, &mdFile, &mdFrames)) { mediaClose(); return false; }
   mdPlaying = true;
@@ -1019,7 +1019,7 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
   } else if (leaf == F("card")) {
     String ti = (const char *)(d[F("title")] | ""), tx = (const char *)(d[F("text")] | "");
     if (!ti.length() && !tx.length()) return;
-    if (view != V_CLOCK && view != V_DONE && view != V_NOTE) return;
+    if (view != V_CLOCK && view != V_DONE && view != V_NOTE && view != V_MSG) return;
     nTitle = ti; nText = tx;
     nSrc = (const char *)(d[F("src")] | "");
     nIcon = uiReactionIndex(d[F("icon")] | "");

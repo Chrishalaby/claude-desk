@@ -140,7 +140,7 @@ fields. Firmware ≥ 1.4.4 restarts itself if `maxblk` stays under 3 KB for 2 mi
 A notification card from an app (section 11). `src` ≤ 20 chars (shown upper-case), `title` ≤ 40, `text` ≤ 120 (wraps to
 3 lines, 1 line when there is an icon), `icon` = a reaction name (drawn like a reaction card) or `""`, `color` = one of
 `teal orange green red blue purple pink yellow white` or `#rrggbb`, `secs` 3–300 (default 15). The desk shows it over
-the clock or a DONE card, never over NEEDS YOU, a friend's message or the pairing screen; it is dropped if the desk is
+the clock, a DONE card or (firmware ≥ 1.4.15) a friend's message, never over NEEDS YOU or the pairing screen; it is dropped if the desk is
 offline. The hub limits cards to 30 per minute per user.
 
 ### 3.6 `desk/<chip>/next` — retained, hub → device (firmware ≥ 1.4.5)
@@ -182,7 +182,7 @@ Live drawings (section 13). Every frame starts with `op` and a 16-bit drawing id
 
 | op | rest | desk |
 |---|---|---|
-| 1 start | name length (1 byte) + UTF-8 name (≤ 40 bytes) | clears the screen to black and shows the drawing (not over NEEDS YOU, the pairing screen or a friend's message) |
+| 1 start | name length (1 byte) + UTF-8 name (≤ 40 bytes) | clears the screen to black and shows the drawing (not over NEEDS YOU or the pairing screen; before 1.4.15 also not over a friend's message) |
 | 2 strokes | stroke data, ≤ 700 bytes | draws it |
 | 3 end | seconds to keep it, 16-bit (10–3600; 0 = until back to clock, firmware ≥ 1.4.10) | "from <name>" footer, back to the clock after that time |
 | 4 clear | — | clears the canvas |
@@ -202,7 +202,7 @@ first). Every frame starts with `op` and a 16-bit transfer number (big-endian):
 |---|---|---|
 | 1 begin | size u32, CRC-32 u32, seconds u16 (10–3600; 0 = until back to clock, ≥ 1.4.10), name length u8 + UTF-8 name (≤ 40, `you` = your own) | needs size + 16 KB free in LittleFS, else answers `space` |
 | 2 chunk | offset u32 + up to 700 bytes | appended in order, else `order` |
-| 3 end | — | checks size and CRC (`crc`), answers, then plays it (not over NEEDS YOU, pairing or a message) |
+| 3 end | — | checks size and CRC (`crc`), answers, then plays it (not over NEEDS YOU or pairing; before 1.4.15 also not over a message) |
 | 4 stop | — | back to the clock |
 
 Answer on `desk/<chip>/up/media`: `{"id":<transfer>,"ok":true}` or `{"id":…,"ok":false,"e":"space|order|crc|fs"}`.
