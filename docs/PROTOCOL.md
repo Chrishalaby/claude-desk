@@ -96,6 +96,8 @@ Rules:
 * ACL: a device may subscribe only to `desk/<own chip>/#` and publish only to `desk/<own chip>/up/#`.
 * Max payload the device accepts: **768 bytes**. Hub truncates fields so messages fit (cut strings end in `...`).
 * Hub publishes with QoS 1 and retain. An **empty payload** on a retained topic means "cleared" — ignore it.
+  The binary `draw` and `media` frames (3.8, 3.9) are QoS 0 and not retained: a PUBACK per frame made the desk's TCP
+  stack (Nagle, 2 KB window) wait about 125 ms between frames, which held a photo to ~5.5 KB/s.
 * Denied subscriptions get SUBACK `0x80`; a denied publish closes the connection.
 
 ### 3.1 `desk/<chip>/claude` — retained, hub → device

@@ -9,7 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "dev": "npm run build && node dist/main.js",
-    "test": "npm run build && node --test --test-concurrency=1 test/*.test.mjs"
+    "test": "npm run build && node --test --test-concurrency=1 --test-force-exit --test-timeout=120000 test/*.test.mjs"
   },
   "engines": {
     "node": ">=22"

@@ -124,7 +124,7 @@ export async function startBroker(port: number, host: string, mat: TlsMaterial, 
       });
     },
     publishRaw(topic, payload, retain = false) {
-      aedes.publish({ cmd: "publish", topic, payload, qos: 1, retain, dup: false } as any, (err) => {
+      aedes.publish({ cmd: "publish", topic, payload, qos: 0, retain, dup: false } as any, (err) => {
         if (err) hooks.log("publish failed", topic, err.message);
       });
     },
