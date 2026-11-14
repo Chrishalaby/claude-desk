@@ -49,6 +49,6 @@ if __name__ == "__main__":
         total += len(packed) + 32
         lines.append(f"static const uint8_t {name}_px[] PROGMEM = {{" + ",".join(f"0x{b:02x}" for b in packed) + "};")
         p565 = ",".join(f"0x{c565(*pal[i*3:i*3+3]):04x}" for i in range(16))
-        lines.append(f"static const Icon {name} = {{{w}, {h}, {{{p565}}}, {name}_px}};")
+        lines.append(f"static const Icon {name} PROGMEM = {{{w}, {h}, {{{p565}}}, {name}_px}};")
     open(out, "w").write("\n".join(lines) + "\n")
     print(f"icons: {total/1024:.1f} KB")

@@ -4,7 +4,7 @@ import type { Config } from "./config.js";
 import { kvGet, kvSet, type DB, type DeviceRow, type FriendRow, type MessageRow, type UserRow } from "./db.js";
 import { applyEvent, computeView, viewKey, type HookEvent, type Sessions, type View } from "./state.js";
 import type { TlsMaterial } from "./tls.js";
-import { charLen, oneLine, randomHex, RateLimiter, safeEqual, sha256, sixDigits, trunc } from "./util.js";
+import { charLen, oneLine, randomHex, RateLimiter, safeEqual, sha256, sixDigits, trunc, tzOffsetSecs } from "./util.js";
 import { MAX_DEVICE_PAYLOAD } from "./broker.js";
 import { firmwareInfo, packIndex } from "./files.js";
 
@@ -214,6 +214,14 @@ export class Service {
       .run(d.pair_code ? now + PAIR_GRACE_SECS : null, code, now, chip);
     if (publish) this.publishCfg(chip);
     return true;
+  }
+
+  pairCodeOnline(code: string): boolean {
+    if (!/^\d{6}$/.test(code)) return false;
+    const d = this.db.prepare(
+      "SELECT chip FROM devices WHERE owner_id IS NULL AND (pair_code = ? OR (prev_code = ? AND prev_code_until > ?))",
+    ).get(code, code, this.now()) as { chip: string } | undefined;
+    return !!d && !!this.broker?.isOnline(d.chip);
   }
 
   pair(userId: number, code: string, name: string) {
@@ -435,10 +443,14 @@ export class Service {
     const owner = d.owner_id ? this.userById(d.owner_id) : undefined;
     const hub = this.hubUrl();
     if (owner) {
-      return fitPayload({ paired: true, owner: owner.username, name: d.name ?? "Desk", host: this.hostOf(d), hub }, ["name"]);
+      const tz = tzOffsetSecs(owner.tz || "UTC", this.cfg.now());
+      this.tzSent.set(d.chip, tz);
+      return fitPayload({ paired: true, owner: owner.username, name: d.name ?? "Desk", host: this.hostOf(d), hub, tz }, ["name"]);
     }
     return { paired: false, pairCode: d.pair_code, hub };
   }
+
+  private tzSent = new Map<string, number>();
 
   publishCfg(chip: string) {
     const d = this.device(chip);
@@ -670,6 +682,12 @@ export class Service {
       .all(now - 7 * 86400) as { chip: string }[]) {
       if (this.broker?.isOnline(r.chip)) continue;
       this.db.prepare("DELETE FROM devices WHERE chip = ?").run(r.chip);
+    }
+    for (const [chip, sent] of [...this.tzSent]) {
+      const d = this.device(chip);
+      const owner = d?.owner_id ? this.userById(d.owner_id) : undefined;
+      if (!owner) { this.tzSent.delete(chip); continue; }
+      if (tzOffsetSecs(owner.tz || "UTC", this.cfg.now()) !== sent) this.publishCfg(chip);
     }
   }
 

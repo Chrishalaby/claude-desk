@@ -79,7 +79,7 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   });
 
   // ---------------------------------------------------------------- accounts
-  app.get("/api/config", async (req) => ({ inviteRequired: !!cfg.inviteCode, hub: hubUrl(req) }));
+  app.get("/api/config", async (req) => ({ inviteRequired: !!cfg.inviteCode, pairInvite: cfg.pairInvite, hub: hubUrl(req) }));
 
   app.post("/api/register", async (req, reply) => {
     if (!registerIp.take(req.ip)) throw new HttpError(429, "rate_limited");
@@ -87,7 +87,8 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     const username = str(b.username).trim().toLowerCase();
     const password = str(b.password);
     const displayName = trunc(oneLine(b.displayName), 20) || username;
-    if (cfg.inviteCode && !safeEqual(str(b.invite).trim(), cfg.inviteCode)) throw new HttpError(403, "invite");
+    const byDesk = cfg.pairInvite && svc.pairCodeOnline(str(b.pair).replace(/\s+/g, ""));
+    if (cfg.inviteCode && !byDesk && !safeEqual(str(b.invite).trim(), cfg.inviteCode)) throw new HttpError(403, b.pair ? "pair_invite" : "invite");
     if (!USERNAME_RE.test(username)) throw new HttpError(400, "username");
     if (password.length < 8 || password.length > 200) throw new HttpError(400, "password");
     if (svc.userByName(username)) throw new HttpError(409, "taken");

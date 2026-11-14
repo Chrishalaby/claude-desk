@@ -77,6 +77,7 @@ Alternative without Docker: Root Directory `hub` works with Railway's Node build
 | `MQTT_PORT` | `8883` | MQTT/TLS listen port (TCP Proxy target) |
 | `DATA_DIR` | `./data` | SQLite DB, `mqtt-cert.pem`, `mqtt-key.pem` |
 | `HUB_INVITE_CODE` | – | required to register; unset = open registration (a warning is logged) |
+| `HUB_PAIR_INVITE` | on | `0` = a desk's pairing code no longer lets its holder register without the invite code |
 | `PUBLIC_URL` | `https://$RAILWAY_PUBLIC_DOMAIN`, else the request's host | baked into installers and `cfg.hub` |
 | `MQTT_PUBLIC_HOST` / `MQTT_PUBLIC_PORT` | `RAILWAY_TCP_PROXY_DOMAIN` / `_PORT`, else request host / `MQTT_PORT` | sent to devices in hello |
 | `SESSION_SECRET` | generated, stored in the DB | cookie signing |

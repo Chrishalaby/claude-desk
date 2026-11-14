@@ -1,8 +1,14 @@
 # Installing claude-desk
 
-**On a phone?** Every hub has the same steps as a tap-through guide at `https://<hub>/#/install` (linked from the
-sign-in page and from Devices). It needs no computer: download the file on the phone, upload it on the desk's update
-page, then one tap connects the desk to the hub.
+**Desk already shows a QR code?** Then claude-desk is on it and setup is three scans with your phone's camera:
+1. Scan the code on the screen: your phone joins the desk's own Wi-Fi (`claude-desk-setup`).
+2. The screen changes to a second code: scan it (or open `192.168.4.1`) and pick your home Wi-Fi.
+3. The desk restarts and shows a code to pair: scan it, create your account (the desk's code is your invitation),
+   and it pairs by itself. The desk's page then offers the last steps: location, your computer, a friend.
+
+**On a phone, with a new GeekMagic?** Every hub has the steps below as a tap-through guide at `https://<hub>/#/install`
+(linked from the sign-in page and from Devices). It needs no computer: download the file on the phone, upload it on
+the desk's update page, then scan the code the desk shows.
 
 This guide is written so a person **or an AI coding assistant** can follow it top to bottom.
 If you're an AI assistant helping someone: do the steps on their computer where you can, and ask them to do the
@@ -37,9 +43,9 @@ Steps:
      `curl -F "firmware=@claude-desk.bin.gz" http://<desk-ip>/update`
 3. If the page says *Not enough space* or the update fails: upload `claude-desk-loader.bin` the same way. The desk reboots
    showing **LOADER** and its IP; then open `http://<desk-ip>/update` again and upload `claude-desk.bin`.
-4. The desk reboots into claude-desk ("CONNECTING…", then the clock). It keeps your Wi-Fi.
-   - If it shows **SETUP** instead: join the Wi-Fi `claude-desk-setup` with your phone, open `192.168.4.1`, pick your
-     network and enter the password.
+4. The desk reboots into claude-desk ("CONNECTING…", then a QR code to pair: see section 4). It keeps your Wi-Fi.
+   - If it shows a QR code titled *Scan to join Wi-Fi* instead: scan it (or join the Wi-Fi `claude-desk-setup` and open
+     `192.168.4.1`), pick your network and enter the password.
 
 From now on the desk has its own local address, shown on its screen while it starts (under the IP):
 **`http://claude-desk-<id>.local`**, where `<id>` is the end of its chip id (e.g. `claude-desk-1a2b3c.local`). Once
@@ -52,16 +58,19 @@ keeps its own name. Firmware updates go through `http://<desk address>/update` w
 Open the desk's address (`http://claude-desk-<id>.local` or its IP):
 1. **Location** — type your city in the search box, pick it, press **Save**. Weather and timezone (incl. daylight saving)
    follow the location automatically.
-2. **Friends hub** — paste the hub address (e.g. `our-desks.up.railway.app`), press **Save**. The desk reboots and shows
-   **PAIR THIS DESK** with a 6-digit code.
+2. **Friends hub** — only if you use a different hub than the one the firmware was built for: paste its address
+   (e.g. `our-desks.up.railway.app`), press **Save**. The desk reboots and shows the pairing code.
 3. Optional: layout (tall clock / clean), brightness day/night, night hours, colours, *Casper the dog visits*.
 4. **Wi-Fi networks** (`/wifi`) — add a second network (e.g. your phone hotspot) so it keeps working when the home Wi-Fi is down.
 
 ## 4. Hub account + pairing — 👤 you (phone or browser)
 
-1. Open the hub address, **register** (invite code from whoever runs the hub), sign in.
-2. **Devices → Pair**: enter the 6-digit code from the desk and give it a name. The desk switches back to the clock and
-   takes its new local address, `http://<username>-desk.local` (shown on the desk's page in the hub).
+1. Scan the QR code on the desk with your phone's camera. The hub opens: create an account (or sign in) and the desk
+   pairs by itself. No camera? Open the hub address, **register** with the 6-digit code on the desk (or an invite code
+   from whoever runs the hub), then **Devices → Pair**.
+2. The desk switches to the clock, takes the time zone of your browser, and gets its new local address,
+   `http://<username>-desk.local` (shown on the desk's page in the hub). That page lists what's left: your location
+   for the weather (one tap: *Use mine*), connecting your computer, adding a friend.
 3. **Friends → Add**: enter a friend's username. They accept on their side.
 4. Pick a friend on **Home** to send a message (≤100 characters) or a reaction. It pops up on their desk within a second.
 

@@ -15,6 +15,7 @@ import { deskHostBase } from "../dist/service.js";
 import { eventsFromIcs, slackText } from "../dist/apps.js";
 import { chunkStrokes, validStrokes } from "../dist/doodles.js";
 import { isPrivateAddress } from "../dist/net.js";
+import { tzOffsetSecs } from "../dist/util.js";
 import http from "node:http";
 import zlib from "node:zlib";
 import sharp from "sharp";
@@ -160,7 +161,7 @@ function makeConfig() {
     ...configFromEnv({}),
     dataDir, httpHost: "127.0.0.1", httpPort: 0, mqttPort: 0,
     publicUrl: null, mqttPublicHost: null, mqttPublicPort: null,
-    inviteCode: "letmein", sessionSecret: null, tlsCert: null, tlsKey: null,
+    inviteCode: "letmein", pairInvite: true, sessionSecret: null, tlsCert: null, tlsKey: null,
     clientDir: path.join(here, "..", "..", "client"),
     firmwareDir: fwDir, packsDir,
     githubApi: fx + "/gh", quotesApi: fx + "/q", allowPrivateFetch: true, weatherApi: fx + "/w",
@@ -392,7 +393,9 @@ test("device hello rules + pairing over MQTT cfg", async () => {
   assert.equal(r.status, 200, r.text);
   assert.equal(r.body.chip, devA.chip);
   cfg = await a.waitFor((m) => m.topic === `desk/${devA.chip}/cfg` && m.json.paired, "paired cfg");
-  assert.deepEqual(cfg.json, { paired: true, owner: "alice", name: "Desk", host: "alice-desk", hub: base });
+  assert.deepEqual(cfg.json, { paired: true, owner: "alice", name: "Desk", host: "alice-desk", hub: base, tz: tzOffsetSecs(TZ, clock) });
+  assert.ok([7200, 10800].includes(cfg.json.tz), "the owner's time zone offset reaches the desk at pairing");
+  assert.deepEqual([tzOffsetSecs("UTC", clock), tzOffsetSecs("Asia/Kolkata", clock), tzOffsetSecs("Not/AZone", clock)], [0, 19800, 0]);
   const claude = await a.waitFor((m) => m.topic === `desk/${devA.chip}/claude`, "initial claude");
   assert.equal(claude.json.s, "idle");
 
@@ -1622,4 +1625,29 @@ test("notification preferences: banner style, quiet hours, do not disturb, per-a
   assert.deepEqual([last("set").h12, last("set").tf, last("set").face], [1, 1, 0]);
   assert.equal((await kim.call("PUT", "/api/devices/esp-c1c001/settings", { h12: 2 })).body.error, "h12");
   await dk.endAsync();
+});
+
+test("a desk's pairing code lets its holder sign up without an invite, and pairs in one go", async () => {
+  const hl = await anon.call("POST", "/api/device/hello", { chip: "esp-d1d001", fw: "1.4.16", secret: "" });
+  const code = hl.body.pairCode;
+  const reg = (extra) => anon.call("POST", "/api/register", { username: "lena" + Math.floor(Math.random() * 1e6), displayName: "Lena", password: "password-l", tz: "UTC", ...extra });
+  assert.equal((await anon.call("GET", "/api/config")).body.pairInvite, true);
+  let r = await reg({ pair: code });
+  assert.deepEqual([r.status, r.body.error], [403, "pair_invite"], "the desk has to be online: a code alone isn't enough");
+  const d = await device("esp-d1d001", hl.body.secret);
+  await d.subscribeAsync("desk/esp-d1d001/#", { qos: 1 });
+  r = await reg({ pair: "000000" });
+  assert.deepEqual([r.status, r.body.error], [403, "pair_invite"]);
+  r = await reg({});
+  assert.deepEqual([r.status, r.body.error], [403, "invite"]);
+  const lena = user();
+  r = await lena.call("POST", "/api/register", { username: "lena", displayName: "Lena", password: "password-l", tz: "Asia/Kolkata", pair: code.slice(0, 3) + " " + code.slice(3) });
+  assert.equal(r.status, 200, r.text);
+  r = await lena.call("POST", "/api/devices/pair", { code, name: "Lena" });
+  assert.equal(r.status, 200, r.text);
+  const cfg = await d.waitFor((m) => m.topic === "desk/esp-d1d001/cfg" && m.json?.paired === true, "paired cfg");
+  assert.deepEqual([cfg.json.owner, cfg.json.tz], ["lena", 19800]);
+  r = await reg({ pair: code });
+  assert.equal(r.status, 403, "a used code is no longer an invite");
+  await d.endAsync();
 });

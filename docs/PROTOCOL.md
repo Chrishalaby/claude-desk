@@ -19,7 +19,10 @@ All JSON is UTF-8. Times are unix seconds. Strings shown on the device are trunc
 ## 1. Accounts & auth (hub)
 
 * Users: `username` (3–20 chars, `[a-z0-9_]`, unique, lowercase), `displayName` (≤ 20 chars), password (scrypt).
-* Registration requires `HUB_INVITE_CODE` (env) if set, so strangers can't sign up.
+* Registration requires `HUB_INVITE_CODE` (env) if set, so strangers can't sign up. Having a desk also counts:
+  `POST /api/register {…, pair: "<6-digit code>"}` is accepted without an invite when that code belongs to an unpaired
+  desk that is connected right now (403 `pair_invite` otherwise). `HUB_PAIR_INVITE=0` turns that off.
+  `GET /api/config` → `{inviteRequired, pairInvite, hub}`.
 * Web sessions: httpOnly, SameSite=Lax, signed cookie (`SESSION_SECRET` env, generated & persisted if absent).
 * **Hook token**: per user, random 32 bytes hex, shown in the web app ("Claude Code" page), regenerable.
   Sent as `Authorization: Bearer <token>`.
@@ -55,9 +58,22 @@ Rules:
 * Known chip + correct secret → no new secret.
 * Known chip + missing/wrong secret → **403** (`{"error":"secret"}`). The owner must "Forget device" in the web app, after which hello creates it again.
 
+### 2.0 First boot and Wi-Fi setup (firmware ≥ 1.4.16)
+
+* A desk with no usable Wi-Fi starts the open access point `claude-desk-setup` (captive DNS, pages at `192.168.4.1`)
+  and shows a QR code `WIFI:T:nopass;S:claude-desk-setup;;` ("Scan to join Wi-Fi"). As soon as a phone has joined the
+  access point the screen switches to a QR code of `http://192.168.4.1` ("Scan to choose your Wi-Fi"), for phones that
+  don't open the captive page themselves. The page lists the 2.4 GHz networks in range, strongest first.
+* A desk whose settings block is new (first boot of this firmware) starts with the hub address the build was
+  compiled with (`-D DEFAULT_HUB`), so it goes straight to hello and the pairing screen. `/set?hub=<host>` on the
+  desk's own page still changes it.
+
 ### 2.2 Pairing
 
-* Device shows `pairCode` on screen ("Pair code 482913 — enter it at <hub>").
+* Device shows `pairCode` on screen. Firmware ≥ 1.4.16 shows it under a QR code of `https://<hub>/#/pair/<code>`
+  (version-3 QR, ≤ 53 bytes; a longer hub name falls back to the text screen "enter this code at <hub>"). The web app
+  handles `#/pair/<code>`: signed in → pairs at once (named after the user, or "Desk N"); signed out → the sign-in /
+  create-account page with the code filled in, then pairs.
 * While unpaired, the hub rotates the code every 10 min (only while the device is connected) and re-publishes the
   retained `cfg` with the new `pairCode`. The previous code keeps working for 60 s after a rotation.
 * User enters it in the web app → `POST /api/devices/pair {code, name}` → device linked to the user.
@@ -115,7 +131,9 @@ Unpaired (re-published whenever the code rotates):
 { "paired": false, "pairCode": "482913", "hub": "https://<public hub url>" }
 ```
 `name` ≤ 20 chars. The hub re-publishes `cfg`, `claude` and `msg` whenever the device connects, so state survives a
-hub restart.
+hub restart. Paired `cfg` also carries `tz`: the owner's current UTC offset in seconds (from their IANA zone;
+re-published within the hour when daylight saving changes it). Firmware ≥ 1.4.16 uses it for the clock until a
+location is set (after that the weather response's offset wins), so a freshly paired desk shows the right time.
 
 `host` is the device's local network name (mDNS `<host>.local` and DHCP hostname), assigned by the hub when the device
 is paired and kept for as long as it stays paired: `<username>-desk` (runs of characters outside `[a-z0-9]` become

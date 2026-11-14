@@ -7,6 +7,7 @@ const EMOJI = Object.fromEntries(REACTIONS);
 const MSG_MAX = 100;
 const ERRORS = {
   credentials: "Wrong username or password.", invite: "That invite code isn't right.", taken: "That username is taken.",
+  pair_invite: "That desk code isn't valid any more. Type the code now on your desk's screen.",
   username: "Username: 3-20 characters, a-z 0-9 _", password: "Password must be at least 8 characters.",
   rate_limited: "Slow down a little and try again in a minute.", no_such_user: "No user with that name.",
   self: "That's you.", invalid_code: "No device is showing that code. Check the screen and try again.",
@@ -152,15 +153,48 @@ function shell(title, content, opts = {}) {
 }
 
 // ------------------------------------------------------------------ auth
+const pendingPair = {
+  get() {
+    let v = state.pendingPair || "";
+    try { v = sessionStorage.getItem("cd_pair") || v; } catch { v = state.pendingPair || ""; }
+    return /^\d{6}$/.test(v) ? v : null;
+  },
+  set(v) {
+    state.pendingPair = v || "";
+    try { if (v) sessionStorage.setItem("cd_pair", v); else sessionStorage.removeItem("cd_pair"); } catch { return; }
+  },
+};
+
+async function finishPairing() {
+  const code = pendingPair.get();
+  if (!code) return false;
+  pendingPair.set(null);
+  try {
+    const devs = await api("GET", "/api/devices").catch(() => []);
+    const name = devs.length ? `Desk ${devs.length + 1}` : ((state.me && state.me.displayName) || "Desk").slice(0, 20);
+    const d = await api("POST", "/api/devices/pair", { code, name });
+    state.devices = [];
+    toast("Paired! Your desk switches over in a moment.");
+    go("#/device/" + d.chip);
+  } catch (e) {
+    toast(e.code === "invalid_code" ? "That code has expired. Type the code now on your desk." : e.message, true);
+    go("#/devices/add");
+  }
+  return true;
+}
+
 function viewLogin() {
-  let mode = "login";
+  const desk = pendingPair.get();
+  let mode = desk ? "register" : "login";
   const err = h("div", { class: "err" });
   const f = {
     username: h("input", { autocomplete: "username", autocapitalize: "none", spellcheck: "false", maxlength: 20, required: true }),
     displayName: h("input", { maxlength: 20, placeholder: "Shown on friends' screens" }),
     password: h("input", { type: "password", autocomplete: "current-password", maxlength: 200, required: true }),
     invite: h("input", { autocomplete: "off", autocapitalize: "none", maxlength: 100 }),
+    pair: h("input", { inputmode: "numeric", pattern: "[0-9 ]*", maxlength: 7, placeholder: "482913", autocomplete: "off", value: desk || "" }),
   };
+  const byDesk = !!(state.config && state.config.pairInvite);
   const extra = h("div", {});
   const submit = h("button", { class: "btn primary block", type: "submit" }, "Sign in");
   const seg = h("div", { class: "seg" });
@@ -170,7 +204,10 @@ function viewLogin() {
       h("button", { type: "button", class: mode === "register" ? "on" : "", onclick: () => { mode = "register"; paint(); } }, "Create account"));
     fill(extra, mode === "register" ? [
       h("label", { class: "f" }, "Display name"), f.displayName,
-      state.config && state.config.inviteRequired ? [h("label", { class: "f" }, "Invite code"), f.invite] : null,
+      byDesk ? [h("label", { class: "f" }, "Code on your desk's screen"), f.pair] : null,
+      state.config && state.config.inviteRequired ? (byDesk
+        ? h("details", { class: "more" }, h("summary", {}, "No desk yet? Use an invite code"), f.invite)
+        : [h("label", { class: "f" }, "Invite code"), f.invite]) : null,
     ] : null);
     f.password.setAttribute("autocomplete", mode === "login" ? "current-password" : "new-password");
     submit.textContent = mode === "login" ? "Sign in" : "Create account";
@@ -181,10 +218,19 @@ function viewLogin() {
     onsubmit: async (e) => {
       e.preventDefault(); err.textContent = ""; submit.disabled = true;
       const body = { username: f.username.value.trim().toLowerCase(), password: f.password.value, tz: browserTz() };
-      if (mode === "register") Object.assign(body, { displayName: f.displayName.value.trim(), invite: f.invite.value.trim() });
+      const deskCode = f.pair.value.replace(/\s/g, "");
+      if (mode === "register") {
+        Object.assign(body, { displayName: f.displayName.value.trim(), invite: f.invite.value.trim() });
+        if (byDesk && deskCode) body.pair = deskCode;
+        if (/^\d{6}$/.test(deskCode)) pendingPair.set(deskCode);
+      }
       try {
+        if (mode === "register" && state.config && state.config.inviteRequired && !body.pair && !body.invite) {
+          throw new Error(byDesk ? "Type the code on your desk's screen (or an invite code)." : "Type your invite code.");
+        }
         await api("POST", mode === "login" ? "/api/login" : "/api/register", body);
-        await loadMe(); go("#/home");
+        await loadMe();
+        if (!(await finishPairing())) go("#/home");
       } catch (ex) { err.textContent = ex.message; }
       finally { submit.disabled = false; }
     },
@@ -192,6 +238,8 @@ function viewLogin() {
   $app.replaceChildren(h("div", { class: "auth" },
     h("div", { class: "logo" }, h("img", { src: "/favicon.svg", alt: "" }),
       h("div", {}, h("h1", {}, "claude-desk"), h("p", {}, "Your desk, your friends, your Claude."))),
+    desk ? h("div", { class: "card", style: "margin-bottom:14px" }, h("b", {}, "Setting up your desk"),
+      h("p", { class: "hint", style: "margin:4px 0 0" }, "Create an account, or sign in if you already have one. Your desk pairs by itself right after.")) : null,
     form,
     h("p", { class: "hint", style: "text-align:center;margin-top:22px" }, "New desk? ", h("a", { href: "#/install" }, "Install guide"))));
 }
@@ -216,16 +264,23 @@ async function viewInstall() {
       if (ok) { el.href = url; el.classList.remove("off"); el.removeAttribute("aria-disabled"); }
       else { el.removeAttribute("href"); el.classList.add("off"); el.setAttribute("aria-disabled", "true"); }
     }
-    addrHint.textContent = ok ? "Got it. The buttons in steps 3 and 4 open this desk."
+    addrHint.textContent = ok ? "Got it. The button in step 3 opens this desk."
       : a ? "Type the numbers exactly as the screen shows them, like 192.168.1.107."
-      : "The buttons in steps 3 and 4 need it.";
+      : "The button in step 3 needs it.";
   }
   addr.addEventListener("input", sync);
   sync();
   const dl = (file, label, cls) => h("a", { class: cls, href: "/firmware/" + file, download: file }, label);
   const step = (n, title, ...body) => h("div", { class: "card step" }, h("div", { class: "step-head" }, h("span", { class: "num" }, n), title), body);
   const body = [
-    h("p", { class: "hint" }, "For a GeekMagic SmallTV Ultra (not the Pro). Everything works from your phone and you only do it once: after that, settings and updates come from this site."),
+    h("div", { class: "card step" }, h("div", { class: "step-head" }, h("span", { class: "num" }, "✓"), "Your desk already shows a QR code?"),
+      h("p", {}, "Then it's ready to go and you only need your phone's camera:"),
+      h("ol", {},
+        h("li", {}, "Scan the code on the screen. Your phone joins the desk's own Wi-Fi."),
+        h("li", {}, "The screen changes to a second code. Scan it and pick your home Wi-Fi."),
+        h("li", {}, "The desk restarts and shows one more code. Scan it to create your account; it pairs by itself."))),
+    h("h2", {}, "Installing on a new GeekMagic"),
+    h("p", { class: "hint" }, "For a GeekMagic SmallTV Ultra (not the Pro) that still runs its original software. Everything works from your phone and you only do it once: after that, settings and updates come from this site."),
     step(1, "Put the desk on your Wi-Fi",
       h("p", {}, "Plug it in. Its screen names a Wi-Fi network to join (on a new GeekMagic usually ", h("b", {}, "GIFTV"), " or ", h("b", {}, "SmallTV"), ")."),
       h("p", {}, "Join that network on your phone. If no page opens by itself, go to ", h("b", {}, "192.168.4.1"), ". Pick your home Wi-Fi and enter its password."),
@@ -238,28 +293,23 @@ async function viewInstall() {
     step(3, "Install it",
       h("p", {}, "Open the desk's update page, choose the file you just downloaded and tap ", h("b", {}, "Update"), "."),
       updateLink,
-      h("p", {}, "After about 30 seconds the desk restarts, shows CONNECTING…, then CLAUDE DESK with its address."),
+      h("p", {}, "After about 30 seconds the desk restarts, shows CONNECTING…, then its address, then a QR code to pair."),
       h("details", {}, h("summary", {}, "The update page refused the file"),
         h("p", {}, "Install it in two steps instead, on the same update page:"),
         h("ol", {},
           h("li", {}, "Upload the ", dl("claude-desk-loader.bin", "loader"), ". The desk restarts showing LOADER."),
           h("li", {}, "Upload the ", dl("claude-desk.bin", "full firmware"), ". The desk restarts into claude-desk."))),
       h("details", {}, h("summary", {}, "The desk shows SETUP"),
-        h("p", {}, "Join the ", h("b", {}, "claude-desk-setup"), " Wi-Fi, open 192.168.4.1 and pick your home Wi-Fi again. Then switch your phone back to it."))),
-    step(4, "Connect it to this site",
-      h("p", {}, "One tap tells the desk where your account lives."),
-      hubLink,
-      h("p", {}, "The desk restarts and shows ", h("b", {}, "PAIR THIS DESK"), " with a 6-digit code."),
-      h("p", { class: "hint" }, "If the address on the screen changed, update it in step 1.")),
-    step(5, "Pair it with your account",
-      state.me
-        ? [h("p", {}, "Enter the code on the Devices page."),
-          h("a", { class: "btn primary block", href: "#/devices" }, "Pair on Devices"),
-          h("p", { class: "hint" }, `Afterwards it's on your Wi-Fi as ${deskHostFor(state.me.username)}.local.`)]
-        : [h("p", {}, "Create your account (or sign in), open ", h("b", {}, "Devices"), " and enter the code."),
-          h("a", { class: "btn primary block", href: "#/login" }, "Create account or sign in")]),
-    step(6, "Set it up from here",
-      h("p", {}, "Location, brightness, night hours, colours and emoji style are on the desk's page under Devices, and so is the update button. For Claude Code status, calendar reminders, GitHub, timers and more, open ",
+        h("p", {}, "It lost the Wi-Fi details. Scan the code on its screen (or join the ", h("b", {}, "claude-desk-setup"), " Wi-Fi and open 192.168.4.1) and pick your home Wi-Fi again."))),
+    step(4, "Pair it with your account",
+      h("p", {}, "The desk now shows a QR code with a 6-digit code under it. Scan it with your phone's camera: it opens this site, you create your account (or sign in), and the desk pairs by itself."),
+      state.me ? h("a", { class: "btn primary block", href: "#/devices/add" }, "Or type the code") : h("a", { class: "btn primary block", href: "#/login" }, "Or create an account and type the code"),
+      h("details", {}, h("summary", {}, "The desk shows the clock, not a code"),
+        h("p", {}, "It isn't pointed at this site yet. One tap fixes that, then the code appears:"),
+        hubLink,
+        h("p", { class: "hint" }, "If the address on the screen changed, update it in step 1."))),
+    step(5, "Set it up from here",
+      h("p", {}, "The desk's page (under Devices) walks you through the rest: location for the weather, connecting your computer, adding a friend. Brightness, colours, notifications and updates are there too. For calendar reminders, GitHub, timers and more, open ",
         h("a", { href: "#/apps" }, "Apps"), ".")),
   ];
   if (state.me) shell("Install a desk", body, { back: "#/devices" });
@@ -640,8 +690,44 @@ function viewAddDevice() {
   }, h("label", { class: "f", style: "margin-top:0" }, "Pair code shown on the device"), code,
     h("label", { class: "f" }, "Name"), name, h("button", { class: "btn primary block", type: "submit" }, "Pair device"));
   shell(first ? "Pair your desk" : "Add a desk", [pair,
-    h("p", { class: "hint" }, "Power on your GeekMagic with the claude-desk firmware. It shows a 6-digit code until it's paired. New desk? ",
+    h("p", { class: "hint" }, "Your desk shows a 6-digit code (and a QR code you can scan with your phone's camera instead of typing) until it's paired. New desk? ",
       h("a", { href: "#/install" }, "Install guide"), ".")], first ? {} : { back: "#/devices" });
+}
+
+function useMyLocation(enc) {
+  return new Promise((resolve) => {
+    const no = () => { toast("Couldn't get your location. Search for your city instead.", true); resolve(false); };
+    if (!navigator.geolocation) return no();
+    navigator.geolocation.getCurrentPosition(async (pos) => {
+      try {
+        const lat = Math.round(pos.coords.latitude * 100) / 100, lon = Math.round(pos.coords.longitude * 100) / 100;
+        await api("PUT", `/api/devices/${enc}/settings`, { lat, lon, place: "Current location" });
+        toast("Location set. Weather shows up in a minute.");
+        resolve(true);
+      } catch (e) { fail(e); resolve(false); }
+    }, no, { timeout: 15000, maximumAge: 600000 });
+  });
+}
+
+function setupCard(enc, getData) {
+  const el = h("div", {});
+  let apps = null, friends = null;
+  const row = (title, sub, action) => h("div", { class: "row" }, h("div", { class: "grow" }, h("div", { class: "title" }, title), h("div", { class: "sub" }, sub)), action);
+  function paint() {
+    const d = getData(), s = { ...(d.reported || {}), ...(d.settings || {}) };
+    const items = [];
+    if (!(s.lat || s.lon)) items.push(row("📍 Set your location", "For the weather and the right time.",
+      h("button", { class: "btn small primary", onclick: guarded(async () => { if (await useMyLocation(enc)) render(); }) }, "Use mine")));
+    if (apps && !apps.computer.seen) items.push(row("💻 Connect your computer", "Claude Code status, what's playing, your calendar.",
+      h("a", { class: "btn small", href: "#/apps" }, "Set up")));
+    if (friends && !friends.some((f) => f.rel)) items.push(row("👥 Add a friend", "Send messages, drawings and photos to their desk.",
+      h("a", { class: "btn small", href: "#/friends" }, "Add")));
+    fill(el, items.length ? [h("h2", {}, "Finish setting up"), h("div", { class: "list" }, items)] : null);
+  }
+  paint();
+  api("GET", "/api/apps").then((r) => { apps = r; paint(); }).catch(() => {});
+  api("GET", "/api/friends").then((r) => { friends = r; paint(); }).catch(() => {});
+  return el;
 }
 
 // ------------------------------------------------------------------ one desk: status + remote settings
@@ -889,12 +975,13 @@ async function viewDevice(chip) {
     h("h2", {}, "Location (weather)"),
     h("div", { class: "card" }, placeEl,
       h("div", { class: "inline", style: "margin-top:10px" }, q, h("button", { class: "btn", type: "button", onclick: search }, "Search")),
-      results),
+      results,
+      h("button", { class: "btn small ghost", type: "button", style: "margin-top:8px", onclick: guarded(async () => { if (await useMyLocation(enc)) render(); }) }, "Use my current location")),
     save);
 
   const wifiEl = wifiCard(enc, () => data);
   const refreshAll = async () => { await refresh(); wifiEl.update(data); };
-  fill(main, h("h2", {}, "Status"), status, h("h2", {}, "On your desk"), appDesk(), h("h2", {}, "Notifications"), appNotify(), form, h("h2", {}, "Wi-Fi networks"), wifiEl);
+  fill(main, h("h2", {}, "Status"), status, setupCard(enc, () => data), h("h2", {}, "On your desk"), appDesk(), h("h2", {}, "Notifications"), appNotify(), form, h("h2", {}, "Wi-Fi networks"), wifiEl);
   state.poll = setInterval(() => { if (!document.hidden) refreshAll().catch(() => {}); }, 5000);
 }
 
@@ -1647,6 +1734,14 @@ async function render() {
     if (hash === "#/install") {
       if (!state.me) await loadMe().catch(() => null);
       return await viewInstall();
+    }
+    const scanned = hash.match(/^#\/pair\/(\d{6})$/);
+    if (scanned) {
+      pendingPair.set(scanned[1]);
+      if (!state.me) await loadMe().catch(() => null);
+      if (!state.me) return go("#/login");
+      await finishPairing();
+      return;
     }
     if (!state.me && hash !== "#/login") {
       try { await loadMe(); } catch { return go("#/login"); }

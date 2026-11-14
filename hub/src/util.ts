@@ -84,6 +84,16 @@ export function isValidTz(tz: unknown): tz is string {
   }
 }
 
+export function tzOffsetSecs(tz: string, t: number): number {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+    }).formatToParts(new Date(t * 1000));
+    const g = (k: string) => Number(parts.find((p) => p.type === k)?.value);
+    return Math.round((Date.UTC(g("year"), g("month") - 1, g("day"), g("hour"), g("minute"), g("second")) - Math.floor(t) * 1000) / 1000);
+  } catch { return 0; }
+}
+
 /** "HH:MM" (24 h) of unix seconds `t` in IANA timezone `tz` (UTC if invalid). */
 export function hhmm(t: number, tz: string): string {
   const zone = isValidTz(tz) ? tz : "UTC";

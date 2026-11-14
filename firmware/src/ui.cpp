@@ -297,7 +297,9 @@ void uiClockDate(int wday, int mday, int mon, const Weather &w) {
 }
 
 // --------------------------------------------------------------- icons ---
-static void blitIcon(const Icon &ic, int x, int y) {
+static void blitIcon(const Icon &src, int x, int y) {
+  Icon ic;
+  memcpy_P(&ic, &src, sizeof ic);
   uint16_t *row = gRowBuf;
   for (int r = 0; r < ic.h; r++) {
     for (int c = 0; c < ic.w; c++) {
@@ -310,9 +312,9 @@ static void blitIcon(const Icon &ic, int x, int y) {
 }
 
 // draw icon centred in a box, clearing the box first
-static void iconIn(const Icon &ic, int x, int y, int bw, int bh) {
+static void iconIn(const Icon &src, int x, int y, int bw, int bh) {
   gFill(x, y, bw, bh, BG);
-  blitIcon(ic, x + (bw - ic.w) / 2, y + (bh - ic.h) / 2);
+  blitIcon(src, x + (bw - (int)pgm_read_byte(&src.w)) / 2, y + (bh - (int)pgm_read_byte(&src.h)) / 2);
 }
 
 static const Icon &weatherIcon(int c, bool day) {
@@ -353,12 +355,12 @@ void uiWeather(const Weather &w) {
   iconIn(weatherIcon(w.code, w.day), 4, 144, 60, 50);
   iconIn(I_THERMO_S, 66, 158, 20, 28);
   tBox(F_TEMP, t, 88, 58, 186, AL_LEFT, WHITE, BG);
-  blitIcon(I_HUMID_S, 12, 208);
-  tBox(F_S, h, 32, 40, 222, AL_LEFT, COL_GREY, BG);
-  blitIcon(I_WIND_S, 68, 208);
+  blitIcon(I_HUMID_S, 8, 208);
+  tBox(F_S, h, 28, 38, 222, AL_LEFT, COL_GREY, BG);
+  blitIcon(I_WIND_S, 62, 208);
   char wd[12];
-  snprintf(wd, sizeof wd, "%d km/h", (int)(w.wind + 0.5f));
-  tBox(F_S, wd, 98, 50, 222, AL_LEFT, COL_GREY, BG);
+  snprintf(wd, sizeof wd, w.wind >= 99.5f ? "%dkm/h" : "%d km/h", (int)(w.wind + 0.5f));
+  tBox(F_S, wd, 92, 56, 222, AL_LEFT, COL_GREY, BG);
 }
 
 void uiClockFull(int h, int m, int wday, int mday, int mon, const Weather &w) {

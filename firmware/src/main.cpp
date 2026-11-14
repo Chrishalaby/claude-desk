@@ -18,6 +18,7 @@
 #include <time.h>
 #include "gfx.h"
 #include "ui.h"
+#include "qr.h"
 #ifndef LOADER
 #include <ESP8266HTTPClient.h>
 #include <ArduinoJson.h>
@@ -103,6 +104,9 @@ void loadExt() {
     memset(&X, 0, sizeof X);
     X.magic = EXT_MAGIC;
     X.locSet = (S.lat != 0.0f || S.lon != 0.0f);   // keep a location set by an older version
+#ifdef DEFAULT_HUB
+    strcpy_P(X.host, PSTR(DEFAULT_HUB));
+#endif
     saveExt();
   }
   X.host[63] = X.secret[43] = 0;
@@ -335,13 +339,20 @@ bool connectWifi(uint32_t timeoutMs) {
   return WiFi.status() == WL_CONNECTED;
 }
 
+void setupScreen(bool joined) {
+  bool ok = joined
+    ? uiQrScreen(COL_TEAL, "http://192.168.4.1", "Scan to choose your Wi-Fi", "or open 192.168.4.1", false)
+    : uiQrScreen(COL_TEAL, "WIFI:T:nopass;S:" AP_SSID ";;", "Scan to join Wi-Fi", AP_SSID, false);
+  if (!ok) uiMessage("SETUP", "Join Wi-Fi", AP_SSID, "then open 192.168.4.1", COL_TEAL);
+}
+
 void startSetup() {
   mode = M_SETUP;
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_SSID);
   delay(100);
   dns.start(53, "*", WiFi.softAPIP());
-  uiMessage("SETUP", "Join Wi-Fi", AP_SSID, "then open 192.168.4.1", COL_TEAL);
+  setupScreen(false);
 }
 
 // ------------------------------------------------------------- web: shared ---
@@ -404,9 +415,9 @@ void infoCommon(String &j) {
 
 // ----------------------------------------------------------- web: setup AP ---
 static const char SETUP_PAGE[] PROGMEM =
-    "<h2>claude-desk setup</h2><form action=/save method=post><label>Wi-Fi network</label><select name=ssid>~nets~</select>"
-    "<label>Password</label><input name=pass type=password><button>Connect</button></form>"
-    "<p class=m>Or type a hidden network name:</p><form action=/save method=post>"
+    "<h2>Connect your desk to Wi-Fi</h2><form action=/save method=post><label>Your Wi-Fi network</label><select name=ssid>~nets~</select>"
+    "<label>Wi-Fi password</label><input name=pass type=password><button>Connect</button></form>"
+    "<p class=m>Only 2.4 GHz networks show up here; the desk can't see 5 GHz. Not listed? Type the name:</p><form action=/save method=post>"
     "<input name=ssid placeholder='exact network name' autocapitalize=none autocorrect=off autocomplete=off spellcheck=false><input name=pass type=password placeholder=password>"
     "<button>Connect</button></form><p><a href=/update>Firmware update</a></p>";
 
@@ -414,16 +425,27 @@ void handleSetupRoot() {
   WiFi.scanNetworks();
   sendPage(SETUP_PAGE, [](const char *) {
     String o;
-    for (int i = 0, n = WiFi.scanComplete(); i < n; i++) {
-      String s = htmlEsc(WiFi.SSID(i));
-      o += "<option value='" + s + "'>" + s + " (" + String(WiFi.RSSI(i)) + " dBm)</option>";
+    uint32_t done = 0;
+    int n = min((int)WiFi.scanComplete(), 32);
+    for (int k = 0; k < n; k++) {
+      int best = -1;
+      for (int i = 0; i < n; i++)
+        if (!(done & (1UL << i)) && scanBest(i) && (best < 0 || WiFi.RSSI(i) > WiFi.RSSI(best))) best = i;
+      if (best < 0) break;
+      done |= 1UL << best;
+      String s = htmlEsc(WiFi.SSID(best));
+      o += F("<option value='"); o += s; o += F("'>"); o += s;
+      if (WiFi.RSSI(best) < -75) o += F(" (weak signal)");
+      o += F("</option>");
     }
     return o;
   });
 }
 
 static const char SAVED_PAGE[] PROGMEM =
-    "<h2>Saved</h2><p>Connecting to ~ssid~. The screen will show the new IP in a few seconds.</p>";
+    "<h2>Saved</h2><p>Your desk is restarting and joining <b>~ssid~</b>. In about 20 seconds it shows a code to scan: "
+    "that finishes the setup.</p><p class=m>If it shows the Wi-Fi setup screen again, the password was wrong: "
+    "scan it again and retry.</p>";
 
 void handleSave() {
   String ssid = server.arg("ssid"), pass = server.arg("pass");
@@ -992,6 +1014,10 @@ void onMqtt(char *topic, byte *payload, unsigned int len) {
     const char *hn = d["host"] | "";
     if (!hubPaired) setHostName(nullptr);
     else if (hn[0]) setHostName(hn);
+    if (hubPaired && !X.locSet && d[F("tz")].is<int>()) {
+      int32_t off = d[F("tz")];
+      if (off != X.tzoff) { X.tzoff = off; saveExt(); configTime(X.tzoff, 0, "pool.ntp.org", "time.google.com"); dirty = true; }
+    }
     String code = (const char *)(d["pairCode"] | "");
     if (!hubPaired && code.length() && (code != pairCode || view != V_PAIR)) {
       pairCode = code;
@@ -1577,7 +1603,13 @@ void loopNormal() {
     if (dirty) { uiNotice(nSrc.c_str(), nTitle.c_str(), nText.c_str(), nIcon, nColor); dirty = false; nextFrame = 0; }
     if (nIcon >= 0 && (int32_t)(millis() - nextFrame) >= 0) nextFrame = millis() + uiReactionFrame(nIcon, frameNo++);
   } else if (view == V_PAIR) {
-    if (dirty) { uiPair(pairCode.c_str(), hubBase().c_str()); dirty = false; }
+    if (dirty) {
+      char c[12];
+      snprintf_P(c, sizeof c, PSTR("%.3s %.3s"), pairCode.c_str(), pairCode.length() > 3 ? pairCode.c_str() + 3 : "");
+      String url = String(F("https://")) + hubBase() + F("/#/pair/") + pairCode;
+      if (!uiQrScreen(COL_TEAL, url.c_str(), c, "scan to pair", true)) uiPair(pairCode.c_str(), hubBase().c_str());
+      dirty = false;
+    }
   } else {
     if (dirty) {
       uiCard(view == V_NEEDS, cardP.c_str(), cardD.c_str(), cardF.c_str());
@@ -1685,6 +1717,9 @@ void loop() {
     dns.processNextRequest();
     // credentials were fine after all (e.g. router was rebooting): go back to normal
     static uint32_t connectedSince = 0;
+    static bool apJoined = false;
+    bool j = WiFi.softAPgetStationNum() > 0;
+    if (j != apJoined && !restartAt) { apJoined = j; setupScreen(j); }
     if (netCount()) wifiRoam();
     if (WiFi.status() == WL_CONNECTED) {
       if (!connectedSince) connectedSince = millis();
