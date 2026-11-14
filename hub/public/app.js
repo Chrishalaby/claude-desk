@@ -655,7 +655,7 @@ const SAVE_KEYS = ["layout", "soft", "casper", "h12", "tf", "face", "pack", "bda
 
 function appNotify() {
   const el = h("div", { class: "card" });
-  let p = null;
+  let p = null, pc = null;
   const put = async (body) => { try { p = await api("PUT", "/api/notify-prefs", body); } catch (e) { fail(e); } paint(); };
   const pick = (key, options) => {
     const s = h("div", { class: "seg seg-" + options.length });
@@ -682,10 +682,25 @@ function appNotify() {
       h("label", { class: "f" }, "Messages stay for"), pick("secs", [[5, "5 s"], [15, "15 s"], [30, "30 s"], [60, "1 min"], [180, "3 min"]]),
       h("label", { class: "f" }, "Banner speed"), pick("speed", [[1, "Slow"], [2, "Normal"], [3, "Fast"]]),
       h("label", { class: "f" }, "Notifications from"),
-      p.sources.map((s) => toggle(s, !p.off.includes(s), (v) => put({ off: v ? p.off.filter((x) => x !== s) : [...p.off, s] }))));
+      h("p", { class: "hint", style: "margin:0 0 8px" }, "Tap to turn an app on or off."),
+      h("div", { class: "picks" }, names().map((n) => h("button", { type: "button", class: "chip pick" + (isOn(n) ? " on" : ""), "aria-pressed": isOn(n) ? "true" : "false",
+        onclick: guarded(() => flip(n)) }, (isOn(n) ? "✓ " : "") + n))),
+      pc && pc.seen ? null : h("p", { class: "hint", style: "margin:8px 0 0" }, "WhatsApp, Discord and other chat apps appear here once your computer is set up (Apps → Set up your computer)."));
+  }
+  const names = () => [...new Set([...p.sources, ...(pc ? pc.apps.map((x) => x.app) : [])])];
+  const pcApp = (n) => pc && pc.apps.find((x) => x.app === n);
+  const isOn = (n) => (p.sources.includes(n) ? !p.off.includes(n) : true) && (pcApp(n) ? !pcApp(n).muted : true) && (p.sources.includes(n) || !!pcApp(n));
+  async function flip(n) {
+    const on = !isOn(n);
+    try {
+      if (pcApp(n)) pc = await api("PATCH", "/api/apps/computer", { mute: { [n]: !on } });
+      if (p.sources.includes(n)) p = await api("PUT", "/api/notify-prefs", { off: on ? p.off.filter((x) => x !== n) : [...p.off.filter((x) => x !== n), n] });
+    } catch (e) { fail(e); }
+    paint();
   }
   paint();
   api("GET", "/api/notify-prefs").then((r) => { p = r; paint(); }).catch(() => {});
+  api("GET", "/api/apps").then((r) => { pc = r.computer; paint(); }).catch(() => {});
   return el;
 }
 const LOW_HEAP = 8 * 1024;
@@ -1009,8 +1024,8 @@ function appComputer(a) {
       note("After 10 minutes without keyboard or mouse, or when the computer sleeps."),
       c.seen || c.apps.length ? [
         h("label", { class: "f" }, "Unread counts"),
-        c.apps.length ? c.apps.map((x) => toggle(`${x.app}${x.count ? ` · ${x.count === -1 ? "new" : x.count}` : ""}`, !x.muted, set((v) => ({ mute: { [x.app]: !v } }))))
-          : h("p", { class: "hint", style: "margin:0" }, "Apps with a red badge on the Dock show up here (Slack, Mail, Messages, WhatsApp, Discord, Teams…). Your desk gets a card when the number goes up."),
+        h("p", { class: "hint", style: "margin:0" }, (c.apps.some((x) => x.count) ? "Now: " + c.apps.filter((x) => x.count).map((x) => `${x.app} ${x.count === -1 ? "new" : x.count}`).join(" · ") + ". " : "")
+          + "Your desk gets a card when an app's unread number goes up. Choose which apps under Devices → your desk → Notifications."),
         mac && c.dock !== "ok" ? h("p", { class: "hint" + (c.dock === "not_allowed" ? " warn" : ""), style: "margin:8px 0 0" }, c.dock === "not_allowed"
           ? "WhatsApp and a few other apps need one more permission: System Settings → Privacy & Security → Accessibility → turn on claude-desk-dock."
           : "WhatsApp and a few other apps only show after you run the setup command again and allow Accessibility.") : null,
