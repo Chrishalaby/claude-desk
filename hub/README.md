@@ -16,8 +16,10 @@ One Node/TypeScript process that does everything server-side for claude-desk (se
   (PROTOCOL.md §3.5, §3.6, §11).
 * **Drawings**: draw on your own desk, or with a friend on both desks at once, live (binary `draw` topic and
   Server-Sent Events to the browsers; PROTOCOL.md §3.8, §13).
-* **Photos & GIFs**: uploads are converted with sharp into a small delta/RLE format the desk plays from its storage,
-  streamed over MQTT (`media` topic; PROTOCOL.md §3.9, §14).
+* **Photos & GIFs**: uploads are converted with sharp into files the desk plays from its storage, streamed over MQTT
+  (`media` topic; PROTOCOL.md §3.9, §14): JPEG frames for desks on firmware 1.4.17+ (a photo is 10–35 KB and shows
+  in a second or two; video-like GIFs keep their frames), a delta/run-length format for older desks and flat
+  animations.
 * **Wi-Fi management** for each desk: saved networks, scan, add/remove relayed to the desk (passwords not stored).
 
 Storage is one SQLite file in `$DATA_DIR`, next to the session secret and the broker's TLS cert. Runs as a single instance.
