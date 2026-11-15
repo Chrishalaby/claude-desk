@@ -141,6 +141,8 @@ export function openDb(dataDir: string): DB {
   const mcols = new Set((db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name));
   if (!mcols.has("doodle_id")) db.exec("ALTER TABLE messages ADD COLUMN doodle_id INTEGER");
   if (!mcols.has("media_id")) db.exec("ALTER TABLE messages ADD COLUMN media_id INTEGER");
+  const pcols = new Set((db.prepare("PRAGMA table_info(media)").all() as { name: string }[]).map((c) => c.name));
+  if (!pcols.has("data2")) db.exec("ALTER TABLE media ADD COLUMN data2 BLOB");
   db.exec(`
     UPDATE friends SET rel = 'friend' WHERE rel IS NOT NULL AND rel != 'friend';
     UPDATE friends SET pending_rel = NULL, pending_from = NULL WHERE rel IS NOT NULL AND pending_rel IS NOT NULL;

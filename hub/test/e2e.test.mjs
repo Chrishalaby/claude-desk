@@ -14,6 +14,7 @@ import { configFromEnv } from "../dist/config.js";
 import { deskHostBase } from "../dist/service.js";
 import { eventsFromIcs, slackText } from "../dist/apps.js";
 import { chunkStrokes, validStrokes } from "../dist/doodles.js";
+import { resampleFrames } from "../dist/media.js";
 import { isPrivateAddress } from "../dist/net.js";
 import { tzOffsetSecs } from "../dist/util.js";
 import http from "node:http";
@@ -1467,8 +1468,8 @@ test("photos and GIFs: converted on the hub, streamed to your desk or a friend's
   }
   await gina.call("POST", "/api/friends", { username: "hank" });
   await hank.call("POST", "/api/friends", { username: "gina" });
-  const desk = async (who, chip) => {
-    const hl = await anon.call("POST", "/api/device/hello", { chip, fw: "1.4.9", secret: "" });
+  const desk = async (who, chip, fw = "1.4.9") => {
+    const hl = await anon.call("POST", "/api/device/hello", { chip, fw, secret: "" });
     assert.equal((await who.call("POST", "/api/devices/pair", { code: hl.body.pairCode, name: "Desk" })).status, 200);
     const c = await device(chip, hl.body.secret);
     await c.subscribeAsync(`desk/${chip}/#`, { qos: 1 });
@@ -1570,7 +1571,61 @@ test("photos and GIFs: converted on the hub, streamed to your desk or a friend's
   assert.equal(bc.json.st, 1, "style=banner overrides the full-screen default for one card");
   assert.equal((await gina.call("DELETE", `/api/media/${gifId}`)).status, 200);
   assert.equal((await gina.call("POST", `/api/media/${gifId}/show`, {})).status, 404);
-  for (const c of [dg, dh]) await c.endAsync();
+
+  assert.deepEqual(resampleFrames([100, 120, 300], 100), [{ idx: 0, delay: 100 }, { idx: 1, delay: 120 }, { idx: 2, delay: 300 }], "slow GIFs keep every frame");
+  assert.deepEqual(resampleFrames(Array(10).fill(40), 100), [{ idx: 0, delay: 100 }, { idx: 2, delay: 100 }, { idx: 5, delay: 100 }, { idx: 7, delay: 100 }]);
+  assert.deepEqual(resampleFrames([50, 50, 1000], 100), [{ idx: 0, delay: 100 }, { idx: 2, delay: 1000 }], "a long pause stays one frame");
+  const jpegFrames = (dkm) => {
+    assert.equal(dkm.subarray(0, 4).toString(), "DKM2");
+    const out = [];
+    for (let off = 8, i = 0; i < dkm.readUInt16LE(4); i++) {
+      const len = dkm.readUInt32LE(off + 6);
+      assert.deepEqual([dkm[off + 2], dkm[off + 3], dkm[off + 4], dkm[off + 5]], [0, 0, 240, 240]);
+      out.push({ delay: dkm.readUInt16LE(off), jpg: dkm.subarray(off + 10, off + 10 + len) });
+      off += 10 + len;
+      if (i === dkm.readUInt16LE(4) - 1) assert.equal(off, dkm.length, "frames fill the file exactly");
+    }
+    return out;
+  };
+  const smooth = (shift) => {
+    const px = Buffer.alloc(200 * 200 * 3);
+    for (let i = 0; i < 200 * 200; i++) {
+      const x = (i % 200 + shift) % 200, y = Math.floor(i / 200);
+      px.set([x, y, (x + y) >> 1], i * 3);
+    }
+    return px;
+  };
+  const di = await desk(ivy, "esp-c1c0de", "1.4.17");
+  const picture = await sharp(smooth(0), { raw: { width: 200, height: 200, channels: 3 } }).png().toBuffer();
+  r = await upload(ivy, picture, "image/png");
+  assert.deepEqual([r.status, r.body.kind], [200, "image"]);
+  await ivy.call("POST", `/api/media/${r.body.id}/show`, {});
+  const fine = await received(di, "esp-c1c0de");
+  assert.equal(zlib.crc32(fine.data) >>> 0, fine.crc);
+  const one = jpegFrames(fine.data);
+  assert.equal(one.length, 1);
+  let jm = await sharp(one[0].jpg).metadata();
+  assert.deepEqual([jm.format, jm.width, jm.height, jm.chromaSubsampling, jm.isProgressive], ["jpeg", 240, 240, "4:4:4", false], "baseline JPEG the desk's decoder can read");
+  assert.ok(fine.size < 30_000, `a photo is a small JPEG for desks that can decode it (${fine.size})`);
+  r = await upload(gina, picture, "image/png");
+  await gina.call("POST", `/api/media/${r.body.id}/show`, {});
+  const plain = await received(dg, "esp-a1a001", 4);
+  assert.equal(plain.data.subarray(0, 4).toString(), "DKM1", "older firmware keeps the run-length format");
+  assert.ok(plain.size > fine.size * 2, `the JPEG is much smaller (${fine.size} vs ${plain.size})`);
+  const reel = Buffer.concat([...Array(30).keys()].map((f) => smooth(f * 6)));
+  const busy = await sharp(reel, { raw: { width: 200, height: 200 * 30, channels: 3, pageHeight: 200 } }).gif({ delay: Array(30).fill(40), loop: 0 }).toBuffer();
+  r = await upload(ivy, busy, "image/gif");
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.ok(r.body.frames < 30, "the run-length version has to drop frames");
+  await ivy.call("POST", `/api/media/${r.body.id}/show`, {});
+  const clip = await received(di, "esp-c1c0de", 2);
+  const reelFrames = jpegFrames(clip.data);
+  assert.equal(reelFrames.length, 12, "30 frames at 25 fps become 12 at the 10 fps the desk can decode");
+  assert.equal(reelFrames.reduce((a, f) => a + f.delay, 0), 1200, "same running time");
+  assert.ok(clip.size <= 300 * 1024);
+  jm = await sharp(reelFrames[5].jpg).metadata();
+  assert.deepEqual([jm.width, jm.height, jm.chromaSubsampling, jm.isProgressive], [240, 240, "4:2:0", false]);
+  for (const c of [dg, dh, di]) await c.endAsync();
 });
 
 test("notification preferences: banner style, quiet hours, do not disturb, per-app cards, clock options", async () => {

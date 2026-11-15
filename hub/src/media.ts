@@ -1,16 +1,24 @@
 import zlib from "node:zlib";
 import sharp from "sharp";
 import type { DB } from "./db.js";
-import { HttpError, type Service } from "./service.js";
+import { HttpError, versionNewer, type Service } from "./service.js";
 import { RateLimiter } from "./util.js";
 
 export const MEDIA_SIZE = 240;
 export const MEDIA_MAX_BYTES = 450 * 1024;
 export const MEDIA_MAX_INPUT = 12 * 1024 * 1024;
 export const MEDIA_MAX_ITEMS = 30;
+export const MEDIA_JPEG_FW = "1.4.17";
 const MAX_FRAMES = 240;
 const CHUNK = 700;
 const HEADER = Buffer.from("DKM1");
+const JPEG_HEADER = Buffer.from("DKM2");
+const JPEG_FRAME_MS = 100;
+const JPEG_PHOTO_MIN = 12 * 1024;
+const JPEG_GIF_MIN = 100 * 1024;
+const JPEG_GIF_GOOD = 220 * 1024;
+const JPEG_GIF_MAX = 300 * 1024;
+const JPEG_MIN_GAIN = 0.8;
 
 export interface EncodedFrame { delay: number; x: number; y: number; w: number; h: number; data: Buffer }
 
@@ -105,6 +113,75 @@ export function encodeFrames(pixels: Uint16Array[], delays: number[]): EncodedFr
   return frames;
 }
 
+export function packJpegFrames(frames: { delay: number; data: Buffer }[]): Buffer {
+  const head = Buffer.alloc(8);
+  JPEG_HEADER.copy(head, 0);
+  head.writeUInt16LE(frames.length, 4);
+  const parts: Buffer[] = [head];
+  for (const f of frames) {
+    const fh = Buffer.alloc(10);
+    fh.writeUInt16LE(Math.min(60000, f.delay), 0);
+    fh[4] = MEDIA_SIZE; fh[5] = MEDIA_SIZE;
+    fh.writeUInt32LE(f.data.length, 6);
+    parts.push(fh, f.data);
+  }
+  return Buffer.concat(parts);
+}
+
+export function resampleFrames(delays: number[], period: number): { idx: number; delay: number }[] {
+  if (delays.every((d) => d >= period)) return delays.map((delay, idx) => ({ idx, delay }));
+  const total = delays.reduce((a, b) => a + b, 0);
+  const n = Math.max(1, Math.round(total / period));
+  const out: { idx: number; delay: number }[] = [];
+  let src = 0, end = delays[0];
+  for (let k = 0; k < n; k++) {
+    const t = (k * total) / n;
+    while (src < delays.length - 1 && t >= end) end += delays[++src];
+    const span = Math.round(((k + 1) * total) / n) - Math.round(t);
+    const last = out[out.length - 1];
+    if (last && last.idx === src) last.delay += span; else out.push({ idx: src, delay: span });
+  }
+  return out;
+}
+
+const jpegFrame = (rgb: Buffer, quality: number, chroma: "4:4:4" | "4:2:0") =>
+  sharp(rgb, { raw: { width: MEDIA_SIZE, height: MEDIA_SIZE, channels: 3 } })
+    .jpeg({ quality, chromaSubsampling: chroma, progressive: false, optimiseCoding: true }).toBuffer();
+
+async function jpegFrames(rgb: Buffer[], quality: number): Promise<Buffer[]> {
+  const out: Buffer[] = new Array(rgb.length);
+  let next = 0;
+  await Promise.all([...Array(Math.min(4, rgb.length))].map(async () => {
+    while (next < rgb.length) {
+      const i = next++;
+      out[i] = await jpegFrame(rgb[i], quality, "4:2:0");
+    }
+  }));
+  return out;
+}
+
+async function jpegGif(rgb: Buffer[], delays: number[]): Promise<Buffer | null> {
+  let period = JPEG_FRAME_MS;
+  for (let round = 0; round < 8; round++) {
+    const plan = resampleFrames(delays, period);
+    const src = plan.map((p) => rgb[p.idx]);
+    const pack = (jpgs: Buffer[]) => packJpegFrames(jpgs.map((data, i) => ({ data, delay: plan[i].delay })));
+    let packed = pack(await jpegFrames(src, 60));
+    if (!round && packed.length <= JPEG_GIF_GOOD * 0.6) {
+      const finer = pack(await jpegFrames(src, packed.length <= JPEG_GIF_GOOD * 0.3 ? 88 : 75));
+      return finer.length <= JPEG_GIF_GOOD ? finer : packed;
+    }
+    if (packed.length <= JPEG_GIF_GOOD) return packed;
+    for (const q of [48, 38]) {
+      packed = pack(await jpegFrames(src, q));
+      if (packed.length <= JPEG_GIF_MAX) return packed;
+    }
+    if (plan.length <= 1) return null;
+    period = Math.round(period * 1.5);
+  }
+  return null;
+}
+
 export async function convertMedia(input: Buffer, fit: "cover" | "contain" = "cover") {
   const opts = { animated: true, limitInputPixels: 60_000_000 };
   let meta: sharp.Metadata;
@@ -136,6 +213,8 @@ export async function convertMedia(input: Buffer, fit: "cover" | "contain" = "co
     for (let q = p; q < next; q++) d += delayOf(q);
     return Math.min(d, 60000);
   });
+  const rgbOf = (p: number) => raw.data.subarray(p * area * 3, (p + 1) * area * 3);
+  const allDelays = delays;
   let data = packFrames(encodeFrames(pixels, delays));
   while (data.length > MEDIA_MAX_BYTES && pixels.length > 1) {
     pixels = pixels.filter((_, i) => i % 2 === 0);
@@ -143,13 +222,21 @@ export async function convertMedia(input: Buffer, fit: "cover" | "contain" = "co
     data = packFrames(encodeFrames(pixels, delays));
   }
   if (data.length > MEDIA_MAX_BYTES) throw new HttpError(413, "media_too_big");
+  const dropped = pixels.length < pick.length;
+  let jpeg: Buffer | null = null;
+  if (pick.length === 1) {
+    if (data.length > JPEG_PHOTO_MIN) jpeg = packJpegFrames([{ delay: allDelays[0], data: await jpegFrame(rgbOf(pick[0]), 92, "4:4:4") }]);
+  } else if (dropped || data.length > JPEG_GIF_MIN) {
+    jpeg = await jpegGif(pick.map(rgbOf), allDelays);
+  }
+  if (jpeg && !dropped && jpeg.length > data.length * JPEG_MIN_GAIN) jpeg = null;
   const preview = await sharp(input, opts).rotate().resize(160, 160, { fit, background: "#000" }).flatten({ background: "#000" })
     .webp({ quality: 70, effort: 2 }).toBuffer();
   const frames = data.readUInt16LE(4);
-  return { data, preview, frames, kind: frames > 1 ? "gif" : "image" as "gif" | "image" };
+  return { data, jpeg, preview, frames, kind: frames > 1 ? "gif" : "image" as "gif" | "image" };
 }
 
-interface MediaRow { id: number; user_id: number; kind: string; data: Buffer; preview: Buffer; frames: number; bytes: number; created: number }
+interface MediaRow { id: number; user_id: number; kind: string; data: Buffer; data2: Buffer | null; preview: Buffer; frames: number; bytes: number; created: number }
 
 export class Media {
   private seq = 0;
@@ -179,8 +266,8 @@ export class Media {
     if (count >= MEDIA_MAX_ITEMS) throw new HttpError(400, "media_full");
     if (!this.uploadLimiter.take(String(me))) throw new HttpError(429, "rate_limited");
     const m = await convertMedia(input, fit === "contain" ? "contain" : "cover");
-    const info = this.db.prepare("INSERT INTO media (user_id, kind, data, preview, frames, bytes, created) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(me, m.kind, m.data, m.preview, m.frames, m.data.length, this.now());
+    const info = this.db.prepare("INSERT INTO media (user_id, kind, data, data2, preview, frames, bytes, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(me, m.kind, m.data, m.jpeg, m.preview, m.frames, m.data.length, this.now());
     return this.view(this.row(Number(info.lastInsertRowid))!);
   }
 
@@ -188,7 +275,7 @@ export class Media {
     if (!input.length) throw new HttpError(400, "media_unreadable");
     if (!this.onceLimiter.take(String(me))) throw new HttpError(429, "rate_limited");
     const m = await convertMedia(input, fit === "contain" ? "contain" : "cover");
-    const row: MediaRow = { id: 0, user_id: me, kind: m.kind, data: m.data, preview: m.preview, frames: m.frames, bytes: m.data.length, created: this.now() };
+    const row: MediaRow = { id: 0, user_id: me, kind: m.kind, data: m.data, data2: m.jpeg, preview: m.preview, frames: m.frames, bytes: m.data.length, created: this.now() };
     return { ok: true, devices: this.deliver(me, row, "you", secs), kind: m.kind, frames: m.frames, bytes: m.data.length };
   }
 
@@ -276,7 +363,8 @@ export class Media {
     this.gen.set(chip, gen);
     const seq = this.seq = (this.seq % 65535) + 1;
     this.status.set(chip, { seq, media: r.id, state: "sending", error: null, at: this.now() });
-    const data = Buffer.from(r.data);
+    const fw = this.svc.device(chip)?.fw;
+    const data = Buffer.from(r.data2 && fw && !versionNewer(MEDIA_JPEG_FW, fw) ? r.data2 : r.data);
     const topic = `desk/${chip}/media`;
     const name = Buffer.from(from, "utf8").subarray(0, 40);
     const begin = Buffer.alloc(14);

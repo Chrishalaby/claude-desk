@@ -235,6 +235,11 @@ with tokens: `00nnnnnn` skip n+1 pixels (unchanged), `01nnnnnn` + colour: n+1 pi
 colours; `11kkhhhh llllllll` is the same with kind k (0 skip, 1 run, 2 literal) and count `hhhhllllllll`+1 (≤ 4096).
 Colours are RGB565. Frame 0 always covers the whole 240×240 screen.
 
+Firmware ≥ 1.4.17 also plays `DKM2`: the same header and per-frame header (x = y = 0, w = h = 240), but each frame's
+data is a complete baseline JPEG, 240×240, decoded by TJpgDec with a 3.5 KB work area that exists only while it
+plays. A frame takes about 95 ms to decode and draw (4:2:0; 130 ms for 4:4:4), so the hub never asks for more than
+10 frames a second. Frame delays count from the start of a frame (before 1.4.17 from its end).
+
 ## 4. Claude Code hooks
 
 ### 4.1 Client → hub: `POST https://<hub>/api/hook`
@@ -529,6 +534,12 @@ Draw in the web app; every stroke shows up on the desk as you draw (3.8).
   in the section 3.9 format, keeping only the changed rectangle of each GIF frame. Up to 240 frames; delays under
   20 ms count as 100 ms. If it's over 450 KB the hub drops every other frame (adding their delays) until it fits, else
   413 `media_too_big`. 400 `media_unreadable`; at most 30 per user (`media_full`), 30 uploads an hour.
+* The hub also keeps a `DKM2` (JPEG) version when that is the better file, and sends it to desks on firmware
+  ≥ 1.4.17; older desks get the run-length one. A photo whose run-length file is over 12 KB becomes one JPEG
+  (quality 92, 4:4:4, typically 10–35 KB instead of 50–100 KB). A GIF that lost frames above, or is over 100 KB,
+  becomes 4:2:0 JPEG frames: frames are resampled to at most 10 a second (same running time), encoded at quality
+  60 (88 or 75 when that still fits in 220 KB), then 48 or 38 to stay under 300 KB, then with fewer frames. The JPEG
+  version is dropped when it isn't at least 20 % smaller than a run-length file that kept every frame.
 * `GET /api/media` → `{items, deliveries: [{chip, media, state: "sending"|"ok"|"error"|null, error, at}]}` (the last
   transfer to each of your desks, from section 3.9's answers). `GET /api/media/<id>/preview` → a 160 px WebP (yours, or
   one in a chat you're part of). `DELETE /api/media/<id>`.
