@@ -27,7 +27,7 @@ Invoke-WebRequest -UseBasicParsing -Uri "$Hub/client/hook.ps1" -OutFile $HookPat
 Say "Adding hooks to $Settings"
 $HookCmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + ($HookPath -replace '\\', '/') + '"'
 if (Test-Path $Settings) {
-  $raw = Get-Content $Settings -Raw
+  $raw = [IO.File]::ReadAllText($Settings)
   Copy-Item $Settings ($Settings + '.bak-claude-desk-' + (Get-Date -Format 'yyyyMMddHHmmss'))
   $cfg = if ($raw -and $raw.Trim()) { $raw | ConvertFrom-Json } else { New-Object PSObject }
 } else {

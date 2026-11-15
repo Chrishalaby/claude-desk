@@ -82,7 +82,7 @@ public static class DeskNotif {
       IntPtr st;
       byte[] sql = Encoding.UTF8.GetBytes("SELECT h.PrimaryId, n.Type, n.Payload FROM Notification n JOIN NotificationHandler h ON h.RecordId = n.HandlerId WHERE n.Type IN ('toast','badge')\0");
       if (Prepare(db, sql, -1, out st, IntPtr.Zero) != 0) return null;
-      while (Step(st) == 100 && rows.Count < 2000) rows.Add(new string[] { Col(st, 0, 300), Col(st, 1, 20), Col(st, 2, 400) });
+      while (Step(st) == 100 && rows.Count < 2000) rows.Add(new string[] { Col(st, 0, 300), Col(st, 1, 20), Col(st, 2, 1200) });
       Fin(st);
     } finally { Close(db); }
     return rows;
@@ -94,8 +94,12 @@ public static class DeskNotif {
 
 $NotifApps = @(@('whatsapp', 'WhatsApp'), @('slack', 'Slack'), @('discord', 'Discord'), @('teams', 'Teams'), @('telegram', 'Telegram'),
   @('messenger', 'Messenger'), @('outlook|windowscommunicationsapps', 'Outlook'), @('signal', 'Signal'))
+$NotifBrowsers = 'chrome|msedge|firefox|brave|opera|vivaldi|_crx_|308046B0AF4A39CB'
+$NotifSites = @(@('//web\.whatsapp\.com[/|"#]', 'WhatsApp'), @('//app\.slack\.com[/|"#]', 'Slack'), @('//discord\.com[/|"#]', 'Discord'),
+  @('//teams\.(microsoft|live)\.com[/|"#]', 'Teams'), @('//web\.telegram\.org[/|"#]', 'Telegram'), @('//(www\.)?messenger\.com[/|"#]', 'Messenger'),
+  @('//outlook\.(live|office|office365)\.com[/|"#]', 'Outlook'))
 
-function Badges {
+function NotifRows {
   if (-not $NotifOk) { return $null }
   $src = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Notifications\wpndatabase.db'
   if (-not (Test-Path $src)) { return $null }
@@ -108,12 +112,22 @@ function Badges {
       $rows = [DeskNotif]::Read($tmp)
     } catch {}
   }
+  , $rows
+}
+
+function NotifApp($r) {
+  foreach ($a in $NotifApps) { if ($r[0] -match $a[0]) { return $a[1] } }
+  if ($r[0] -match $NotifBrowsers) { foreach ($a in $NotifSites) { if ($r[2] -match $a[0]) { return $a[1] } } }
+  $null
+}
+
+function Badges {
+  $rows = NotifRows
   if ($null -eq $rows) { return $null }
   $toasts = @{}
   $badge = @{}
   foreach ($r in $rows) {
-    $name = $null
-    foreach ($a in $NotifApps) { if ($r[0] -match $a[0]) { $name = $a[1]; break } }
+    $name = NotifApp $r
     if (-not $name) { continue }
     if ($r[1] -eq 'badge') { if ($r[2] -match 'value="(\d+)"') { $badge[$name] = [int]$Matches[1] } }
     else { $toasts[$name] = 1 + [int]$toasts[$name] }
@@ -144,7 +158,7 @@ function AppName([string]$id) {
   if ($id -match 'AppleMusic|AppleInc') { return 'Apple Music' }
   if ($id -match 'chrome') { return 'Chrome' }
   if ($id -match 'msedge') { return 'Edge' }
-  if ($id -match 'firefox') { return 'Firefox' }
+  if ($id -match 'firefox|308046B0AF4A39CB') { return 'Firefox' }
   if ($id -match 'brave') { return 'Brave' }
   if ($id -match 'ZuneMusic') { return 'Media Player' }
   (($id -split '[\\!]')[-1] -replace '\.exe$', '')
@@ -199,6 +213,10 @@ if ($Check) {
   Write-Host ("idle seconds:   " + [DeskIdle]::Seconds())
   $b = Badges
   Write-Host ("unread reader:  " + $(if ($null -eq $b) { "FAILED (loaded: $NotifOk)" } else { "ok: " + (($b.GetEnumerator() | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ", ") }))
+  $seen = @{}
+  $rows = NotifRows
+  foreach ($r in $rows) { if ($r) { $seen[$r[0]] = 1 + [int]$seen[$r[0]] } }
+  Write-Host ("apps notifying: " + $(if ($seen.Count) { (($seen.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 12 | ForEach-Object { "$($_.Name) ($($_.Value))" }) -join ", ") } else { "none" }))
   Write-Host ("outlook:        " + $(if ($null -ne (OutlookEvents)) { "ok" } else { "not open" }))
   if ($cfg) {
     try {

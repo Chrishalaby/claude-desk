@@ -485,7 +485,12 @@ One agent per computer (installed with the hook, section 7) reports to `POST /ap
   Messenger, Outlook), read every 30 s. On Windows 10/11 `agent.ps1` reads the notification store
   (`%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db`) through the system's `winsqlite3.dll`: an app's
   badge value if it has one, else its number of toasts still in the notification centre, for WhatsApp, Slack, Discord,
-  Teams, Telegram, Messenger, Outlook and Signal (written without a Windows machine: untested).
+  Teams, Telegram, Messenger, Outlook and Signal. A toast raised by a browser (Chrome, Edge, Firefox, Brave, Opera,
+  Vivaldi or an installed web app) counts for the web app whose address is in it (`//web.whatsapp.com/`,
+  `//app.slack.com/`, …). Checked on a Mac under PowerShell 7 with the readers stubbed: the scripts parse, use nothing
+  newer than Windows PowerShell 5.1, the embedded C# compiles as C# 5, and the hook, the installer's settings merge and
+  the agent loop send the right requests. The media, notification-store and Outlook readers themselves have never run
+  on Windows; `agent.ps1 -Check` prints what each one sees, including the ids of the apps that have notifications.
 * **Self-update**: every 6 h (first check 10 min after start) the agent downloads `/client/hook.*` and
   `/client/agent.*` from its hub (https only). A file that differs, is at least 500 bytes, contains its endpoint path
   and parses (`compile()` / PowerShell's parser) replaces the installed one; a new agent then exits and is restarted
