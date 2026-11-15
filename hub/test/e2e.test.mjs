@@ -162,7 +162,7 @@ function makeConfig() {
     ...configFromEnv({}),
     dataDir, httpHost: "127.0.0.1", httpPort: 0, mqttPort: 0,
     publicUrl: null, mqttPublicHost: null, mqttPublicPort: null,
-    inviteCode: "letmein", pairInvite: true, sessionSecret: null, tlsCert: null, tlsKey: null,
+    inviteCode: "letmein", pairInvite: true, linkInvite: true, sessionSecret: null, tlsCert: null, tlsKey: null,
     clientDir: path.join(here, "..", "..", "client"),
     firmwareDir: fwDir, packsDir,
     githubApi: fx + "/gh", quotesApi: fx + "/q", allowPrivateFetch: true, weatherApi: fx + "/w",
@@ -1783,7 +1783,38 @@ test("a personal link connects two people at once; a new link retires the old on
   assert.deepEqual([r.status, r.body.error], [400, "self"]);
   r = await pia.call("POST", "/api/friends", { username: "nobody-here", link: fresh.token });
   assert.deepEqual([r.status, r.body.error], [404, "no_such_user"]);
-  const cards = d.got.filter((m) => m.topic === "desk/esp-e1e001/card" && /opened your link/.test(m.json?.text ?? "")).length;
-  assert.equal(cards, 2, "one card per person who joined by link");
+  const cards = () => d.got.filter((m) => m.topic === "desk/esp-e1e001/card" && /opened your link/.test(m.json?.text ?? "")).length;
+  assert.equal(cards(), 2, "one card per person who joined by link");
+
+  assert.equal((await anon.call("GET", "/api/config")).body.linkInvite, true);
+  const signUp = (name, extra) => user().call("POST", "/api/register", { username: name, displayName: name, password: "password-" + name, tz: "UTC", ...extra });
+  r = await signUp("quinn", { friend: "mia", link: link.token });
+  assert.deepEqual([r.status, r.body.error], [403, "link_invite"], "a retired link is not an invite");
+  r = await signUp("quinn", { friend: "noa", link: fresh.token });
+  assert.deepEqual([r.status, r.body.error], [403, "link_invite"], "the token has to be that person's");
+  r = await signUp("quinn", {});
+  assert.deepEqual([r.status, r.body.error], [403, "invite"]);
+  const quinn = user();
+  r = await quinn.call("POST", "/api/register", { username: "quinn", displayName: "Quinn", password: "password-quinn", tz: "UTC", friend: "mia", link: fresh.token });
+  assert.equal(r.status, 200, "the current link lets its holder sign up without the invite code");
+  assert.equal((await quinn.call("GET", "/api/friends")).body.find((f) => f.username === "mia").rel, "friend", "and connects the two in the same step");
+  await d.waitFor(() => cards() === 3, "the inviter hears about the new account too");
+  r = await quinn.call("POST", "/api/friends", { username: "mia", link: fresh.token });
+  assert.equal(r.body.rel, "friend");
+  await d.quiet(80);
+  assert.equal(cards(), 3, "the page's own follow-up call does not announce it twice");
+  const uses = () => hub.service.db.prepare("SELECT friend_link_uses AS n FROM users WHERE username = 'mia'").get().n;
+  assert.equal(uses(), 1);
+  r = await signUp("rita", { friend: "mia", link: fresh.token, invite: "letmein" });
+  assert.equal(r.status, 200);
+  assert.equal(uses(), 1, "someone who also had the invite code doesn't use up the link");
+  clock += 3700;
+  hub.service.db.prepare("UPDATE users SET friend_link_uses = 25 WHERE username = 'mia'").run();
+  r = await signUp("sven", { friend: "mia", link: fresh.token });
+  assert.deepEqual([r.status, r.body.error], [403, "link_invite"], "a link stops inviting after 25 sign-ups");
+  const third = (await mia.call("POST", "/api/friend-link/reset")).body;
+  assert.equal(uses(), 0, "a new link starts again");
+  r = await signUp("sven", { friend: "mia", link: third.token });
+  assert.equal(r.status, 200);
   await d.endAsync();
 });

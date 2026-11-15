@@ -11,6 +11,7 @@ export interface Config {
   mqttPublicPort: number | null;
   inviteCode: string | null;
   pairInvite: boolean;
+  linkInvite: boolean;
   sessionSecret: string | null;
   tlsCert: string | null;
   tlsKey: string | null;
@@ -62,6 +63,7 @@ export function configFromEnv(env = process.env): Config {
     mqttPublicPort: num(env.MQTT_PUBLIC_PORT) ?? num(env.RAILWAY_TCP_PROXY_PORT),
     inviteCode: nonEmpty(env.HUB_INVITE_CODE),
     pairInvite: env.HUB_PAIR_INVITE !== "0",
+    linkInvite: env.HUB_LINK_INVITE !== "0",
     sessionSecret: nonEmpty(env.SESSION_SECRET),
     tlsCert: pem(env.MQTT_TLS_CERT),
     tlsKey: pem(env.MQTT_TLS_KEY),

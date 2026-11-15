@@ -22,7 +22,11 @@ All JSON is UTF-8. Times are unix seconds. Strings shown on the device are trunc
 * Registration requires `HUB_INVITE_CODE` (env) if set, so strangers can't sign up. Having a desk also counts:
   `POST /api/register {…, pair: "<6-digit code>"}` is accepted without an invite when that code belongs to an unpaired
   desk that is connected right now (403 `pair_invite` otherwise). `HUB_PAIR_INVITE=0` turns that off.
-  `GET /api/config` → `{inviteRequired, pairInvite, hub}`.
+  A third way in is someone's personal link (section 6): `friend` (their username) + `link` (their current token)
+  in the register body count as the invite and connect the two accounts in the same step (403 `link_invite` for a
+  wrong or retired token, or once 25 accounts were created with that token; a new link starts the count again; an
+  account that also gave the invite code or a desk code is not counted). `HUB_LINK_INVITE=0` turns that off.
+  `GET /api/config` → `{inviteRequired, pairInvite, linkInvite, hub}`.
 * Web sessions: httpOnly, SameSite=Lax, signed cookie (`SESSION_SECRET` env, generated & persisted if absent).
 * **Hook token**: per user, random 32 bytes hex, shown in the web app ("Claude Code" page), regenerable.
   Sent as `Authorization: Bearer <token>`.
@@ -303,7 +307,7 @@ Hub publishes the view to `desk/<chip>/claude` for **every device owned by that 
   owner a card ("<name> opened your link. You're connected."). A wrong or retired token is an ordinary request.
   The web app handles `#/add/<username>[/<token>]`: signed in, it posts and opens the chat; signed out, it remembers
   the link for 7 days (localStorage), shows the sign-in page with "@<username> invited you", and posts right after
-  sign-in or sign-up. Creating the account still needs an invite code or a desk's pairing code.
+  sign-in or sign-up. With `linkInvite` on, creating the account from a link asks for no code (section 1).
 
 ## 7. Client installers (served by the hub, hub URL baked in)
 

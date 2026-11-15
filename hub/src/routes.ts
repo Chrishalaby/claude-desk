@@ -82,7 +82,7 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
   });
 
   // ---------------------------------------------------------------- accounts
-  app.get("/api/config", async (req) => ({ inviteRequired: !!cfg.inviteCode, pairInvite: cfg.pairInvite, hub: hubUrl(req) }));
+  app.get("/api/config", async (req) => ({ inviteRequired: !!cfg.inviteCode, pairInvite: cfg.pairInvite, linkInvite: cfg.linkInvite, hub: hubUrl(req) }));
 
   app.post("/api/register", async (req, reply) => {
     if (!registerIp.take(req.ip)) throw new HttpError(429, "rate_limited");
@@ -91,7 +91,10 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     const password = str(b.password);
     const displayName = trunc(oneLine(b.displayName), 20) || username;
     const byDesk = cfg.pairInvite && svc.pairCodeOnline(str(b.pair).replace(/\s+/g, ""));
-    if (cfg.inviteCode && !byDesk && !safeEqual(str(b.invite).trim(), cfg.inviteCode)) throw new HttpError(403, b.pair ? "pair_invite" : "invite");
+    const byCode = !cfg.inviteCode || safeEqual(str(b.invite).trim(), cfg.inviteCode);
+    const linkToken = str(b.link).trim().slice(0, 64);
+    const inviter = cfg.linkInvite ? svc.linkInviter(str(b.friend).trim().slice(0, 40), linkToken) : null;
+    if (!byCode && !byDesk && !inviter) throw new HttpError(403, b.pair ? "pair_invite" : b.link ? "link_invite" : "invite");
     if (!USERNAME_RE.test(username)) throw new HttpError(400, "username");
     if (password.length < 8 || password.length > 200) throw new HttpError(400, "password");
     if (svc.userByName(username)) throw new HttpError(409, "taken");
@@ -99,8 +102,13 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     const { token, hash } = svc.newHookToken();
     const info = db.prepare(`INSERT INTO users (username, display_name, pass_hash, tz, tz_auto, hook_token, hook_token_hash, created)
       VALUES (?, ?, ?, ?, 1, ?, ?, ?)`).run(username, displayName, await hashPassword(password), tz, token, hash, now());
-    startSession(reply, req, Number(info.lastInsertRowid));
-    return me(svc.userById(Number(info.lastInsertRowid))!, req);
+    const id = Number(info.lastInsertRowid);
+    if (inviter) {
+      if (!byCode && !byDesk) svc.countLinkInvite(inviter.id);
+      svc.requestFriend(id, inviter.username, linkToken);
+    }
+    startSession(reply, req, id);
+    return me(svc.userById(id)!, req);
   });
 
   app.post("/api/login", async (req, reply) => {

@@ -89,7 +89,9 @@ Read `README.md`, `docs/PROTOCOL.md` (the contract between firmware, hub and cli
   macOS blocks LAN access for launchd services (Local Network privacy), which is why hooks go to the hub.
 - Hub is live at `https://claude-desk.up.railway.app` (Railway project `claude-desk`; MQTT via the TCP proxy, the hub
   hands the endpoint to devices). Phone-first install guide at `/#/install`. The invite code is weak; change
-  `HUB_INVITE_CODE` before sharing the hub widely.
+  `HUB_INVITE_CODE` before sharing the hub widely. Two other ways in, both on by default: the pairing code of an
+  online, unpaired desk (`HUB_PAIR_INVITE`), and a member's personal friend link (`HUB_LINK_INVITE`, 25 sign-ups
+  per link, the owner asked for it). The link also connects the two accounts at once (PROTOCOL.md §6).
 - Still to test on the device: the NO INTERNET screen and the 20 s switch to another saved Wi-Fi (needs a router
   without internet), live drawings from the site, a message + reaction between two accounts, remote settings, pack
   download. Apps against the real services: a real calendar feed, GitHub token, Spotify/Last.fm/Slack (need their env

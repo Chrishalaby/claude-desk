@@ -8,6 +8,7 @@ const MSG_MAX = 100;
 const ERRORS = {
   credentials: "Wrong username or password.", invite: "That invite code isn't right.", taken: "That username is taken.",
   pair_invite: "That desk code isn't valid any more. Type the code now on your desk's screen.",
+  link_invite: "That link can't be used to sign up any more. Ask for a new one, or use a code below.",
   username: "Username: 3-20 characters, a-z 0-9 _", password: "Password must be at least 8 characters.",
   rate_limited: "Slow down a little and try again in a minute.", no_such_user: "No user with that name.",
   self: "That's you.", invalid_code: "No device is showing that code. Check the screen and try again.",
@@ -240,6 +241,7 @@ function viewLogin() {
     pair: h("input", { inputmode: "numeric", pattern: "[0-9 ]*", maxlength: 7, placeholder: "482913", autocomplete: "off", value: desk || "" }),
   };
   const byDesk = !!(state.config && state.config.pairInvite);
+  let byLink = !!(invitedBy && invitedBy.t && state.config && state.config.linkInvite);
   const extra = h("div", {});
   const submit = h("button", { class: "btn primary block", type: "submit" }, "Sign in");
   const seg = h("div", { class: "seg" });
@@ -247,10 +249,11 @@ function viewLogin() {
     seg.replaceChildren(
       h("button", { type: "button", class: mode === "login" ? "on" : "", onclick: () => { mode = "login"; paint(); } }, "Sign in"),
       h("button", { type: "button", class: mode === "register" ? "on" : "", onclick: () => { mode = "register"; paint(); } }, "Create account"));
+    const codes = !byLink || desk;
     fill(extra, mode === "register" ? [
       h("label", { class: "f" }, "Display name"), f.displayName,
-      byDesk ? [h("label", { class: "f" }, "Code on your desk's screen"), f.pair] : null,
-      state.config && state.config.inviteRequired ? (byDesk
+      byDesk && codes ? [h("label", { class: "f" }, "Code on your desk's screen"), f.pair] : null,
+      state.config && state.config.inviteRequired && !byLink ? (byDesk
         ? h("details", { class: "more" }, h("summary", {}, "No desk yet? Use an invite code"), f.invite)
         : [h("label", { class: "f" }, "Invite code"), f.invite]) : null,
     ] : null);
@@ -268,16 +271,20 @@ function viewLogin() {
         Object.assign(body, { displayName: f.displayName.value.trim(), invite: f.invite.value.trim() });
         if (byDesk && deskCode) body.pair = deskCode;
         if (/^\d{6}$/.test(deskCode)) pendingPair.set(deskCode);
+        if (byLink) Object.assign(body, { friend: invitedBy.u, link: invitedBy.t });
       }
       try {
-        if (mode === "register" && state.config && state.config.inviteRequired && !body.pair && !body.invite) {
+        if (mode === "register" && state.config && state.config.inviteRequired && !body.pair && !body.invite && !body.link) {
           throw new Error(byDesk ? "Type the code on your desk's screen (or an invite code)." : "Type your invite code.");
         }
         await api("POST", mode === "login" ? "/api/login" : "/api/register", body);
         await loadMe();
         const paired = await finishPairing();
         if (!(await finishFriend(!paired)) && !paired) go("#/home");
-      } catch (ex) { err.textContent = ex.message; }
+      } catch (ex) {
+        if (ex.code === "link_invite") { byLink = false; paint(); }
+        err.textContent = ex.message;
+      }
       finally { submit.disabled = false; }
     },
   }, seg, h("label", { class: "f" }, "Username"), f.username, h("label", { class: "f" }, "Password"), f.password, extra, submit, err);
@@ -675,7 +682,8 @@ async function viewFriends() {
   const shareText = "Add me on claude-desk, then you can send messages and drawings to my desk:";
   const linkCard = link ? h("div", { class: "card" },
     h("b", {}, "Your link"),
-    h("p", { class: "hint", style: "margin:4px 0 10px" }, "Whoever opens it is connected with you straight away: no username to type, no request to accept."),
+    h("p", { class: "hint", style: "margin:4px 0 10px" }, "Whoever opens it is connected with you straight away: no username to type, no request to accept." +
+      (state.config && state.config.linkInvite ? " It also lets them create an account here without an invite code, so give it only to people you want on this hub." : "")),
     h("div", { class: "codebox" }, h("div", { class: "code" }, link.url.replace(/^https?:\/\//, "")),
       h("button", { class: "btn small", onclick: () => copy(link.url) }, "Copy")),
     h("div", { class: "inline", style: "margin-top:10px" },

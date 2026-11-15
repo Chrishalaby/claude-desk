@@ -34,6 +34,8 @@ export interface NotifyPrefs {
 export const NOTIFY_DEFAULTS: NotifyPrefs = { msg: "full", app: "full", done: "full", secs: 180, speed: 2, dnd: false, quiet: false, qfrom: 22 * 60, qto: 7 * 60, off: [] };
 export const NOTIFY_SOURCES = ["Calendar", "Timer", "Reminder", "Weather", "GitHub", "Markets", "Email", "Slack", "Now playing", "Webhook"];
 
+export const LINK_INVITE_MAX = 25;
+
 export class HttpError extends Error {
   constructor(public status: number, public code: string) { super(code); }
 }
@@ -721,8 +723,18 @@ export class Service {
     const current = this.userById(userId)?.friend_link;
     if (current && !renew) return current;
     const token = randomHex(10);
-    this.db.prepare("UPDATE users SET friend_link = ? WHERE id = ?").run(token, userId);
+    this.db.prepare("UPDATE users SET friend_link = ?, friend_link_uses = 0 WHERE id = ?").run(token, userId);
     return token;
+  }
+
+  linkInviter(username: string, token: string): UserRow | null {
+    const u = username && token ? this.userByName(username) : undefined;
+    if (!u || !u.friend_link || !safeEqual(token, u.friend_link) || u.friend_link_uses >= LINK_INVITE_MAX) return null;
+    return u;
+  }
+
+  countLinkInvite(userId: number) {
+    this.db.prepare("UPDATE users SET friend_link_uses = friend_link_uses + 1 WHERE id = ?").run(userId);
   }
 
   requestFriend(me: number, username: string, link = "") {

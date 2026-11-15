@@ -80,6 +80,7 @@ Alternative without Docker: Root Directory `hub` works with Railway's Node build
 | `DATA_DIR` | `./data` | SQLite DB, `mqtt-cert.pem`, `mqtt-key.pem` |
 | `HUB_INVITE_CODE` | – | required to register; unset = open registration (a warning is logged) |
 | `HUB_PAIR_INVITE` | on | `0` = a desk's pairing code no longer lets its holder register without the invite code |
+| `HUB_LINK_INVITE` | on | `0` = a member's personal link (Friends → Your link) no longer lets its holder register without the invite code; it still connects existing accounts. Each link invites at most 25 accounts until its owner makes a new one |
 | `PUBLIC_URL` | `https://$RAILWAY_PUBLIC_DOMAIN`, else the request's host | baked into installers and `cfg.hub` |
 | `MQTT_PUBLIC_HOST` / `MQTT_PUBLIC_PORT` | `RAILWAY_TCP_PROXY_DOMAIN` / `_PORT`, else request host / `MQTT_PORT` | sent to devices in hello |
 | `SESSION_SECRET` | generated, stored in the DB | cookie signing |
