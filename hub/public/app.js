@@ -527,7 +527,15 @@ async function viewHome() {
         h("span", { class: "chev" }, "›"))))
     : h("div", { class: "card empty" }, "No friends yet. ", h("a", { href: "#/friends" }, "Add someone"), " to send messages to their desk.");
   const live = await activeDoodlesBanner(null);
-  fill(main, live ? [h("h2", {}, "Live drawings"), live] : null, h("h2", {}, "Send to a desk"), list,
+  const [desks, fw] = await Promise.all([
+    api("GET", "/api/devices").catch(() => []),
+    fetch("/firmware/latest.json").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+  ]);
+  const old = fw ? desks.filter((d) => d.fw && versionNewer(fw.version, d.fw)) : [];
+  fill(main, live ? [h("h2", {}, "Live drawings"), live] : null,
+    old.map((d) => h("p", { class: "hint warn" }, h("a", { href: "#/device/" + d.chip },
+      `${d.name || "Your desk"} has an update waiting (${d.fw} → ${fw.version}). Open it and tap Update firmware.`))),
+    h("h2", {}, "Send to a desk"), list,
     state.friends.some((f) => f.pendingFrom === "them") ? h("p", { class: "hint" }, h("a", { href: "#/friends" }, "You have friend requests waiting.")) : null);
 }
 
