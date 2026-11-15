@@ -12,10 +12,13 @@ int main(int argc, char **argv) {
   FILE *out = fopen(argv[2], "wb");
   if (!in || !out) return 2;
   uint16_t frames;
-  if (!mediaHeader(rdFile, in, &frames)) { fprintf(stderr, "bad header\n"); return 1; }
+  uint8_t kind;
+  static uint8_t pool[MEDIA_JPEG_POOL];
+  if (!mediaHeader(rdFile, in, &frames, &kind)) { fprintf(stderr, "bad header\n"); return 1; }
   for (int i = 0; i < frames; i++) {
     MediaFrame f;
-    if (!mediaFrameHeader(rdFile, in, &f) || !mediaDrawFrame(rdFile, in, f, nullptr)) { fprintf(stderr, "bad frame %d\n", i); return 1; }
+    if (!mediaFrameHeader(rdFile, in, &f) ||
+        !(kind == MEDIA_JPEG ? mediaDrawJpeg(rdFile, in, f, nullptr, pool) : mediaDrawFrame(rdFile, in, f, nullptr))) { fprintf(stderr, "bad frame %d\n", i); return 1; }
     fwrite(&f.delay, 2, 1, out);
     fwrite(FB, 2, SCR_W * SCR_H, out);
   }

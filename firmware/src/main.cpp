@@ -49,6 +49,7 @@ enum Mode { M_NORMAL, M_SAFE, M_SETUP };
 Mode mode = M_NORMAL;
 uint32_t restartAt = 0;
 uint32_t netOkAt = 0;
+bool noInternet = false;
 
 // ------------------------------------------------------- crash-loop guard ---
 struct RtcBoot { uint32_t magic, count; };
@@ -238,11 +239,12 @@ bool inScan(const char *ssid) {
 #define ROAM_JOIN_MS 15000
 #define ROAM_SCAN_EVERY_MS 20000
 #define NONET_MS 180000UL
+#define NOTIME_MS 20000UL
 #define BADNET_MS 600000UL
 
 bool internetProbe() {
   WiFiClient c;
-  c.setTimeout(3000);
+  c.setTimeout(2000);
   bool ok = c.connect(IPAddress(1, 1, 1, 1), 443) || c.connect(IPAddress(8, 8, 8, 8), 53);
   c.stop();
   return ok;
@@ -276,9 +278,10 @@ void wifiRoam() {
       WiFi.disconnect();
       return;
     }
-    if (netCount() < 2 || now - netOkAt < NONET_MS) return;
+    if (now - netOkAt < (time(nullptr) > 1700000000 ? NONET_MS : NOTIME_MS)) return;
     netOkAt = now | 1;
-    if (internetProbe()) return;
+    noInternet = !internetProbe();
+    if (!noInternet || netCount() < 2) return;
     WiFi.scanDelete();
     WiFi.scanNetworks(true);
     scanning = true;
@@ -895,7 +898,11 @@ void onDraw(const uint8_t *p, unsigned int len) {
 File mdFile;
 uint16_t mdSeq = 0, mdSecs = 60, mdFrames = 0, mdFrameNo = 0;
 uint32_t mdSize = 0, mdGot = 0, mdCrc = 0, mdCalc = 0, mdNext = 0, mdUntil = 0;
+uint32_t mdT0 = 0, mdRecvMs = 0, mdWriteUs = 0, mdDrawMs = 0;
+uint16_t loopsPerSec = 0;
 bool mdPlaying = false;
+uint8_t mdKind = MEDIA_RLE;
+void *mdPool = nullptr;
 
 static int mdRead(void *ctx, uint8_t *buf, int n) { return ((File *)ctx)->read(buf, n); }
 static void mdTick() { yield(); }
@@ -904,6 +911,7 @@ static uint32_t be32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | ((uint3
 
 void mediaClose() {
   if (mdFile) mdFile.close();
+  if (mdPool) { free(mdPool); mdPool = nullptr; }
   mdPlaying = false;
 }
 
@@ -918,7 +926,8 @@ void mediaAck(PGM_P err) {
 bool mediaStart() {
   if (view == V_NEEDS || view == V_PAIR) return false;
   mdFile = LittleFS.open(F("/m.bin"), "r");
-  if (!mdFile || !mediaHeader(mdRead, &mdFile, &mdFrames)) { mediaClose(); return false; }
+  if (!mdFile || !mediaHeader(mdRead, &mdFile, &mdFrames, &mdKind)) { mediaClose(); return false; }
+  if (mdKind == MEDIA_JPEG && !(mdPool = malloc(MEDIA_JPEG_POOL))) { mediaClose(); return false; }
   mdPlaying = true;
   mdFrameNo = 0;
   mdNext = millis();
@@ -938,14 +947,18 @@ void mediaFrame() {
   if (!mdPlaying || (int32_t)(millis() - mdNext) < 0) return;
   if (mdFrameNo >= mdFrames) { mdFile.seek(8); mdFrameNo = 0; }
   MediaFrame f;
-  if (!mediaFrameHeader(mdRead, &mdFile, &f) || !mediaDrawFrame(mdRead, &mdFile, f, mdTick)) {
+  uint32_t t0 = millis();
+  if (!mediaFrameHeader(mdRead, &mdFile, &f) ||
+      !(mdKind == MEDIA_JPEG ? mediaDrawJpeg(mdRead, &mdFile, f, mdTick, mdPool) : mediaDrawFrame(mdRead, &mdFile, f, mdTick))) {
     mediaClose();
     view = V_CLOCK;
     dirty = true;
     return;
   }
+  mdDrawMs = millis() - t0;
   mdFrameNo++;
-  mdNext = millis() + f.delay;
+  mdNext = t0 + f.delay;
+  if ((int32_t)(millis() - mdNext) > 0) mdNext = millis();
   if (mdFrames == 1) {
     mediaClose();
     if (drawFrom.length() && drawFrom != F("you")) uiDrawFooter(("from " + drawFrom + " \xC2\xB7 " + hhmm(0)).c_str());
@@ -972,6 +985,8 @@ void onMedia(const uint8_t *p, unsigned int len) {
     drawFrom = "";
     for (unsigned i = 0; i < p[13] && 14 + i < len; i++) drawFrom += (char)p[14 + i];
     mdGot = mdCalc = 0;
+    mdT0 = millis();
+    mdWriteUs = 0;
     LittleFS.remove(F("/m.bin"));
     FSInfo fi;
     if (!LittleFS.info(fi) || fi.totalBytes - fi.usedBytes < mdSize + 16384) { mdSize = 0; mediaAck(PSTR("space")); return; }
@@ -982,11 +997,14 @@ void onMedia(const uint8_t *p, unsigned int len) {
   if (seq != mdSeq || !mdFile || mdPlaying) return;
   if (op == 2 && len >= 7) {
     size_t n = len - 7;
+    uint32_t w0 = micros();
     if (be32(p + 3) != mdGot || mdGot + n > mdSize || mdFile.write(p + 7, n) != n) { mediaClose(); mediaAck(PSTR("order")); return; }
+    mdWriteUs += micros() - w0;
     mdCalc = mediaCrc(mdCalc, p + 7, n);
     mdGot += n;
   } else if (op == 3) {
     mdFile.close();
+    mdRecvMs = millis() - mdT0;
     if (mdGot != mdSize || mdCalc != mdCrc) { mediaAck(PSTR("crc")); return; }
     mediaAck(nullptr);
     mediaStart();
@@ -1347,7 +1365,9 @@ void hubLoop() {
   }
   if (mqtt.connected()) {
     netOkAt = millis() | 1;
+    noInternet = false;
     mqtt.loop();
+    for (uint8_t i = 0; i < 3 && mdFile && !mdPlaying && mqttNet->available(); i++) mqtt.loop();
     if ((int32_t)(millis() - nextStatus) >= 0) { hubStatus(); nextStatus = millis() + 10UL * 60 * 1000; }
     if (settingsDirty) { hubSettings(); settingsDirty = false; }
     if (wifiScanForHub && WiFi.scanComplete() >= 0) { wifiScanForHub = false; wifiReport = false; hubWifi(true); }
@@ -1355,7 +1375,10 @@ void hubLoop() {
     return;
   }
   if ((int32_t)(millis() - nextMqtt) < 0) return;
-  if (mqtt.connect(chipId, chipId, X.secret)) {
+  WiFiClient::setDefaultNoDelay(true);
+  bool up = mqtt.connect(chipId, chipId, X.secret);
+  WiFiClient::setDefaultNoDelay(false);
+  if (up) {
     mqtt.subscribe((String("desk/") + chipId + "/#").c_str(), 1);
     mqttBackoff = 5000;
     nextStatus = 0;
@@ -1479,6 +1502,7 @@ void handleInfo() {
   j += ",\"hub\":\"" + String(hubStateText()) + "\",\"paired\":" + String(hubPaired ? 1 : 0) + ",\"chip\":\"" + chipId + "\"";
   j += ",\"scene\":" + String((int)scene) + ",\"night\":" + String(isNight ? 1 : 0);
   j += ",\"view\":" + String((int)view) + ",\"robot\":" + String((int)robot);
+  j += String(F(",\"lps\":")) + loopsPerSec + F(",\"md\":[") + mdRecvMs + ',' + (mdWriteUs / 1000) + ',' + mdDrawMs + ']';
   j += ",\"weather\":{\"ok\":" + String(W.ok ? "true" : "false") + ",\"temp\":" + String(W.temp, 1) +
        ",\"hum\":" + String(W.hum) + ",\"code\":" + String(W.code) + "}}";
   server.send(200, "application/json", j);
@@ -1509,6 +1533,12 @@ void loopNormal() {
   bool tv = nowTm(t);
   if (tv != timeValid) { timeValid = tv; dirty = true; }
   lowMemoryGuard();
+  {
+    static uint32_t lpAt = 0;
+    static uint16_t lpN = 0;
+    lpN++;
+    if (millis() - lpAt >= 1000) { loopsPerSec = lpN; lpN = 0; lpAt = millis(); }
+  }
   hubLoop();
   if (uiUnread[0] && (int32_t)(millis() - unreadUntil) >= 0) { uiUnread[0] = 0; if (view == V_CLOCK) dirty = true; }
   if (view == V_MSG && (int32_t)(millis() - msgUntil) >= 0) { view = V_CLOCK; dirty = true; }
@@ -1520,7 +1550,7 @@ void loopNormal() {
 
   if (WiFi.status() == WL_CONNECTED && (int32_t)(millis() - nextWeather) >= 0) {
     bool ok = fetchWeather();
-    if (ok) netOkAt = millis() | 1;
+    if (ok) { netOkAt = millis() | 1; noInternet = false; }
     nextWeather = millis() + (ok ? 15UL * 60 * 1000 : 60UL * 1000);
     if (ok && view == V_CLOCK && timeValid && !dirty) {
       if (scene == SC_NONE) uiWeather(W);
@@ -1542,8 +1572,17 @@ void loopNormal() {
 
   if (view == V_CLOCK) {
     if (!timeValid) {
-      if (dirty) {
-        uiMessage("CLAUDE DESK", WiFi.localIP().toString().c_str(), "syncing time...", (String(hostName) + ".local").c_str(), COL_TEAL);
+      static bool offlineShown = false;
+      if (dirty || offlineShown != noInternet) {
+        offlineShown = noInternet;
+        if (noInternet) {
+          char a[14], b[28];
+          strcpy_P(a, PSTR("NO INTERNET"));
+          strcpy_P(b, PSTR("connected, but offline"));
+          uiMessage(a, WiFi.SSID().c_str(), b, WiFi.localIP().toString().c_str(), COL_ORANGE);
+        } else {
+          uiMessage("CLAUDE DESK", WiFi.localIP().toString().c_str(), "syncing time...", (String(hostName) + ".local").c_str(), COL_TEAL);
+        }
         dirty = false;
       }
       return;

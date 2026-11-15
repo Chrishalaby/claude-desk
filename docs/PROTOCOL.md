@@ -152,6 +152,9 @@ Hub stores it (last seen, fw, ip, heap, maxblk, reset) for the web app. `heap` =
 block (what a new TLS session or JSON document actually needs), `reset` = `ESP.getResetReason()` of the current boot.
 The web app flags `heap` < 8 KB and resets that mention Exception/Watchdog. The device's own `/info` has the same
 fields. Firmware ≥ 1.4.4 restarts itself if `maxblk` stays under 3 KB for 2 minutes (at most once per 30 min uptime).
+From 1.4.17 `/info` also has `lps` (main-loop passes in the last second, about 185 when idle) and `md`:
+`[ms the last photo/GIF transfer took, ms of that spent writing flash, ms the last frame took to draw]`.
+The MQTT socket runs with Nagle off from 1.4.17, so a PUBACK never waits for the previous one to be acknowledged.
 
 ### 3.5 `desk/<chip>/card` — not retained, hub → device (firmware ≥ 1.4.5)
 ```json
@@ -195,6 +198,9 @@ Firmware ≥ 1.4.7 also leaves a network that is up but has no internet: with 2+
 sign of internet (MQTT connected or a weather fetch) it tries a TCP connect to 1.1.1.1:443 / 8.8.8.8:53; if that fails
 it scans while still connected and, only if another saved network is in range, disconnects and avoids the bad one for
 10 min (it still falls back to it when nothing else is visible).
+Firmware ≥ 1.4.17 runs that check with one saved network too, and after 20 s instead of 3 min while the clock has
+never been set (a fresh boot on a router without internet). While the check fails and there is no time to show, the
+screen says NO INTERNET with the network's name and the desk's address instead of "syncing time...".
 1.4.4 and older used ESP8266WiFiMulti with a 3 s join limit, which failed on routers slower than a phone hotspot.
 
 ### 3.8 `desk/<chip>/draw` — binary, not retained, hub → device (firmware ≥ 1.4.6)

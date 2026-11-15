@@ -40,7 +40,7 @@ Full instructions: **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ## Credits
 
-Weather icons: [Meteocons](https://github.com/basmilius/weather-icons) by Bas Milius (MIT). Font: [Inter](https://rsms.me/inter/) (SIL OFL). Display driver: TFT_eSPI. Pinout reference: [bvweerd/geekmagic-tv-esp8266](https://github.com/bvweerd/geekmagic-tv-esp8266).
+Weather icons: [Meteocons](https://github.com/basmilius/weather-icons) by Bas Milius (MIT). Font: [Inter](https://rsms.me/inter/) (SIL OFL). Display driver: TFT_eSPI. JPEG decoder: [TJpgDec](http://elm-chan.org/fsw/tjpgd/) by ChaN, from Bodmer's [TJpg_Decoder](https://github.com/Bodmer/TJpg_Decoder) (licences in `firmware/src/tjpgd-license.txt`). Pinout reference: [bvweerd/geekmagic-tv-esp8266](https://github.com/bvweerd/geekmagic-tv-esp8266).
 Reaction emoji: [Fluent Emoji](https://github.com/microsoft/fluentui-emoji) by Microsoft (MIT). Robot and Casper pixel art are original. Not affiliated with GeekMagic, Microsoft or Anthropic.
 
 ## License

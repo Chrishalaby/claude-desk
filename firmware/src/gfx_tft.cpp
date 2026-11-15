@@ -17,6 +17,7 @@ void gCircle(int cx, int cy, int r, uint16_t c) { tft.fillCircle(cx, cy, r, c); 
 void gRRect(int x, int y, int w, int h, int r, uint16_t c) { tft.fillRoundRect(x, y, w, h, r, c); }
 void gTri(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t c) { tft.fillTriangle(x0, y0, x1, y1, x2, y2, c); }
 void gRow(int x, int y, int w, const uint16_t *px) { tft.pushImage(x, y, w, 1, (uint16_t *)px); }
+void gBlock(int x, int y, int w, int h, const uint16_t *px) { tft.pushImage(x, y, w, h, (uint16_t *)px); }
 
 // ST7789 GAMSET (0x26): gamma curve 1..4
 void gfxGamma(uint8_t g) {

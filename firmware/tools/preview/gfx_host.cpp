@@ -20,6 +20,7 @@ void gTri(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t c) {
   }
 }
 void gRow(int x, int y, int w, const uint16_t *p) { for (int i = 0; i < w; i++) px(x + i, y, p[i]); }
+void gBlock(int x, int y, int w, int h, const uint16_t *p) { for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) px(x + i, y + j, p[j * w + i]); }
 void dump(const char *path) {
   FILE *f = fopen(path, "wb"); fprintf(f, "P6 %d %d 255\n", SCR_W, SCR_H);
   for (int i = 0; i < SCR_W * SCR_H; i++) { uint16_t c = FB[i]; unsigned char rgb[3] = {(unsigned char)((c >> 8) & 0xF8), (unsigned char)((c >> 3) & 0xFC), (unsigned char)((c << 3) & 0xF8)}; fwrite(rgb, 1, 3, f); }

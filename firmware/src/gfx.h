@@ -16,6 +16,7 @@ void gRRect(int x, int y, int w, int h, int r, uint16_t c);           // filled
 void gTri(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t c);// filled
 extern uint16_t gRowBuf[SCR_W];
 void gRow(int x, int y, int w, const uint16_t *px);                   // push one pixel row
+void gBlock(int x, int y, int w, int h, const uint16_t *px);
 
 // ---- common helpers (gfx_common.cpp)
 extern int16_t tScroll;

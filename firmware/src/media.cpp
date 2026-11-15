@@ -1,5 +1,8 @@
 #include "media.h"
 #include "gfx.h"
+extern "C" {
+#include "tjpgd.h"
+}
 
 static bool readAll(MediaRead rd, void *ctx, uint8_t *buf, int n) {
   while (n > 0) {
@@ -11,9 +14,10 @@ static bool readAll(MediaRead rd, void *ctx, uint8_t *buf, int n) {
   return true;
 }
 
-bool mediaHeader(MediaRead rd, void *ctx, uint16_t *frames) {
+bool mediaHeader(MediaRead rd, void *ctx, uint16_t *frames, uint8_t *kind) {
   uint8_t h[8];
-  if (!readAll(rd, ctx, h, 8) || h[0] != 'D' || h[1] != 'K' || h[2] != 'M' || h[3] != '1') return false;
+  if (!readAll(rd, ctx, h, 8) || h[0] != 'D' || h[1] != 'K' || h[2] != 'M' || (h[3] != '1' && h[3] != '2')) return false;
+  *kind = h[3] == '2' ? MEDIA_JPEG : MEDIA_RLE;
   *frames = h[4] | (h[5] << 8);
   return *frames > 0;
 }
@@ -126,6 +130,47 @@ bool mediaDrawFrame(MediaRead rd, void *ctx, const MediaFrame &f, void (*tick)()
   uint8_t b;
   while (r.get(b)) {}
   return true;
+}
+
+struct JpegIo {
+  MediaRead rd;
+  void *ctx;
+  uint32_t left;
+  void (*tick)();
+  uint8_t x, y;
+};
+
+static size_t jpegIn(JDEC *jd, uint8_t *buf, size_t n) {
+  JpegIo *io = (JpegIo *)jd->device;
+  if (n > io->left) n = io->left;
+  size_t done = 0;
+  uint8_t skip[32];
+  while (done < n) {
+    size_t want = n - done;
+    if (!buf && want > sizeof skip) want = sizeof skip;
+    int got = io->rd(io->ctx, buf ? buf + done : skip, (int)want);
+    if (got <= 0) break;
+    done += got;
+  }
+  io->left -= done;
+  return done;
+}
+
+static int jpegOut(JDEC *jd, void *bitmap, JRECT *r) {
+  JpegIo *io = (JpegIo *)jd->device;
+  gBlock(io->x + r->left, io->y + r->top, r->right - r->left + 1, r->bottom - r->top + 1, (const uint16_t *)bitmap);
+  if (io->tick && !r->left) io->tick();
+  return 1;
+}
+
+bool mediaDrawJpeg(MediaRead rd, void *ctx, const MediaFrame &f, void (*tick)(), void *pool) {
+  JpegIo io{rd, ctx, f.len, tick, f.x, f.y};
+  JDEC jd;
+  jd.swap = 0;
+  bool ok = pool && jd_prepare(&jd, jpegIn, pool, MEDIA_JPEG_POOL, &io) == JDR_OK &&
+            f.x + jd.width <= SCR_W && f.y + jd.height <= SCR_H && jd_decomp(&jd, jpegOut, 0) == JDR_OK;
+  while (io.left && jpegIn(&jd, nullptr, io.left)) {}
+  return ok && !io.left;
 }
 
 uint32_t mediaCrc(uint32_t crc, const uint8_t *p, int n) {
