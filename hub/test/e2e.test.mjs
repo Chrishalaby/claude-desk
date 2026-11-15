@@ -1617,6 +1617,15 @@ test("photos and GIFs: converted on the hub, streamed to your desk or a friend's
   let jm = await sharp(one[0].jpg).metadata();
   assert.deepEqual([jm.format, jm.width, jm.height, jm.chromaSubsampling, jm.isProgressive], ["jpeg", 240, 240, "4:4:4", false], "baseline JPEG the desk's decoder can read");
   assert.ok(fine.size < 30_000, `a photo is a small JPEG for desks that can decode it (${fine.size})`);
+  const picId = r.body.id;
+  hub.service.db.prepare("UPDATE media SET data2 = NULL WHERE id = ?").run(picId);
+  await ivy.call("POST", `/api/media/${picId}/show`, {});
+  const rebuilt = jpegFrames((await received(di, "esp-c1c0de", 2)).data);
+  const [first, second] = await Promise.all([one[0].jpg, rebuilt[0].jpg].map((j) => sharp(j).raw().toBuffer()));
+  let err = 0;
+  for (let i = 0; i < first.length; i++) err += (first[i] - second[i]) ** 2;
+  assert.ok(10 * Math.log10(255 * 255 / (err / first.length)) > 30, "an upload from before this version gets its JPEG from the stored file");
+  assert.ok(hub.service.db.prepare("SELECT length(data2) AS n FROM media WHERE id = ?").get(picId).n > 1000, "and keeps it");
   r = await upload(gina, picture, "image/png");
   await gina.call("POST", `/api/media/${r.body.id}/show`, {});
   const plain = await received(dg, "esp-a1a001", 4);
@@ -1628,7 +1637,7 @@ test("photos and GIFs: converted on the hub, streamed to your desk or a friend's
   assert.equal(r.status, 200, JSON.stringify(r.body));
   assert.ok(r.body.frames < 30, "the run-length version has to drop frames");
   await ivy.call("POST", `/api/media/${r.body.id}/show`, {});
-  const clip = await received(di, "esp-c1c0de", 2);
+  const clip = await received(di, "esp-c1c0de", 3);
   const reelFrames = jpegFrames(clip.data);
   assert.equal(reelFrames.length, 12, "30 frames at 25 fps become 12 at the 10 fps the desk can decode");
   assert.equal(reelFrames.reduce((a, f) => a + f.delay, 0), 1200, "same running time");

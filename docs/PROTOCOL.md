@@ -550,7 +550,9 @@ Draw in the web app; every stroke shows up on the desk as you draw (3.8).
   (quality 92, 4:4:4, typically 10–35 KB instead of 50–100 KB). A GIF that lost frames above, or is over 100 KB,
   becomes 4:2:0 JPEG frames: frames are resampled to at most 10 a second (same running time), encoded at quality
   60 (88 or 75 when that still fits in 220 KB), then 48 or 38 to stay under 300 KB, then with fewer frames. The JPEG
-  version is dropped when it isn't at least 20 % smaller than a run-length file that kept every frame.
+  version is dropped when it isn't at least 20 % smaller than a run-length file that kept every frame. An upload from
+  before this existed gets its JPEG version built from the stored run-length file the first time it goes to a desk
+  that can play it.
 * `GET /api/media` → `{items, deliveries: [{chip, media, state: "sending"|"ok"|"error"|null, error, at}]}` (the last
   transfer to each of your desks, from section 3.9's answers). `GET /api/media/<id>/preview` → a 160 px WebP (yours, or
   one in a chat you're part of). `DELETE /api/media/<id>`.

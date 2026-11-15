@@ -182,6 +182,62 @@ async function jpegGif(rgb: Buffer[], delays: number[]): Promise<Buffer | null> 
   return null;
 }
 
+async function jpegVariant(rgb: Buffer[], delays: number[], legacy: number, dropped: boolean): Promise<Buffer | null> {
+  let jpeg: Buffer | null = null;
+  if (rgb.length === 1) {
+    if (legacy > JPEG_PHOTO_MIN) jpeg = packJpegFrames([{ delay: delays[0], data: await jpegFrame(rgb[0], 92, "4:4:4") }]);
+  } else if (dropped || legacy > JPEG_GIF_MIN) {
+    jpeg = await jpegGif(rgb, delays);
+  }
+  return jpeg && !dropped && jpeg.length > legacy * JPEG_MIN_GAIN ? null : jpeg;
+}
+
+export function decodeFrames(data: Buffer): { rgb: Buffer[]; delays: number[] } | null {
+  if (data.length < 8 || !data.subarray(0, 4).equals(HEADER)) return null;
+  const count = data.readUInt16LE(4);
+  const screen = new Uint16Array(MEDIA_SIZE * MEDIA_SIZE);
+  const rgb: Buffer[] = [], delays: number[] = [];
+  let off = 8;
+  for (let i = 0; i < count; i++) {
+    if (off + 10 > data.length) return null;
+    const delay = data.readUInt16LE(off), x = data[off + 2], y = data[off + 3], w = data[off + 4], h = data[off + 5];
+    let p = off + 10;
+    const end = p + data.readUInt32LE(off + 6);
+    if (end > data.length || x + w > MEDIA_SIZE || y + h > MEDIA_SIZE) return null;
+    off = end;
+    const total = w * h;
+    const put = (k: number, c: number) => { screen[(y + Math.floor(k / w)) * MEDIA_SIZE + x + (k % w)] = c; };
+    for (let k = 0; k < total && p < end;) {
+      const t = data[p++];
+      let kind = t >> 6, n = (t & 63) + 1;
+      if (kind === 3) {
+        kind = (t >> 4) & 3;
+        n = (((t & 15) << 8) | data[p++]) + 1;
+      }
+      if (kind === 3 || k + n > total) return null;
+      if (kind === 1) {
+        const c = data.readUInt16LE(p);
+        p += 2;
+        for (let j = 0; j < n; j++) put(k + j, c);
+      } else if (kind === 2) {
+        if (p + n * 2 > end) return null;
+        for (let j = 0; j < n; j++, p += 2) put(k + j, data.readUInt16LE(p));
+      }
+      k += n;
+    }
+    const out = Buffer.alloc(screen.length * 3);
+    for (let j = 0; j < screen.length; j++) {
+      const c = screen[j], r = c >> 11, g = (c >> 5) & 63, b = c & 31;
+      out[j * 3] = (r << 3) | (r >> 2);
+      out[j * 3 + 1] = (g << 2) | (g >> 4);
+      out[j * 3 + 2] = (b << 3) | (b >> 2);
+    }
+    rgb.push(out);
+    delays.push(delay);
+  }
+  return rgb.length ? { rgb, delays } : null;
+}
+
 export async function convertMedia(input: Buffer, fit: "cover" | "contain" = "cover") {
   const opts = { animated: true, limitInputPixels: 60_000_000 };
   let meta: sharp.Metadata;
@@ -222,14 +278,7 @@ export async function convertMedia(input: Buffer, fit: "cover" | "contain" = "co
     data = packFrames(encodeFrames(pixels, delays));
   }
   if (data.length > MEDIA_MAX_BYTES) throw new HttpError(413, "media_too_big");
-  const dropped = pixels.length < pick.length;
-  let jpeg: Buffer | null = null;
-  if (pick.length === 1) {
-    if (data.length > JPEG_PHOTO_MIN) jpeg = packJpegFrames([{ delay: allDelays[0], data: await jpegFrame(rgbOf(pick[0]), 92, "4:4:4") }]);
-  } else if (dropped || data.length > JPEG_GIF_MIN) {
-    jpeg = await jpegGif(pick.map(rgbOf), allDelays);
-  }
-  if (jpeg && !dropped && jpeg.length > data.length * JPEG_MIN_GAIN) jpeg = null;
+  const jpeg = await jpegVariant(pick.map(rgbOf), allDelays, data.length, pixels.length < pick.length);
   const preview = await sharp(input, opts).rotate().resize(160, 160, { fit, background: "#000" }).flatten({ background: "#000" })
     .webp({ quality: 70, effort: 2 }).toBuffer();
   const frames = data.readUInt16LE(4);
@@ -267,7 +316,7 @@ export class Media {
     if (!this.uploadLimiter.take(String(me))) throw new HttpError(429, "rate_limited");
     const m = await convertMedia(input, fit === "contain" ? "contain" : "cover");
     const info = this.db.prepare("INSERT INTO media (user_id, kind, data, data2, preview, frames, bytes, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(me, m.kind, m.data, m.jpeg, m.preview, m.frames, m.data.length, this.now());
+      .run(me, m.kind, m.data, m.jpeg ?? Buffer.alloc(0), m.preview, m.frames, m.data.length, this.now());
     return this.view(this.row(Number(info.lastInsertRowid))!);
   }
 
@@ -275,7 +324,7 @@ export class Media {
     if (!input.length) throw new HttpError(400, "media_unreadable");
     if (!this.onceLimiter.take(String(me))) throw new HttpError(429, "rate_limited");
     const m = await convertMedia(input, fit === "contain" ? "contain" : "cover");
-    const row: MediaRow = { id: 0, user_id: me, kind: m.kind, data: m.data, data2: m.jpeg, preview: m.preview, frames: m.frames, bytes: m.data.length, created: this.now() };
+    const row: MediaRow = { id: 0, user_id: me, kind: m.kind, data: m.data, data2: m.jpeg ?? Buffer.alloc(0), preview: m.preview, frames: m.frames, bytes: m.data.length, created: this.now() };
     return { ok: true, devices: this.deliver(me, row, "you", secs), kind: m.kind, frames: m.frames, bytes: m.data.length };
   }
 
@@ -358,13 +407,25 @@ export class Media {
     return n;
   }
 
+  private async jpegOf(r: MediaRow): Promise<Buffer | null> {
+    if (!r.data2) {
+      const frames = decodeFrames(Buffer.from(r.data));
+      const jpeg = frames ? await jpegVariant(frames.rgb, frames.delays, r.data.length, false).catch(() => null) : null;
+      r.data2 = jpeg ?? Buffer.alloc(0);
+      if (r.id) this.db.prepare("UPDATE media SET data2 = ? WHERE id = ?").run(r.data2, r.id);
+    }
+    return r.data2.length ? r.data2 : null;
+  }
+
   private async transfer(chip: string, r: MediaRow, from: string, secs: number) {
     const gen = (this.gen.get(chip) ?? 0) + 1;
     this.gen.set(chip, gen);
     const seq = this.seq = (this.seq % 65535) + 1;
     this.status.set(chip, { seq, media: r.id, state: "sending", error: null, at: this.now() });
     const fw = this.svc.device(chip)?.fw;
-    const data = Buffer.from(r.data2 && fw && !versionNewer(MEDIA_JPEG_FW, fw) ? r.data2 : r.data);
+    const jpeg = fw && !versionNewer(MEDIA_JPEG_FW, fw) ? await this.jpegOf(r) : null;
+    if (this.gen.get(chip) !== gen) return;
+    const data = Buffer.from(jpeg ?? r.data);
     const topic = `desk/${chip}/media`;
     const name = Buffer.from(from, "utf8").subarray(0, 40);
     const begin = Buffer.alloc(14);
