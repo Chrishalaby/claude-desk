@@ -524,8 +524,14 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
 
   app.post("/api/friends", { preHandler: auth }, async (req) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
-    return svc.requestFriend(req.user!.id, str(b.username).trim().slice(0, 40));
+    return svc.requestFriend(req.user!.id, str(b.username).trim().slice(0, 40), str(b.link).trim().slice(0, 64));
   });
+  const friendLink = (req: FastifyRequest, renew: boolean) => {
+    const token = svc.friendLink(req.user!.id, renew);
+    return { username: req.user!.username, token, url: `${hubUrl(req)}/#/add/${req.user!.username}/${token}` };
+  };
+  app.get("/api/friend-link", { preHandler: auth }, async (req) => friendLink(req, false));
+  app.post("/api/friend-link/reset", { preHandler: auth }, async (req) => friendLink(req, true));
 
   app.post("/api/friends/:username/accept", { preHandler: auth }, async (req) =>
     svc.acceptFriend(req.user!.id, (req.params as any).username));

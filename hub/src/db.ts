@@ -6,6 +6,7 @@ export type DB = Database.Database;
 export interface UserRow {
   id: number; username: string; display_name: string; pass_hash: string;
   tz: string; tz_auto: number; hook_token: string; hook_token_hash: string; created: number;
+  friend_link: string | null;
 }
 export interface DeviceRow {
   chip: string; secret_hash: string; owner_id: number | null; name: string | null;
@@ -141,6 +142,8 @@ export function openDb(dataDir: string): DB {
   const mcols = new Set((db.prepare("PRAGMA table_info(messages)").all() as { name: string }[]).map((c) => c.name));
   if (!mcols.has("doodle_id")) db.exec("ALTER TABLE messages ADD COLUMN doodle_id INTEGER");
   if (!mcols.has("media_id")) db.exec("ALTER TABLE messages ADD COLUMN media_id INTEGER");
+  const ucols = new Set((db.prepare("PRAGMA table_info(users)").all() as { name: string }[]).map((c) => c.name));
+  if (!ucols.has("friend_link")) db.exec("ALTER TABLE users ADD COLUMN friend_link TEXT");
   const pcols = new Set((db.prepare("PRAGMA table_info(media)").all() as { name: string }[]).map((c) => c.name));
   if (!pcols.has("data2")) db.exec("ALTER TABLE media ADD COLUMN data2 BLOB");
   db.exec(`

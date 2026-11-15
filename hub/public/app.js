@@ -169,6 +169,46 @@ const pendingPair = {
   },
 };
 
+const FRIEND_LINK_DAYS = 7;
+const pendingFriend = {
+  get() {
+    let v = state.pendingFriend || null;
+    try { v = JSON.parse(localStorage.getItem("cd_friend") || "null") || v; } catch { v = state.pendingFriend || null; }
+    if (!v || !/^[a-z0-9_]{1,20}$/.test(v.u || "") || Date.now() - (v.at || 0) > FRIEND_LINK_DAYS * 86400000) return null;
+    return { u: v.u, t: /^[0-9a-f]{1,64}$/.test(v.t || "") ? v.t : "", at: v.at };
+  },
+  set(u, t) {
+    state.pendingFriend = u ? { u, t: t || "", at: Date.now() } : null;
+    try {
+      if (u) localStorage.setItem("cd_friend", JSON.stringify(state.pendingFriend)); else localStorage.removeItem("cd_friend");
+    } catch { return; }
+  },
+};
+
+async function finishFriend(navigate = true) {
+  const p = pendingFriend.get();
+  if (!p) return false;
+  pendingFriend.set(null);
+  if (state.me && p.u === state.me.username) {
+    if (navigate) { toast("That's your own link. Send it to a friend."); go("#/friends"); }
+    return navigate;
+  }
+  try {
+    const r = await api("POST", "/api/friends", { username: p.u, link: p.t });
+    state.friends = [];
+    if (navigate) {
+      toast(r.rel ? `You and ${r.displayName} are connected` : `Request sent to ${r.displayName}`);
+      go(r.rel ? "#/chat/" + r.username : "#/friends");
+    }
+  } catch (e) {
+    if (navigate) {
+      toast(e.code === "no_such_user" ? "That link belongs to an account that no longer exists." : e.message, true);
+      go("#/friends");
+    }
+  }
+  return navigate;
+}
+
 async function finishPairing() {
   const code = pendingPair.get();
   if (!code) return false;
@@ -189,7 +229,8 @@ async function finishPairing() {
 
 function viewLogin() {
   const desk = pendingPair.get();
-  let mode = desk ? "register" : "login";
+  const invitedBy = pendingFriend.get();
+  let mode = desk || invitedBy ? "register" : "login";
   const err = h("div", { class: "err" });
   const f = {
     username: h("input", { autocomplete: "username", autocapitalize: "none", spellcheck: "false", maxlength: 20, required: true }),
@@ -234,7 +275,8 @@ function viewLogin() {
         }
         await api("POST", mode === "login" ? "/api/login" : "/api/register", body);
         await loadMe();
-        if (!(await finishPairing())) go("#/home");
+        const paired = await finishPairing();
+        if (!(await finishFriend(!paired)) && !paired) go("#/home");
       } catch (ex) { err.textContent = ex.message; }
       finally { submit.disabled = false; }
     },
@@ -244,6 +286,8 @@ function viewLogin() {
       h("div", {}, h("h1", {}, "claude-desk"), h("p", {}, "Your desk, your friends, your Claude."))),
     desk ? h("div", { class: "card", style: "margin-bottom:14px" }, h("b", {}, "Setting up your desk"),
       h("p", { class: "hint", style: "margin:4px 0 0" }, "Create an account, or sign in if you already have one. Your desk pairs by itself right after.")) : null,
+    invitedBy ? h("div", { class: "card", style: "margin-bottom:14px" }, h("b", {}, `@${invitedBy.u} invited you`),
+      h("p", { class: "hint", style: "margin:4px 0 0" }, "Create an account, or sign in if you already have one. You two are connected right after.")) : null,
     form,
     h("p", { class: "hint", style: "text-align:center;margin-top:22px" }, "New desk? ", h("a", { href: "#/install" }, "Install guide"))));
 }
@@ -627,6 +671,22 @@ async function viewFriends() {
   }, h("div", { class: "inline" }, username, h("button", { class: "btn primary", type: "submit" }, "Add")),
     h("p", { class: "hint", style: "margin-bottom:0" }, "Once they accept, you can send each other messages and reactions."));
 
+  const link = await api("GET", "/api/friend-link").catch(() => null);
+  const shareText = "Add me on claude-desk, then you can send messages and drawings to my desk:";
+  const linkCard = link ? h("div", { class: "card" },
+    h("b", {}, "Your link"),
+    h("p", { class: "hint", style: "margin:4px 0 10px" }, "Whoever opens it is connected with you straight away: no username to type, no request to accept."),
+    h("div", { class: "codebox" }, h("div", { class: "code" }, link.url.replace(/^https?:\/\//, "")),
+      h("button", { class: "btn small", onclick: () => copy(link.url) }, "Copy")),
+    h("div", { class: "inline", style: "margin-top:10px" },
+      navigator.share ? h("button", { class: "btn primary", onclick: guarded(async () => {
+        try { await navigator.share({ title: "claude-desk", text: shareText, url: link.url }); } catch (e) { if (e.name !== "AbortError") copy(link.url); }
+      }) }, "Share") : null,
+      h("button", { class: "btn ghost", onclick: guarded(async () => {
+        if (!confirm("Make a new link? The old one stops working. People you're already connected with stay.")) return;
+        try { await api("POST", "/api/friend-link/reset"); toast("New link ready"); viewFriends(); } catch (e) { fail(e); }
+      }) }, "New link"))) : null;
+
   const act = (method, url, msg) => async () => { try { await api(method, url); if (msg) toast(msg); viewFriends(); } catch (e) { fail(e); } };
   const incoming = state.friends.filter((f) => f.pendingFrom === "them");
   const outgoing = state.friends.filter((f) => f.pendingFrom === "me");
@@ -634,7 +694,8 @@ async function viewFriends() {
   const enc = encodeURIComponent;
 
   fill(main,
-    h("h2", {}, "Add"), add,
+    linkCard ? [h("h2", {}, "Invite"), linkCard] : null,
+    h("h2", {}, "Add by username"), add,
     incoming.length ? [h("h2", {}, "Requests"), h("div", { class: "list" }, incoming.map((f) => h("div", { class: "row" },
       h("div", { class: "avatar" }, f.displayName.slice(0, 1)),
       h("div", { class: "grow" }, h("div", { class: "title" }, f.displayName),
@@ -1756,6 +1817,14 @@ async function render() {
       if (!state.me) await loadMe().catch(() => null);
       if (!state.me) return go("#/login");
       await finishPairing();
+      return;
+    }
+    const invite = hash.match(/^#\/add\/([a-z0-9_]{1,20})(?:\/([0-9a-f]{1,64}))?$/);
+    if (invite) {
+      pendingFriend.set(invite[1], invite[2]);
+      if (!state.me) await loadMe().catch(() => null);
+      if (!state.me) return go("#/login");
+      await finishFriend();
       return;
     }
     if (!state.me && hash !== "#/login") {

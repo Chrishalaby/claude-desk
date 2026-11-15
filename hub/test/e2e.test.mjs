@@ -1744,3 +1744,46 @@ test("a desk's pairing code lets its holder sign up without an invite, and pairs
   assert.equal(r.status, 403, "a used code is no longer an invite");
   await d.endAsync();
 });
+
+test("a personal link connects two people at once; a new link retires the old one", async () => {
+  clock += 3700;
+  const mia = user(), noa = user(), omar = user(), pia = user();
+  for (const [u, name] of [[mia, "mia"], [noa, "noa"], [omar, "omar"], [pia, "pia"]]) {
+    assert.equal((await u.call("POST", "/api/register", { username: name, displayName: name[0].toUpperCase() + name.slice(1), password: "password-" + name, invite: "letmein", tz: "UTC" })).status, 200);
+  }
+  const hl = await anon.call("POST", "/api/device/hello", { chip: "esp-e1e001", fw: "1.4.17", secret: "" });
+  assert.equal((await mia.call("POST", "/api/devices/pair", { code: hl.body.pairCode, name: "Mia" })).status, 200);
+  const d = await device("esp-e1e001", hl.body.secret);
+  await d.subscribeAsync("desk/esp-e1e001/#", { qos: 1 });
+
+  assert.equal((await anon.call("GET", "/api/friend-link")).status, 401);
+  const link = (await mia.call("GET", "/api/friend-link")).body;
+  assert.match(link.token, /^[0-9a-f]{20}$/);
+  assert.deepEqual([link.username, link.url], ["mia", `${base}/#/add/mia/${link.token}`]);
+  assert.equal((await mia.call("GET", "/api/friend-link")).body.token, link.token, "the link stays the same until it is replaced");
+
+  let r = await noa.call("POST", "/api/friends", { username: "mia", link: link.token });
+  assert.deepEqual([r.status, r.body.rel, r.body.pendingFrom], [200, "friend", null], "opening the link is the whole handshake");
+  assert.equal((await mia.call("GET", "/api/friends")).body.find((f) => f.username === "noa").rel, "friend");
+  const card = await d.waitFor((m) => m.topic === "desk/esp-e1e001/card" && m.json?.title === "Noa", "the link's owner hears about it on their desk");
+  assert.match(card.json.text, /opened your link/);
+  assert.equal((await noa.call("POST", "/api/messages", { to: "mia", kind: "text", text: "hi" })).status, 200);
+
+  r = await omar.call("POST", "/api/friends", { username: "mia", link: "0".repeat(20) });
+  assert.deepEqual([r.body.rel, r.body.pendingFrom], [null, "me"], "a wrong link is an ordinary request");
+  r = await omar.call("POST", "/api/friends", { username: "mia", link: link.token });
+  assert.equal(r.body.rel, "friend", "the right link also settles a request that was waiting");
+
+  const fresh = (await mia.call("POST", "/api/friend-link/reset")).body;
+  assert.notEqual(fresh.token, link.token);
+  r = await pia.call("POST", "/api/friends", { username: "mia", link: link.token });
+  assert.deepEqual([r.body.rel, r.body.pendingFrom], [null, "me"], "the old link no longer connects anyone");
+  assert.equal((await mia.call("GET", "/api/friends")).body.find((f) => f.username === "omar").rel, "friend", "people already connected stay");
+  r = await mia.call("POST", "/api/friends", { username: "mia", link: fresh.token });
+  assert.deepEqual([r.status, r.body.error], [400, "self"]);
+  r = await pia.call("POST", "/api/friends", { username: "nobody-here", link: fresh.token });
+  assert.deepEqual([r.status, r.body.error], [404, "no_such_user"]);
+  const cards = d.got.filter((m) => m.topic === "desk/esp-e1e001/card" && /opened your link/.test(m.json?.text ?? "")).length;
+  assert.equal(cards, 2, "one card per person who joined by link");
+  await d.endAsync();
+});

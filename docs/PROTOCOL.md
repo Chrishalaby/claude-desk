@@ -295,8 +295,15 @@ Hub publishes the view to `desk/<chip>/claude` for **every device owned by that 
 
 * `POST /api/friends {username}` → pending request (a `rel` field is ignored). If the other person already asked you,
   this accepts their request. Messages and reactions need an accepted request: someone can only put something on
-  your desk after you said yes.
+  your desk after you said yes, by accepting or by giving them your personal link.
 * `POST /api/friends/<username>/accept`, `/decline`, `DELETE /api/friends/<username>`.
+* Personal link: `GET /api/friend-link` → `{username, token, url}` with `url` = `<hub>/#/add/<username>/<token>` (20 hex
+  characters, created on first use); `POST /api/friend-link/reset` replaces the token. `POST /api/friends {username,
+  link}` with the right token connects the two at once, also when a request was already waiting, and sends the link's
+  owner a card ("<name> opened your link. You're connected."). A wrong or retired token is an ordinary request.
+  The web app handles `#/add/<username>[/<token>]`: signed in, it posts and opens the chat; signed out, it remembers
+  the link for 7 days (localStorage), shows the sign-in page with "@<username> invited you", and posts right after
+  sign-in or sign-up. Creating the account still needs an invite code or a desk's pairing code.
 
 ## 7. Client installers (served by the hub, hub URL baked in)
 

@@ -717,19 +717,32 @@ export class Service {
     return rows.map((r) => this.friendView(me, r)).sort((x, y) => x.username.localeCompare(y.username));
   }
 
-  requestFriend(me: number, username: string) {
+  friendLink(userId: number, renew = false): string {
+    const current = this.userById(userId)?.friend_link;
+    if (current && !renew) return current;
+    const token = randomHex(10);
+    this.db.prepare("UPDATE users SET friend_link = ? WHERE id = ?").run(token, userId);
+    return token;
+  }
+
+  requestFriend(me: number, username: string, link = "") {
     const other = this.userByName(username);
     if (!other) throw new HttpError(404, "no_such_user");
     if (other.id === me) throw new HttpError(400, "self");
     const [a, b] = this.pairKey(me, other.id);
     const r = this.friendRow(me, other.id);
     const now = this.now();
+    const invited = !!link && !!other.friend_link && safeEqual(link, other.friend_link);
     if (!r) {
-      this.db.prepare("INSERT INTO friends (a, b, rel, pending_rel, pending_from, updated) VALUES (?, ?, NULL, 'friend', ?, ?)")
-        .run(a, b, me, now);
-    } else if (!r.rel && r.pending_from === other.id) {
+      this.db.prepare("INSERT INTO friends (a, b, rel, pending_rel, pending_from, updated) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(a, b, invited ? "friend" : null, invited ? null : "friend", invited ? null : me, now);
+    } else if (!r.rel && (invited || r.pending_from === other.id)) {
       this.db.prepare("UPDATE friends SET rel = 'friend', pending_rel = NULL, pending_from = NULL, updated = ? WHERE a = ? AND b = ?")
         .run(now, a, b);
+    }
+    if (invited && !r?.rel) {
+      const name = this.userById(me)?.display_name ?? "Someone";
+      this.sendCard(other.id, { src: "Friends", title: name, text: "opened your link. You're connected.", icon: "wave", color: "pink", secs: 20 });
     }
     return this.friendView(me, this.friendRow(me, other.id)!);
   }

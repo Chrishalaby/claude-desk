@@ -108,7 +108,8 @@ Session cookie (`cd_sid`, httpOnly, SameSite=Lax, signed). JSON in/out, errors a
 | `GET /api/devices`, `POST /api/devices/pair {code, name}`, `PATCH /api/devices/:chip {name}`, `DELETE /api/devices/:chip` | |
 | `GET /api/devices/:chip/settings`, `PUT /api/devices/:chip/settings` | desired + reported settings, packs, latest firmware; PUT publishes `set` |
 | `POST /api/devices/:chip/ota`, `POST /api/devices/:chip/reboot` | `cmd` to the desk (409 if offline), 10/min per user |
-| `GET /api/friends`, `POST /api/friends {username, rel}`, `POST /api/friends/:u/accept`, `POST /api/friends/:u/decline`, `DELETE /api/friends/:u` | decline also cancels your own outgoing request |
+| `GET /api/friends`, `POST /api/friends {username, link}`, `POST /api/friends/:u/accept`, `POST /api/friends/:u/decline`, `DELETE /api/friends/:u` | decline also cancels your own outgoing request; with the other person's link token the two are connected at once |
+| `GET /api/friend-link`, `POST /api/friend-link/reset` | your personal `…/#/add/<you>/<token>` link; reset retires the old one |
 | `POST /api/messages {to, kind, text?, reaction?}`, `GET /api/messages?with=<u>` | |
 | `POST /api/device/hello`, `POST /api/hook`, `POST /api/computer` | device / hook client / computer agent (hook token), see PROTOCOL.md |
 
