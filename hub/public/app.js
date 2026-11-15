@@ -63,6 +63,9 @@ function fill(el, ...kids) {
   return el;
 }
 
+const APP_V = new URL(document.currentScript ? document.currentScript.src : location.href).searchParams.get("v") || "";
+let latestV = "";
+
 async function api(method, url, body) {
   let res;
   try {
@@ -74,6 +77,7 @@ async function api(method, url, body) {
   } catch {
     throw Object.assign(new Error(ERRORS.network), { code: "network" });
   }
+  latestV = res.headers.get("x-app") || latestV;
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && url !== "/api/login") { state.me = null; if (!/^#\/(login|install)/.test(location.hash)) go("#/login"); }
   if (!res.ok) throw Object.assign(new Error(ERRORS[data.error] || "Something went wrong."), { code: data.error, status: res.status });
@@ -1766,5 +1770,14 @@ async function render() {
   } catch (e) { if (e.status !== 401) fail(e); }
 }
 
-window.addEventListener("hashchange", render);
+function reloadIfUpdated() {
+  let done = "";
+  try { done = sessionStorage.getItem("reloadedFor") || ""; } catch {}
+  if (!APP_V || !latestV || latestV === APP_V || done === latestV) return false;
+  try { sessionStorage.setItem("reloadedFor", latestV); } catch { return false; }
+  location.reload();
+  return true;
+}
+
+window.addEventListener("hashchange", () => { if (!reloadIfUpdated()) render(); });
 render();

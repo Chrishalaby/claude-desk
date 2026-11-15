@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -587,10 +588,19 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
       if (types[ext]) files.set("/" + f, { type: types[ext], body: fs.readFileSync(path.join(cfg.publicDir, f)) });
     }
   } catch { /* no public dir */ }
-  const sendFile = (name: string) => async (_req: FastifyRequest, reply: FastifyReply) => {
+  const appVersion = crypto.createHash("sha256").update(files.get("/app.js")?.body ?? "").update(files.get("/app.css")?.body ?? "")
+    .digest("hex").slice(0, 10);
+  const index = files.get("/index.html");
+  if (index) {
+    index.body = Buffer.from(index.body.toString("utf8")
+      .replace('href="/app.css"', `href="/app.css?v=${appVersion}"`).replace('src="/app.js"', `src="/app.js?v=${appVersion}"`));
+  }
+  const sendFile = (name: string) => async (req: FastifyRequest, reply: FastifyReply) => {
     const f = files.get(name);
     if (!f) return reply.code(404).send({ error: "not_found" });
-    return reply.type(f.type).header("cache-control", name === "/index.html" ? "no-cache" : "public, max-age=300").send(f.body);
+    const pinned = name !== "/index.html" && (req.query as Record<string, unknown> | undefined)?.v === appVersion;
+    const cache = name === "/index.html" ? "no-cache" : pinned ? "public, max-age=31536000, immutable" : "public, max-age=300";
+    return reply.type(f.type).header("cache-control", cache).send(f.body);
   };
   for (const name of files.keys()) app.get(name, sendFile(name));
   app.get("/", sendFile("/index.html"));
@@ -602,7 +612,8 @@ export function registerRoutes(app: FastifyInstance, svc: Service, db: DB, cfg: 
     reply.code(404).send({ error: "not_found" });
   });
 
-  app.addHook("onSend", async (_req, reply, payload) => {
+  app.addHook("onSend", async (req, reply, payload) => {
+    if (req.url.startsWith("/api/")) reply.header("x-app", appVersion);
     reply.header("x-content-type-options", "nosniff");
     reply.header("referrer-policy", "same-origin");
     reply.header("x-frame-options", "DENY");

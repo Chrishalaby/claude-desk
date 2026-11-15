@@ -828,6 +828,16 @@ test("installers and static files", async () => {
   assert.equal(idx.status, 200);
   assert.ok(idx.text.includes("app.js"));
   assert.equal((await anon.call("GET", "/app.js")).status, 200);
+  const ver = idx.text.match(/app\.js\?v=([0-9a-f]{10})"/)?.[1];
+  assert.ok(ver && idx.text.includes(`app.css?v=${ver}"`), "the page pins its script and styles to their content");
+  const cacheOf = async (p) => (await fetch(base + p)).headers.get("cache-control");
+  assert.equal(await cacheOf("/"), "no-cache");
+  assert.equal(await cacheOf(`/app.js?v=${ver}`), "public, max-age=31536000, immutable");
+  assert.equal(await cacheOf("/app.js?v=0000000000"), "public, max-age=300", "an old page's request is not cached as the new file");
+  assert.equal((await fetch(base + "/api/config")).headers.get("x-app"), ver, "open pages learn about a new version from any API answer");
+  const manifest = await (await fetch(base + "/manifest.webmanifest")).json();
+  assert.equal(manifest.display, "standalone");
+  for (const icon of manifest.icons) assert.equal((await fetch(base + icon.src)).headers.get("content-type"), "image/png");
   assert.equal((await anon.call("GET", "/api/nope")).status, 404);
 });
 
